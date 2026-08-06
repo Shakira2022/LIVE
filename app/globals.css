@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --canvas: 245 247 249;
+  --surface: 255 255 255;
+  --ink: 16 43 63;
+  --muted: 96 112 128;
+  --line: 221 228 235;
+  --brand: 15 104 114;
+  --brand-soft: 231 246 246;
+  --danger: 213 63 61;
+  --danger-soft: 255 238 237;
+  --warning: 185 112 24;
+  --warning-soft: 255 247 229;
+  --success: 31 132 91;
+  --success-soft: 232 248 240;
+  --navy: 15 38 59;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; background: rgb(var(--canvas)); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+button, input, textarea, select { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+::selection { background: rgba(15, 104, 114, .18); }
+
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.safe-bottom { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+.safe-top { padding-top: max(.5rem, env(safe-area-inset-top)); }
+
+.app-page {
+  width: min(100%, 1480px);
+  margin-inline: auto;
+  padding: 1.25rem;
+  padding-bottom: 7rem;
+}
+@media (min-width: 768px) {
+  .app-page { padding: 2rem; padding-bottom: 2.5rem; }
+}
+
+.mobile-app-screen { min-height: calc(100dvh - 7.75rem); }
+
+.map-grid {
+  background-color: #e9eff3;
+  background-image:
+    linear-gradient(rgba(82, 106, 122, .07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(82, 106, 122, .07) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.map-road { filter: drop-shadow(0 2px 1px rgba(255,255,255,.9)); }
+
+@keyframes pulse-ring {
+  0% { transform: scale(.8); opacity: .68; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+.pulse-ring { animation: pulse-ring 1.8s ease-out infinite; }
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.62), transparent);
+  animation: shimmer 1.45s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

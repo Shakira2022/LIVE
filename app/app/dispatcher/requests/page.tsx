@@ -1,0 +1,10 @@
+"use client";
+import { Search } from "lucide-react";
+import { useMemo, useState } from "react";
+import { RequestListItem } from "@/components/requests/request-list-item";
+import { Input, Select } from "@/components/ui/field";
+import { Panel, PanelHeader } from "@/components/ui/panel";
+import { PageHeading } from "@/components/ui/page-heading";
+import { PageSkeleton } from "@/components/ui/skeleton";
+import { useMockStore } from "@/lib/mock-store";
+export default function DispatchRequests(){const{db,loading}=useMockStore();const[search,setSearch]=useState("");const[status,setStatus]=useState("All");const[severity,setSeverity]=useState("All");const items=useMemo(()=>db?.requests.filter(r=>(status==="All"||r.status===status)&&(severity==="All"||r.severity===severity)&&(`${r.id} ${r.requesterName} ${r.category} ${r.location.address}`.toLowerCase().includes(search.toLowerCase())))||[],[db,search,status,severity]);if(loading||!db)return <PageSkeleton/>;return <div className="app-page grid gap-5"><PageHeading eyebrow="Dispatch" title="Request queue" description="Search and filter all mock emergency requests."/><Panel><div className="grid gap-3 border-b border-[#e2e8ed] p-4 sm:grid-cols-[1fr_190px_170px] sm:p-5"><div className="relative"><Search className="pointer-events-none absolute left-3.5 top-3.5 h-5 w-5 text-[#8b9aa4]"/><Input className="pl-11" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Reference, requester or location"/></div><Select value={status} onChange={e=>setStatus(e.target.value)}><option>All</option><option>Submitted</option><option>Received</option><option>Assigned</option><option>En route</option><option>Arrived</option><option>Closed</option><option>Cancelled</option><option>Rejected</option></Select><Select value={severity} onChange={e=>setSeverity(e.target.value)}><option>All</option><option>Critical</option><option>High</option><option>Moderate</option></Select></div><PanelHeader title={`${items.length} matching requests`} description="Select a request to open operational controls."/>{items.map(r=><RequestListItem key={r.id} request={r} href={`/app/dispatcher/requests/${r.id}`}/>)}</Panel></div>}
