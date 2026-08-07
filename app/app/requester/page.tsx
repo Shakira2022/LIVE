@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import {
   ArrowRight,
   Bell,
@@ -8,13 +9,14 @@ import {
   History,
   MapPin,
   Siren,
+  Ambulance,
+  ShieldAlert,
 } from "lucide-react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  EmptyState,
   Panel,
   PanelHeader,
 } from "@/components/ui/panel";
@@ -29,6 +31,7 @@ import {
 export default function RequesterHome() {
   const { user } = useAuth();
   const { db, loading } = useMockStore();
+  const [selectedCategory, setSelectedCategory] = useState<"Medical" | "Police">("Medical");
 
   if (loading || !db || !user) {
     return <PageSkeleton map />;
@@ -220,10 +223,6 @@ export default function RequesterHome() {
     );
   }
 
-  /*
-   * No active request:
-   * Normal scrollable requester home page.
-   */
   return (
     <div className="app-page grid gap-5">
       <PageHeading
@@ -252,26 +251,73 @@ export default function RequesterHome() {
         }
       />
 
+      {/* Emergency Action Card */}
       <Panel
         mobileCard={false}
-        className="-mx-5 border-x-0 md:mx-0 md:rounded-[22px] md:border-x"
+        className="-mx-5 border-x-0 p-6 md:mx-0 md:rounded-[22px] md:border-x bg-white text-slate-900 shadow-sm"
       >
-        <EmptyState
-          icon={<Siren className="h-7 w-7" />}
-          title="No active emergency request"
-          description="When help is needed, start a request and confirm your location in a few short steps."
-          action={
-            <Link href="/app/requester/new">
-              <Button
-                variant="danger"
-                size="lg"
+        <div className="flex flex-col items-center text-center space-y-5">
+          <header className="space-y-1">
+            <h2 className="text-xl font-bold text-slate-900">Immediate Emergency Assistance</h2>
+            <p className="text-xs text-slate-500 max-w-sm">
+              Select your emergency type to request priority dispatch.
+            </p>
+          </header>
+
+          {/* Category Selector Toggles */}
+          <div className="grid grid-cols-2 gap-3 w-full max-w-xs">
+            <button
+              type="button"
+              onClick={() => setSelectedCategory("Medical")}
+              className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-xs border transition-all ${
+                selectedCategory === "Medical"
+                  ? "bg-red-50 border-red-500 text-red-600 shadow-sm ring-1 ring-red-500"
+                  : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <Ambulance className="h-4 w-4" />
+              Medical
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectedCategory("Police")}
+              className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-xs border transition-all ${
+                selectedCategory === "Police"
+                  ? "bg-blue-50 border-blue-500 text-blue-600 shadow-sm ring-1 ring-blue-500"
+                  : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <ShieldAlert className="h-4 w-4" />
+              Police
+            </button>
+          </div>
+
+          {/* Prolonged Rectangular Emergency Button */}
+          <div className="w-full max-w-xs">
+            <Link
+              href={{
+                pathname: "/app/requester/new",
+                query: { category: selectedCategory },
+              }}
+              className="block w-full"
+            >
+              <button
+                type="button"
+                className="w-full py-4 px-6 rounded-2xl bg-[#d53f3d] hover:bg-[#c23533] active:scale-[0.98] text-white font-black text-base shadow-lg shadow-red-500/25 flex items-center justify-center gap-3 transition-all border border-red-400"
               >
-                <Siren className="h-5 w-5" />
-                Request help
-              </Button>
+                <Siren className="h-6 w-6 animate-pulse" />
+                <span>REQUEST {selectedCategory.toUpperCase()} HELP</span>
+              </button>
             </Link>
-          }
-        />
+          </div>
+
+          {/* GPS Location Status Indicator */}
+          <div className="flex items-center justify-center gap-2 text-xs text-slate-500 bg-slate-50 py-2 px-4 rounded-full border border-slate-200">
+            <MapPin className="h-3.5 w-3.5 text-[#0f5b67]" />
+            <span>GPS location will be automatically attached</span>
+          </div>
+        </div>
       </Panel>
 
       <div className="-mx-5 divide-y divide-[#dfe7ec] border-y border-[#dfe7ec] bg-white md:mx-0 md:grid md:grid-cols-2 md:gap-3 md:divide-y-0 md:border-0 md:bg-transparent">
