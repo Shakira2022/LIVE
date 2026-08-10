@@ -46,75 +46,95 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   async function login(email: string, password: string) {
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    const customUsers = safeParse<Array<MockUser & { password: string }>>(
-      localStorage.getItem(CUSTOM_USERS_KEY),
-      [],
-    );
-    const account = [...MOCK_CREDENTIALS, ...customUsers].find(
-      (item) => item.email.toLowerCase() === email.trim().toLowerCase() && item.password === password,
-    );
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        identifier: email,
+        password,
+      }),
+    });
 
-    if (!account) {
-      return { ok: false, message: "The email address or password is incorrect." };
-    }
-    const storedDatabase = safeParse<{ users?: MockUser[] } | null>(
-      localStorage.getItem("live-mock-database-v1"),
-      null,
-    );
-    const currentStatus = storedDatabase?.users?.find((item) => item.id === account.id)?.status ?? account.status;
-    if (currentStatus === "Suspended") {
-      return { ok: false, message: "This demo account has been suspended." };
+    const result = await response.json();
+
+    if (!response.ok || !result.ok) {
+      return {
+        ok: false,
+        message: result.message || "Unable to sign in.",
+      };
     }
 
-    const { password: _password, ...safeUser } = account;
+    const safeUser = result.user as MockUser;
+
     localStorage.setItem(SESSION_KEY, JSON.stringify(safeUser));
-    localStorage.setItem("live-mock-access-token", `mock.${btoa(safeUser.id)}.${Date.now()}`);
     setUser(safeUser);
+
     return { ok: true };
-  }
+  } catch (error) {
+    console.error("Login error:", error);
 
-  async function register(input: RegisterInput) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const email = input.email.trim().toLowerCase();
-    const customUsers = safeParse<Array<MockUser & { password: string }>>(
-      localStorage.getItem(CUSTOM_USERS_KEY),
-      [],
-    );
-    const exists = [...MOCK_CREDENTIALS, ...customUsers].some((item) => item.email.toLowerCase() === email);
-    if (exists) return { ok: false, message: "An account with this email already exists." };
-
-    const names = input.name.trim().split(/\s+/);
-    const initials = names.slice(0, 2).map((name) => name[0]?.toUpperCase()).join("") || "LU";
-    const account: MockUser & { password: string } = {
-      id: `usr-local-${Date.now()}`,
-      name: input.name.trim(),
-      email,
-      phone: input.phone.trim(),
-      emergencyContactName: input.emergencyContactName.trim(),
-      emergencyContactPhone: input.emergencyContactPhone.trim(),
-      password: input.password,
-      role: "requester",
-      status: "Active",
-      initials,
+    return {
+      ok: false,
+      message: "Unable to connect to the server.",
     };
-    const next = [...customUsers, account];
-    localStorage.setItem(CUSTOM_USERS_KEY, JSON.stringify(next));
-    const { password: _password, ...safeUser } = account;
-    const database = safeParse<{ users?: MockUser[] } | null>(
-      localStorage.getItem("live-mock-database-v1"),
-      null,
-    );
-    if (database?.users && !database.users.some((item) => item.id === safeUser.id)) {
-      database.users.push(safeUser);
-      localStorage.setItem("live-mock-database-v1", JSON.stringify(database));
-    }
-    localStorage.setItem(SESSION_KEY, JSON.stringify(safeUser));
-    localStorage.setItem("live-mock-access-token", `mock.${btoa(safeUser.id)}.${Date.now()}`);
-    setUser(safeUser);
-    return { ok: true };
   }
+}
+  async function register(input: RegisterInput) {
+  try {
+    const response = await fetch("/api/register", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    });
 
+    const result = await response.json();
+
+    if (!response.ok || !result.ok) {
+      return {
+        ok: false,
+        message: result.message || "Unable to register.",
+      };
+    }
+
+    const safeUser = result.user;
+
+    const frontendUser: MockUser = {
+      id: safeUser.id,
+      name:
+        safeUser.display_name ||
+        `${safeUser.first_name} ${safeUser.last_name}`.trim(),
+      email: safeUser.email,
+      phone: safeUser.phone,
+      role: safeUser.role,
+      status: safeUser.status,
+      initials:
+        `${safeUser.first_name?.[0] || ""}${safeUser.last_name?.[0] || ""}`.toUpperCase(),
+    };
+
+    localStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify(frontendUser)
+    );
+
+    setUser(frontendUser);
+
+    return {
+      ok: true,
+    };
+  } catch (error) {
+    console.error("Registration request failed:", error);
+
+    return {
+      ok: false,
+      message: "Unable to connect to the registration service.",
+    };
+  }
+}
   function logout() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem("live-mock-access-token");
