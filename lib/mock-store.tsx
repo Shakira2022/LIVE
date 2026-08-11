@@ -10,6 +10,7 @@ import type {
   RequestStatus,
 } from "@/lib/types";
 import { generateReference } from "@/lib/utils";
+import { recordAuditEvent } from "@/lib/client-audit";
 
 const DATABASE_KEY = "live-mock-database-v1";
 
@@ -44,7 +45,13 @@ function loadDatabase(): MockDatabase {
   }
 }
 
-function logEntry(db: MockDatabase, actor: MockUser, action: string, target: string, metadata: string) {
+function logEntry(
+  db: MockDatabase,
+  actor: MockUser,
+  action: string,
+  target: string,
+  metadata: string,
+) {
   db.auditLogs.unshift({
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     actorName: actor.name,
@@ -55,6 +62,42 @@ function logEntry(db: MockDatabase, actor: MockUser, action: string, target: str
     timestamp: new Date().toISOString(),
     correlationId: `corr-${Math.random().toString(16).slice(2, 8)}`,
     metadata,
+  });
+
+  let targetType = "system";
+
+  if (
+    action.includes("Request") ||
+    action.includes("request")
+  ) {
+    targetType = "request";
+  } else if (
+    action.includes("Responder") ||
+    action.includes("responder")
+  ) {
+    targetType = "responder";
+  } else if (
+    action.includes("User") ||
+    action.includes("user")
+  ) {
+    targetType = "user";
+  } else if (
+    action.includes("Organisation") ||
+    action.includes("organisation")
+  ) {
+    targetType = "organisation";
+  }
+
+  void recordAuditEvent({
+    actorUserId: actor.id,
+    actorRole: actor.role,
+    action,
+    targetType,
+    targetId: target,
+    result: "success",
+    safeMetadata: {
+      details: metadata,
+    },
   });
 }
 
