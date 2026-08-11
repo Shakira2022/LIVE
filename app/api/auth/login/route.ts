@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import bcrypt from "bcryptjs";
+import { createAccessToken } from "@/lib/auth/jwt";
 
 console.log(
   "Supabase URL:",
@@ -34,7 +35,10 @@ export async function POST(request: Request) {
     const value = identifier.trim();
 
     console.log("Login identifier:", value);
-    console.log("Identifier type:", value.includes("@") ? "email" : "phone");
+    console.log(
+      "Identifier type:",
+      value.includes("@") ? "email" : "phone"
+    );
 
     let user = null;
     let error = null;
@@ -60,27 +64,27 @@ export async function POST(request: Request) {
         .eq("phone", value)
         .is("deleted_at", null)
         .maybeSingle();
-      
+
       user = result.data;
       error = result.error;
     }
 
     if (error) {
-  console.error("LOGIN DATABASE ERROR");
-  console.error("Code:", error.code);
-  console.error("Message:", error.message);
-  console.error("Details:", error.details);
-  console.error("Hint:", error.hint);
-  console.error("Full error:", error);
+      console.error("LOGIN DATABASE ERROR");
+      console.error("Code:", error.code);
+      console.error("Message:", error.message);
+      console.error("Details:", error.details);
+      console.error("Hint:", error.hint);
+      console.error("Full error:", error);
 
-  return NextResponse.json(
-    {
-      ok: false,
-      message: "Unable to sign in right now.",
-    },
-    { status: 500 }
-  );
-}
+      return NextResponse.json(
+        {
+          ok: false,
+          message: "Unable to sign in right now.",
+        },
+        { status: 500 }
+      );
+    }
 
     console.log("User found:", !!user);
 
@@ -142,25 +146,33 @@ export async function POST(request: Request) {
       })
       .eq("id", user.id);
 
+    // Create JWT after successful authentication
+    const accessToken = await createAccessToken(
+      user.id,
+      user.role
+    );
+
     const safeUser = {
-  id: user.id,
-  name:
-    user.display_name ||
-    `${user.first_name} ${user.last_name}`.trim(),
-  email: user.email,
-  phone: user.phone,
-  role: user.role,
-  status: user.status,
-  first_name: user.first_name,
-  last_name: user.last_name,
-  display_name: user.display_name,
-};
+      id: user.id,
+      name:
+        user.display_name ||
+        `${user.first_name} ${user.last_name}`.trim(),
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      status: user.status,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      display_name: user.display_name,
+    };
 
     console.log("LOGIN SUCCESSFUL");
+    console.log("JWT CREATED FOR USER:", user.id);
 
     return NextResponse.json({
       ok: true,
       message: "Login successful.",
+      accessToken,
       user: safeUser,
     });
   } catch (error) {
