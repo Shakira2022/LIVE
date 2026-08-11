@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Siren,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -51,6 +51,23 @@ const LOCATION_ATTEMPTS = 3;
 const ATTEMPT_SECONDS = 5;
 const CONFIRM_REVIEW_SECONDS = 5;
 
+const MEDICAL_CATEGORIES = [
+  "Medical emergency",
+  "Severe Injury / Trauma",
+  "Unconscious / Breathing Issues",
+  "Vehicle Accident",
+  "Other Medical Emergency",
+];
+
+const POLICE_CATEGORIES = [
+  "Armed Robbery",
+  "House Robbery",
+  "Crime in Progress / Shots Fired",
+  "Personal safety",
+  "Suspicious Activity",
+  "Other Police Emergency",
+];
+
 function wait(milliseconds: number) {
   return new Promise((resolve) =>
     window.setTimeout(resolve, milliseconds)
@@ -83,6 +100,14 @@ function requestBrowserLocation() {
 }
 
 export default function NewRequest() {
+  const searchParams = useSearchParams();
+  const selectedMainCategory = searchParams.get("category");
+
+  const categoryOptions =
+    selectedMainCategory === "Police"
+      ? POLICE_CATEGORIES
+      : MEDICAL_CATEGORIES;
+
   const { user } = useAuth();
   const {
     db,
@@ -95,7 +120,7 @@ export default function NewRequest() {
   const [step, setStep] = useState(0);
 
   const [category, setCategory] = useState(
-    "Medical emergency"
+    categoryOptions[0]
   );
 
   const [severity, setSeverity] =
@@ -645,25 +670,11 @@ export default function NewRequest() {
                             )
                           }
                         >
-                          <option>
-                            Medical emergency
-                          </option>
-
-                          <option>
-                            Road incident
-                          </option>
-
-                          <option>
-                            Fire / smoke
-                          </option>
-
-                          <option>
-                            Personal safety
-                          </option>
-
-                          <option>
-                            Other emergency
-                          </option>
+                          {categoryOptions.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
                         </Select>
                       </label>
 
