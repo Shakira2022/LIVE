@@ -4,6 +4,7 @@ import {
   AnimatePresence,
   motion,
 } from "framer-motion";
+
 import {
   Check,
   CheckCircle2,
@@ -15,30 +16,38 @@ import {
   RefreshCw,
   Siren,
 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+
+import {
+  useRouter,
+  useSearchParams,
+} from "next/navigation";
+
 import {
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+
 import { useAuth } from "@/components/auth/auth-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
+
 import { Button } from "@/components/ui/button";
+
 import {
   FieldLabel,
   Select,
   Textarea,
 } from "@/components/ui/field";
+
 import { PageHeading } from "@/components/ui/page-heading";
 import { Panel } from "@/components/ui/panel";
 import { PageSkeleton } from "@/components/ui/skeleton";
-import { useMockStore } from "@/lib/mock-store";
+
 import type {
   Coordinates,
   Severity,
 } from "@/lib/types";
-import { isActiveStatus } from "@/lib/utils";
 
 type LocationState =
   | "idle"
@@ -101,21 +110,17 @@ function requestBrowserLocation() {
 
 export default function NewRequest() {
   const searchParams = useSearchParams();
-  const selectedMainCategory = searchParams.get("category");
+  const router = useRouter();
+
+  const { user } = useAuth();
+
+  const selectedMainCategory =
+    searchParams.get("category");
 
   const categoryOptions =
     selectedMainCategory === "Police"
       ? POLICE_CATEGORIES
       : MEDICAL_CATEGORIES;
-
-  const { user } = useAuth();
-  const {
-    db,
-    loading,
-    createRequest,
-  } = useMockStore();
-
-  const router = useRouter();
 
   const [step, setStep] = useState(0);
 
@@ -164,12 +169,23 @@ export default function NewRequest() {
   const [submitting, setSubmitting] =
     useState(false);
 
+  const [hasActiveRequest, setHasActiveRequest] =
+    useState(false);
+
+  const [activeRequestId, setActiveRequestId] =
+    useState<string | null>(null);
+
   const locationRunRef = useRef(0);
 
   const countdownTimerRef =
     useRef<number | null>(null);
 
-  const autoSubmitRef = useRef(false);
+  const autoSubmitRef =
+    useRef(false);
+
+  /* ---------------------------------------------------------------------- */
+  /* Clear location timer                                                   */
+  /* ---------------------------------------------------------------------- */
 
   function clearAttemptTimer() {
     if (
@@ -183,187 +199,218 @@ export default function NewRequest() {
     }
   }
 
-  async function runLocationAttempt(
-    attemptNumber: number,
-    runId: number
-  ) {
-    if (
-      runId !== locationRunRef.current
-    ) {
-      return;
-    }
+  /* ---------------------------------------------------------------------- */
+  /* Location attempt                                                       */
+  /* ---------------------------------------------------------------------- */
 
-    clearAttemptTimer();
-
-    setAttempt(attemptNumber);
-    setAttemptCountdown(
-      ATTEMPT_SECONDS
-    );
-    setLocationState("locating");
-    setLocationMessage(
-      `Attempt ${attemptNumber} of ${LOCATION_ATTEMPTS}`
-    );
-    setError("");
-
-    const startedAt = Date.now();
-
-    countdownTimerRef.current =
-      window.setInterval(() => {
-        setAttemptCountdown((current) =>
-          Math.max(0, current - 1)
-        );
-      }, 1000);
-
-    try {
-      const position =
-        await requestBrowserLocation();
-
-      const minimumVisibleTime = 2000;
-      const elapsed =
-        Date.now() - startedAt;
-
-      if (
-        elapsed < minimumVisibleTime
-      ) {
-        await wait(
-          minimumVisibleTime - elapsed
-        );
-      }
-
-      clearAttemptTimer();
-
+  const runLocationAttempt = useCallback(
+    async (
+      attemptNumber: number,
+      runId: number
+    ) => {
       if (
         runId !== locationRunRef.current
       ) {
         return;
       }
 
-      const nextCoordinates = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      };
+      clearAttemptTimer();
 
-      setCoordinates(nextCoordinates);
-      setAccuracy(
-        position.coords.accuracy
+      setAttempt(attemptNumber);
+      setAttemptCountdown(
+        ATTEMPT_SECONDS
       );
-      setAddress(
-        "Current device location"
-      );
-      setAttemptCountdown(0);
-      setLocationState("success");
+
+      setLocationState("locating");
+
       setLocationMessage(
-        "Location confirmed"
+        `Attempt ${attemptNumber} of ${LOCATION_ATTEMPTS}`
       );
 
-      /*
-       * Give the requester enough time to see
-       * that the location was successfully found.
-       */
-      await wait(1600);
+      setError("");
 
-      if (
-        runId === locationRunRef.current
-      ) {
-        setStep(2);
-      }
-    } catch (locationError) {
-      const elapsed =
-        Date.now() - startedAt;
+      const startedAt = Date.now();
 
-      const remainingAttemptTime =
-        Math.max(
-          0,
-          ATTEMPT_SECONDS * 1000 -
-            elapsed
+      countdownTimerRef.current =
+        window.setInterval(() => {
+          setAttemptCountdown((current) =>
+            Math.max(0, current - 1)
+          );
+        }, 1000);
+
+      try {
+        const position =
+          await requestBrowserLocation();
+
+        const minimumVisibleTime = 2000;
+
+        const elapsed =
+          Date.now() - startedAt;
+
+        if (
+          elapsed < minimumVisibleTime
+        ) {
+          await wait(
+            minimumVisibleTime - elapsed
+          );
+        }
+
+        clearAttemptTimer();
+
+        if (
+          runId !== locationRunRef.current
+        ) {
+          return;
+        }
+
+        const nextCoordinates = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        };
+
+        setCoordinates(
+          nextCoordinates
         );
 
-      if (
-        remainingAttemptTime > 0
-      ) {
-        await wait(
-          remainingAttemptTime
+        setAccuracy(
+          position.coords.accuracy
         );
-      }
 
-      clearAttemptTimer();
-      setAttemptCountdown(0);
+        setAddress(
+          "Current device location"
+        );
 
-      if (
-        runId !== locationRunRef.current
-      ) {
-        return;
-      }
+        setAttemptCountdown(0);
 
-      if (
-        attemptNumber <
-        LOCATION_ATTEMPTS
-      ) {
-        setLocationState("retrying");
+        setLocationState("success");
 
         setLocationMessage(
-          `Attempt ${attemptNumber} was unsuccessful`
+          "Location confirmed"
         );
 
-        await wait(1100);
+        await wait(1600);
 
         if (
           runId ===
           locationRunRef.current
         ) {
-          await runLocationAttempt(
-            attemptNumber + 1,
-            runId
+          setStep(2);
+        }
+      } catch (locationError) {
+        const elapsed =
+          Date.now() - startedAt;
+
+        const remainingAttemptTime =
+          Math.max(
+            0,
+            ATTEMPT_SECONDS * 1000 -
+              elapsed
+          );
+
+        if (
+          remainingAttemptTime > 0
+        ) {
+          await wait(
+            remainingAttemptTime
           );
         }
 
-        return;
+        clearAttemptTimer();
+
+        setAttemptCountdown(0);
+
+        if (
+          runId !== locationRunRef.current
+        ) {
+          return;
+        }
+
+        if (
+          attemptNumber <
+          LOCATION_ATTEMPTS
+        ) {
+          setLocationState(
+            "retrying"
+          );
+
+          setLocationMessage(
+            `Attempt ${attemptNumber} was unsuccessful`
+          );
+
+          await wait(1100);
+
+          if (
+            runId ===
+            locationRunRef.current
+          ) {
+            await runLocationAttempt(
+              attemptNumber + 1,
+              runId
+            );
+          }
+
+          return;
+        }
+
+        const locationErrorCode =
+          typeof locationError ===
+            "object" &&
+          locationError !== null &&
+          "code" in locationError
+            ? Number(
+                (
+                  locationError as {
+                    code?: unknown;
+                  }
+                ).code
+              )
+            : undefined;
+
+        const message =
+          locationErrorCode === 1
+            ? "Location permission was not granted. Allow location access and try again."
+            : "LIVE could not confirm your location after three attempts.";
+
+        setLocationState("failed");
+
+        setLocationMessage(
+          message
+        );
+
+        setError(
+          "Your request cannot continue until your current location is confirmed."
+        );
       }
+    },
+    []
+  );
 
-      const locationErrorCode =
-        typeof locationError ===
-          "object" &&
-        locationError !== null &&
-        "code" in locationError
-          ? Number(
-              (
-                locationError as {
-                  code?: unknown;
-                }
-              ).code
-            )
-          : undefined;
+  /* ---------------------------------------------------------------------- */
+  /* Start location sequence                                                */
+  /* ---------------------------------------------------------------------- */
 
-      const message =
-        locationErrorCode === 1
-          ? "Location permission was not granted. Allow location access and try again."
-          : "LIVE could not confirm your location after three attempts.";
+  const startLocationSequence =
+    useCallback(() => {
+      const runId =
+        locationRunRef.current + 1;
 
-      setLocationState("failed");
-      setLocationMessage(message);
+      locationRunRef.current =
+        runId;
 
-      setError(
-        "Your request cannot continue until your current location is confirmed."
+      setCoordinates(null);
+      setAccuracy(undefined);
+      setAddress("");
+      setError("");
+
+      void runLocationAttempt(
+        1,
+        runId
       );
-    }
-  }
+    }, [runLocationAttempt]);
 
-  function startLocationSequence() {
-    const runId =
-      locationRunRef.current + 1;
-
-    locationRunRef.current = runId;
-
-    setCoordinates(null);
-    setAccuracy(undefined);
-    setAddress("");
-    setError("");
-
-    void runLocationAttempt(
-      1,
-      runId
-    );
-  }
+  /* ---------------------------------------------------------------------- */
+  /* Start location when step 1 opens                                       */
+  /* ---------------------------------------------------------------------- */
 
   useEffect(() => {
     if (step !== 1) {
@@ -376,107 +423,258 @@ export default function NewRequest() {
       locationRunRef.current += 1;
       clearAttemptTimer();
     };
-
-    // The sequence must restart whenever
-    // the requester enters the location step.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
-
-  if (
-    loading ||
-    !db ||
-    !user
-  ) {
-    return <PageSkeleton map />;
-  }
-
-  const requester = user;
-
-  const active = db.requests.find(
-    (request) =>
-      request.requesterId ===
-        user.id &&
-      isActiveStatus(request.status)
-  );
-
-  const submit = useCallback(() => {
-    if (
-      submitting ||
-      autoSubmitRef.current
-    ) {
-      return;
-    }
-
-    if (
-      !coordinates ||
-      !address
-    ) {
-      setError(
-        "LIVE must confirm your current location before submission."
-      );
-
-      setStep(1);
-      return;
-    }
-
-    autoSubmitRef.current = true;
-    setSubmitting(true);
-
-    const emergencyContact =
-      requester.emergencyContactName &&
-      requester.emergencyContactPhone
-        ? `${requester.emergencyContactName} · ${requester.emergencyContactPhone}`
-        : undefined;
-
-    const request = createRequest({
-      requester,
-      callbackNumber:
-        requester.phone,
-      emergencyContact,
-      category,
-      severity,
-      note:
-        note ||
-        "No additional note provided.",
-      location: {
-        address,
-        lat: coordinates.lat,
-        lng: coordinates.lng,
-        accuracy,
-        capturedAt:
-          new Date().toISOString(),
-        method: "GPS",
-      },
-    });
-
-    router.replace(
-      `/app/requester/track/${request.id}`
-    );
   }, [
-    accuracy,
-    address,
-    category,
-    coordinates,
-    createRequest,
-    note,
-    requester,
-    router,
-    severity,
-    submitting,
+    step,
+    startLocationSequence,
   ]);
 
-  /*
-   * Start the five-second confirmation
-   * countdown whenever step 3 opens.
-   */
+  /* ---------------------------------------------------------------------- */
+  /* Check for an existing active request                                   */
+  /* ---------------------------------------------------------------------- */
+
   useEffect(() => {
-    if (step !== 2) {
-      autoSubmitRef.current = false;
-      setSubmitting(false);
+    if (!user?.id) {
       return;
     }
 
-    autoSubmitRef.current = false;
+    async function checkActiveRequest() {
+      try {
+        const response =
+          await fetch(
+            `/api/requests?requesterId=${encodeURIComponent(
+              user.id
+            )}`,
+            {
+              method: "GET",
+              cache: "no-store",
+            }
+          );
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data =
+          await response.json();
+
+        const requests =
+          data?.requests ?? [];
+
+        const active =
+          requests.find(
+            (request: {
+              id: string;
+              current_status: string;
+            }) =>
+              [
+                "submitted",
+                "received",
+                "assigned",
+                "en_route",
+                "arrived",
+              ].includes(
+                request.current_status
+              )
+          );
+
+        if (active) {
+          setHasActiveRequest(true);
+          setActiveRequestId(
+            active.id
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Failed to check active request:",
+          error
+        );
+      }
+    }
+
+    void checkActiveRequest();
+  }, [user?.id]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Submit request                                                         */
+  /* ---------------------------------------------------------------------- */
+
+  const submit = useCallback(
+    async () => {
+      if (
+        submitting ||
+        autoSubmitRef.current
+      ) {
+        return;
+      }
+
+      if (!user) {
+        setError(
+          "You must be logged in to submit an emergency request."
+        );
+        return;
+      }
+
+      if (!coordinates) {
+        setError(
+          "Your location has not been confirmed."
+        );
+        return;
+      }
+
+      if (!user.id) {
+        setError(
+          "Your account could not be identified."
+        );
+        return;
+      }
+
+      autoSubmitRef.current = true;
+      setSubmitting(true);
+      setError("");
+
+      try {
+        const response =
+          await fetch(
+            "/api/requests",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              credentials: "include",
+
+              body: JSON.stringify({
+                requesterId:
+                  user.id,
+
+                category,
+
+                severity,
+
+                note:
+                  note ||
+                  "No additional note provided.",
+
+                callbackNumber:
+                  user.phone || null,
+
+                location: {
+                  address:
+                    address ||
+                    "Current device location",
+
+                  lat:
+                    coordinates.lat,
+
+                  lng:
+                    coordinates.lng,
+
+                  accuracy:
+                    accuracy ?? null,
+
+                  capturedAt:
+                    new Date().toISOString(),
+
+                  method:
+                    "GPS",
+                },
+              }),
+            }
+          );
+
+        let data: {
+          request?: {
+            id: string;
+            reference_code?: string;
+          };
+          error?: string;
+        } | null = null;
+
+        try {
+          data =
+            await response.json();
+        } catch {
+          data = null;
+        }
+
+        console.log(
+          "CREATE REQUEST STATUS:",
+          response.status
+        );
+
+        console.log(
+          "CREATE REQUEST RESPONSE:",
+          data
+        );
+
+        if (
+          !response.ok ||
+          !data?.request
+        ) {
+          throw new Error(
+            data?.error ||
+              "Failed to create emergency request."
+          );
+        }
+
+        /*
+         * IMPORTANT:
+         *
+         * We use the REAL Supabase UUID
+         * returned by the API.
+         */
+        router.replace(
+          `/app/requester/track/${data.request.id}`
+        );
+      } catch (error) {
+        console.error(
+          "Failed to submit emergency request:",
+          error
+        );
+
+        setSubmitting(false);
+        autoSubmitRef.current =
+          false;
+
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Failed to submit emergency request."
+        );
+      }
+    },
+    [
+      accuracy,
+      address,
+      category,
+      coordinates,
+      note,
+      router,
+      severity,
+      submitting,
+      user,
+    ]
+  );
+
+  /* ---------------------------------------------------------------------- */
+  /* Confirmation countdown                                                 */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (step !== 2) {
+      autoSubmitRef.current =
+        false;
+
+      setSubmitting(false);
+
+      return;
+    }
+
+    autoSubmitRef.current =
+      false;
 
     setConfirmCountdown(
       CONFIRM_REVIEW_SECONDS
@@ -503,10 +701,10 @@ export default function NewRequest() {
       window.clearInterval(timer);
   }, [step]);
 
-  /*
-   * Submit automatically when the
-   * confirmation countdown reaches zero.
-   */
+  /* ---------------------------------------------------------------------- */
+  /* Automatically submit                                                   */
+  /* ---------------------------------------------------------------------- */
+
   useEffect(() => {
     if (
       step !== 2 ||
@@ -518,7 +716,7 @@ export default function NewRequest() {
 
     const timer =
       window.setTimeout(() => {
-        submit();
+        void submit();
       }, 450);
 
     return () =>
@@ -528,6 +726,14 @@ export default function NewRequest() {
     step,
     submit,
   ]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Loading                                                                 */
+  /* ---------------------------------------------------------------------- */
+
+  if (!user) {
+    return <PageSkeleton map />;
+  }
 
   const steps = [
     "Details",
@@ -540,6 +746,10 @@ export default function NewRequest() {
     locationState === "locating" ||
     locationState === "retrying";
 
+  /* ---------------------------------------------------------------------- */
+  /* Render                                                                  */
+  /* ---------------------------------------------------------------------- */
+
   return (
     <div className="app-page grid gap-5">
       <PageHeading
@@ -548,7 +758,7 @@ export default function NewRequest() {
         description="Complete only the essential incident information. Contact details are taken from your profile."
       />
 
-      {active ? (
+      {hasActiveRequest ? (
         <Panel
           mobileCard={false}
           className="-mx-5 border-x-0 border-[#f0c8c7] bg-[#fff7f6] p-5 md:mx-0 md:rounded-[22px] md:border-x"
@@ -558,36 +768,33 @@ export default function NewRequest() {
 
             <div>
               <h2 className="font-semibold">
-                An active request already
-                exists
+                An active request already exists
               </h2>
 
               <p className="mt-1 text-sm text-[#6d6060]">
-                Open {active.id} instead of
-                creating a rapid duplicate
-                request.
+                Open your active request
+                instead of creating a
+                duplicate request.
               </p>
 
-              <Button
-                variant="danger"
-                className="mt-4"
-                onClick={() =>
-                  router.push(
-                    `/app/requester/track/${active.id}`
-                  )
-                }
-              >
-                Open active request
-              </Button>
+              {activeRequestId ? (
+                <Button
+                  variant="danger"
+                  className="mt-4"
+                  onClick={() =>
+                    router.push(
+                      `/app/requester/track/${activeRequestId}`
+                    )
+                  }
+                >
+                  Open active request
+                </Button>
+              ) : null}
             </div>
           </div>
         </Panel>
       ) : (
         <>
-          {/*
-           * The three circles are centred
-           * equally across mobile and desktop.
-           */}
           <div className="relative grid grid-cols-3 items-start px-2 sm:px-5">
             <span className="absolute left-[16.67%] right-[16.67%] top-4 h-px bg-[#d7e1e7]" />
 
@@ -603,11 +810,6 @@ export default function NewRequest() {
                         ? "bg-[#0f6872] text-white"
                         : "bg-[#e4eaee] text-[#788a95]"
                     }`}
-                    aria-current={
-                      index === step
-                        ? "step"
-                        : undefined
-                    }
                   >
                     {index < step ? (
                       <Check className="h-4 w-4" />
@@ -654,6 +856,10 @@ export default function NewRequest() {
                 }}
                 className="px-5 py-4 md:p-6"
               >
+                {/* ------------------------------------------------------ */}
+                {/* STEP 0 - DETAILS                                        */}
+                {/* ------------------------------------------------------ */}
+
                 {step === 0 ? (
                   <div className="grid gap-4">
                     <div className="grid gap-4 sm:grid-cols-2">
@@ -670,11 +876,16 @@ export default function NewRequest() {
                             )
                           }
                         >
-                          {categoryOptions.map((opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
+                          {categoryOptions.map(
+                            (option) => (
+                              <option
+                                key={option}
+                                value={option}
+                              >
+                                {option}
+                              </option>
+                            )
+                          )}
                         </Select>
                       </label>
 
@@ -692,15 +903,15 @@ export default function NewRequest() {
                             )
                           }
                         >
-                          <option>
+                          <option value="Critical">
                             Critical
                           </option>
 
-                          <option>
+                          <option value="High">
                             High
                           </option>
 
-                          <option>
+                          <option value="Moderate">
                             Moderate
                           </option>
                         </Select>
@@ -729,20 +940,19 @@ export default function NewRequest() {
                       <p className="leading-6">
                         LIVE will use{" "}
                         <span className="font-semibold text-[#102b3f]">
-                          {requester.phone}
+                          {user.phone ||
+                            "your registered contact number"}
                         </span>{" "}
-                        as the callback number and the
-                        emergency contact saved in
-                        your profile.
+                        as the callback
+                        number.
                       </p>
                     </div>
                   </div>
                 ) : step === 1 ? (
-                  /*
-                   * Compact mobile location step:
-                   * the map is intentionally short
-                   * so the Back button remains visible.
-                   */
+                  /* ------------------------------------------------------ */
+                  /* STEP 1 - LOCATION                                      */
+                  /* ------------------------------------------------------ */
+
                   <div className="grid gap-3 lg:grid-cols-[0.72fr_1.28fr] lg:gap-5">
                     <div className="relative -mx-5 overflow-hidden md:mx-0 lg:order-2">
                       <LiveResponseMap
@@ -857,6 +1067,10 @@ export default function NewRequest() {
                     </div>
                   </div>
                 ) : (
+                  /* ------------------------------------------------------ */
+                  /* STEP 2 - CONFIRM                                      */
+                  /* ------------------------------------------------------ */
+
                   <div className="grid gap-4 lg:grid-cols-[1fr_0.82fr] lg:gap-6">
                     <div>
                       <h2 className="text-xl font-semibold">
@@ -866,8 +1080,7 @@ export default function NewRequest() {
                       <p className="mt-2 text-sm leading-6 text-[#687b89]">
                         LIVE confirmed your current
                         position and prepared the
-                        request for the mock dispatch
-                        queue.
+                        request for submission.
                       </p>
 
                       <dl className="mt-4 divide-y divide-[#e2e8ed] border-y border-[#e2e8ed] text-sm">
@@ -898,7 +1111,8 @@ export default function NewRequest() {
                           </dt>
 
                           <dd className="mt-1 font-semibold">
-                            {address}
+                            {address ||
+                              "Current device location"}
                           </dd>
 
                           {coordinates ? (
@@ -991,19 +1205,6 @@ export default function NewRequest() {
               </p>
             ) : null}
 
-            {/*
-             * Step 1:
-             * Only Continue is displayed.
-             *
-             * Step 2:
-             * Only Back is displayed because
-             * successful location moves forward
-             * automatically.
-             *
-             * Step 3:
-             * No buttons are displayed because
-             * submission is automatic.
-             */}
             {step === 0 ? (
               <div className="flex justify-end border-t border-[#e2e8ed] p-4 sm:px-6">
                 <Button
@@ -1030,7 +1231,8 @@ export default function NewRequest() {
                 </Button>
 
                 <span className="text-xs font-medium text-[#71838f]">
-                  {locationState === "success"
+                  {locationState ===
+                  "success"
                     ? "Opening confirmation…"
                     : "Location required"}
                 </span>

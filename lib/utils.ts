@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { formatDistanceToNow, format } from "date-fns";
+import { format as formatDate, formatDistanceToNow } from "date-fns";
 import type { RequestStatus, UserRole } from "@/lib/types";
 
 export function cn(...inputs: ClassValue[]) {
@@ -8,25 +8,38 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatDateTime(value: string) {
-  return format(new Date(value), "dd MMM yyyy, HH:mm");
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Date unavailable";
+  }
+
+  return formatDate(date, "dd MMM yyyy, HH:mm");
+}
+
+export function format(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Date unavailable";
+  }
+
+  return formatDate(date, "dd MMM yyyy, HH:mm");
 }
 
 export function timeAgo(value: string) {
-  return formatDistanceToNow(new Date(value), { addSuffix: true });
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Date unavailable";
+  }
+
+  return formatDistanceToNow(date, {
+    addSuffix: true,
+  });
 }
 
-export function roleLabel(role: UserRole) {
-  const labels: Record<UserRole, string> = {
-    requester: "Requester",
-    dispatcher: "Dispatcher",
-    responder: "Responder",
-    admin: "Administrator",
-    auditor: "Support / Auditor",
-  };
-  return labels[role];
-}
-
-export function roleHome(role: UserRole) {
+export function getDashboardRoute(role: UserRole) {
   return `/app/${role}`;
 }
 
@@ -43,8 +56,12 @@ export function nextStatus(status: RequestStatus): RequestStatus | null {
     "Arrived",
     "Closed",
   ];
+
   const index = flow.indexOf(status);
-  return index >= 0 && index < flow.length - 1 ? flow[index + 1] : null;
+
+  return index >= 0 && index < flow.length - 1
+    ? flow[index + 1]
+    : null;
 }
 
 export function requestStatusTone(status: RequestStatus) {
@@ -56,22 +73,40 @@ export function requestStatusTone(status: RequestStatus) {
     case "Assigned":
       return "amber";
     case "En route":
-      return "teal";
+      return "blue";
     case "Arrived":
       return "green";
     case "Closed":
       return "slate";
     case "Cancelled":
+      return "red";
     case "Rejected":
       return "red";
+    default:
+      return "slate";
   }
 }
-
 export function generateReference() {
-  const date = new Date();
-  const day = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(
-    date.getDate(),
-  ).padStart(2, "0")}`;
-  const suffix = Math.floor(1000 + Math.random() * 9000);
-  return `LIVE-${day}-${suffix}`;
+  return `LIVE-${Date.now()}`;
+}
+
+export function roleHome(role: UserRole) {
+  return `/app/${role}`;
+}
+
+export function roleLabel(role: UserRole) {
+  switch (role) {
+    case "requester":
+      return "Requester";
+    case "dispatcher":
+      return "Dispatcher";
+    case "responder":
+      return "Responder";
+    case "admin":
+      return "Administrator";
+    case "auditor":
+      return "Auditor";
+    default:
+      return role;
+  }
 }

@@ -6,10 +6,11 @@ import {
   MapPin,
   PhoneCall,
   Siren,
+  Loader2,
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
-import { useAuth } from "@/components/auth/auth-provider";
+import { useEffect, useState } from "react";
+
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 import { StatusTimeline } from "@/components/requests/status-timeline";
 import { Badge } from "@/components/ui/badge";
@@ -21,37 +22,364 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { Sheet } from "@/components/ui/sheet";
 import { PageSkeleton } from "@/components/ui/skeleton";
-import { useMockStore } from "@/lib/mock-store";
 import {
   isActiveStatus,
   requestStatusTone,
 } from "@/lib/utils";
+import type { RequestStatus } from "@/lib/types";
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
+
+type EmergencyStatus =
+  | "submitted"
+  | "received"
+  | "assigned"
+  | "en_route"
+  | "arrived"
+  | "closed"
+  | "cancelled"
+  | "rejected";
+
+function toUiStatus(
+  status: EmergencyStatus,
+): RequestStatus {
+  const statusMap: Record<
+    EmergencyStatus,
+    RequestStatus
+  > = {
+    submitted: "Submitted",
+    received: "Received",
+    assigned: "Assigned",
+    en_route: "En route",
+    arrived: "Arrived",
+    closed: "Closed",
+    cancelled: "Cancelled",
+    rejected: "Rejected",
+  };
+
+  return statusMap[status];
+}
+
+type ApiRequest = {
+  id: string;
+  reference_code?: string;
+  requester_id?: string;
+  category: string;
+  severity: string;
+  note?: string | null;
+  callback_number?: string | null;
+  current_status: EmergencyStatus;
+  eta_minutes?: number | null;
+
+  request_locations?:
+    | {
+        latitude: number;
+        longitude: number;
+        accuracy_meters?: number | null;
+        address_text?: string | null;
+        location_method?: string;
+        captured_at?: string;
+      }[]
+    | {
+        latitude: number;
+        longitude: number;
+        accuracy_meters?: number | null;
+        address_text?: string | null;
+        location_method?: string;
+        captured_at?: string;
+      }
+    | null;
+
+  request_status_history?: Array<{
+    id: string;
+    previous_status?: EmergencyStatus | null;
+    new_status: EmergencyStatus;
+    note?: string | null;
+    actor_role?: string | null;
+    changed_by_system?: boolean;
+    created_at: string;
+  }>;
+};
+
+type TrackingRequest = {
+  /*
+   * Database UUID.
+   *
+   * Used internally when talking to the API.
+   */
+  id: string;
+
+  /*
+   * Human-readable LIVE reference.
+   *
+   * Example:
+   * LIVE-1786490501079
+   */
+  referenceCode: string;
+
+  category: string;
+  severity: string;
+  note: string;
+  callbackNumber: string;
+  status: RequestStatus;
+  etaMinutes?: number;
+
+  location: {
+    address: string;
+    method: string;
+    lat?: number;
+    lng?: number;
+    accuracy?: number;
+  };
+
+  statusHistory: Array<{
+    id: string;
+    status: RequestStatus;
+    note?: string;
+    createdAt: string;
+  }>;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function getLocation(
+  locations: ApiRequest["request_locations"],
+) {
+  if (!locations) {
+    return null;
+  }
+
+  if (Array.isArray(locations)) {
+    return locations[0] ?? null;
+  }
+
+  return locations;
+}
+
+function convertApiRequest(
+  apiRequest: ApiRequest,
+): TrackingRequest {
+  const location = getLocation(
+    apiRequest.request_locations,
+  );
+
+  return {
+    /*
+     * KEEP THE REAL DATABASE UUID.
+     *
+     * The API can use this UUID for:
+     *
+     * GET  /api/requests/<uuid>
+     * PATCH /api/requests/<uuid>
+     */
+    id: apiRequest.id,
+
+    /*
+     * Human-readable reference shown to requester.
+     */
+    referenceCode:
+      apiRequest.reference_code ||
+      apiRequest.id,
+
+    category: apiRequest.category,
+
+    severity: apiRequest.severity,
+
+    note:
+      apiRequest.note ||
+      "No additional description provided.",
+
+    callbackNumber:
+      apiRequest.callback_number ||
+      "Not provided",
+
+    status: toUiStatus(
+      apiRequest.current_status,
+    ),
+
+    etaMinutes:
+      apiRequest.eta_minutes ??
+      undefined,
+
+    location: {
+      address:
+        location?.address_text ||
+        "Location confirmed",
+
+      method:
+        location?.location_method ||
+        "gps",
+
+      lat: location?.latitude,
+
+      lng: location?.longitude,
+
+      accuracy:
+        location?.accuracy_meters ??
+        undefined,
+    },
+
+    statusHistory: (
+      apiRequest.request_status_history ||
+      []
+    ).map((entry) => ({
+      id: entry.id,
+      status: toUiStatus(
+        entry.new_status,
+      ),
+      note:
+        entry.note ||
+        undefined,
+      createdAt: entry.created_at,
+    })),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Page                                                                       */
+/* -------------------------------------------------------------------------- */
 
 export default function TrackRequest() {
-  const { id } = useParams<{ id: string }>();
-  const { user } = useAuth();
-  const {
-    db,
-    loading,
-    cancelRequest,
-  } = useMockStore();
+  const params =
+    useParams<{ id: string }>();
+
+  /*
+   * The URL can contain either:
+   *
+   * UUID:
+   * 54c36827-4b93-4606-8dd1-7b7bcae23afe
+   *
+   * OR:
+   * LIVE-1786490501079
+   */
+  const id = params?.id;
 
   const router = useRouter();
 
+  const [request, setRequest] =
+    useState<TrackingRequest | null>(
+      null,
+    );
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [loadError, setLoadError] =
+    useState("");
+
   const [detailsOpen, setDetailsOpen] =
     useState(false);
+
   const [statusOpen, setStatusOpen] =
     useState(false);
 
-  if (loading || !db || !user) {
+  const [cancelling, setCancelling] =
+    useState(false);
+
+  /* ---------------------------------------------------------------------- */
+  /* Load request                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  async function loadRequest() {
+    if (!id) {
+      setLoading(false);
+      setLoadError(
+        "Request ID is missing.",
+      );
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setLoadError("");
+
+      /*
+       * IMPORTANT:
+       *
+       * We are NOT requiring JWT here.
+       *
+       * The old requester flow uses the
+       * request ID/reference from the URL.
+       */
+      const response = await fetch(
+        `/api/requests/${encodeURIComponent(
+          id,
+        )}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        },
+      );
+
+      let data: {
+        request?: ApiRequest;
+        error?: string;
+      } | null = null;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Emergency request not found.",
+        );
+      }
+
+      if (!data?.request) {
+        throw new Error(
+          "Emergency request not found.",
+        );
+      }
+
+      const converted =
+        convertApiRequest(
+          data.request,
+        );
+
+      setRequest(converted);
+    } catch (error) {
+      console.error(
+        "Failed to load emergency request:",
+        error,
+      );
+
+      setRequest(null);
+
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "Emergency request could not be loaded.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadRequest();
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Loading state                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  if (loading) {
     return <PageSkeleton map />;
   }
 
-  const request = db.requests.find(
-    (item) =>
-      item.id === decodeURIComponent(id) &&
-      item.requesterId === user.id
-  );
+  /* ---------------------------------------------------------------------- */
+  /* Error state                                                             */
+  /* ---------------------------------------------------------------------- */
 
   if (!request) {
     return (
@@ -64,48 +392,161 @@ export default function TrackRequest() {
             Request not found
           </h1>
 
-          <Button
-            className="mt-5"
-            onClick={() =>
-              router.replace(
-                "/app/requester/history"
-              )
-            }
-          >
-            Back to history
-          </Button>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[#687b89]">
+            {loadError ||
+              "This emergency request could not be found."}
+          </p>
+
+          <div className="mt-5 flex justify-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() =>
+                void loadRequest()
+              }
+            >
+              Try again
+            </Button>
+
+            <Button
+              onClick={() =>
+                router.replace(
+                  "/app/requester/history",
+                )
+              }
+            >
+              Back to history
+            </Button>
+          </div>
         </Panel>
       </div>
     );
   }
 
-  const responder = db.responders.find(
-    (item) =>
-      item.id === request.assignedResponderId
-  );
+  /* ---------------------------------------------------------------------- */
+  /* Active request                                                          */
+  /* ---------------------------------------------------------------------- */
 
-  const hasActiveRequest = isActiveStatus(
-    request.status
-  );
+  const hasActiveRequest =
+    isActiveStatus(
+      request.status,
+    );
 
-  function requestCancellation() {
-    if (!request) return;
-    if (!user) return;
-    cancelRequest(request.id, user);
+  /* ---------------------------------------------------------------------- */
+  /* Cancellation                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  async function requestCancellation() {
+    if (
+      !request ||
+      cancelling
+    ) {
+      return;
+    }
+
+    try {
+      setCancelling(true);
+
+      /*
+       * Use the REAL database UUID.
+       *
+       * Example:
+       *
+       * /api/requests/54c36827-4b93-4606-8dd1-7b7bcae23afe
+       *
+       * The backend also supports LIVE references,
+       * but once the request is loaded we have the
+       * real UUID available.
+       */
+      const response = await fetch(
+        `/api/requests/${encodeURIComponent(
+          request.id,
+        )}`,
+        {
+          method: "PATCH",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            status: "cancelled",
+
+            note:
+              "Cancellation requested by requester.",
+          }),
+        },
+      );
+
+      let data: {
+        request?: ApiRequest;
+        error?: string;
+      } | null = null;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "The request could not be cancelled.",
+        );
+      }
+
+      await loadRequest();
+    } catch (error) {
+      console.error(
+        "Failed to cancel request:",
+        error,
+      );
+
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "The request could not be cancelled.",
+      );
+    } finally {
+      setCancelling(false);
+    }
   }
+
+  /* ---------------------------------------------------------------------- */
+  /* Map request                                                             */
+  /* ---------------------------------------------------------------------- */
+
+  const mapRequest = {
+    ...request,
+
+    location: {
+      ...request.location,
+
+      address:
+        request.location.address,
+    },
+  };
+
+  /* ---------------------------------------------------------------------- */
+  /* Render                                                                  */
+  /* ---------------------------------------------------------------------- */
 
   return (
     <div className="md:grid md:gap-5">
-      {/* Desktop heading only */}
+      {/* Desktop heading */}
+
       <div className="hidden md:block">
         <PageHeading
           eyebrow="Live tracking"
-          title={request.id}
+          title={
+            request.referenceCode
+          }
           description={`${request.category} · ${request.severity} priority`}
           action={
             <Badge
               tone={requestStatusTone(
-                request.status
+                request.status,
               )}
               className="min-h-9 px-4"
             >
@@ -115,31 +556,34 @@ export default function TrackRequest() {
         />
       </div>
 
-      {/*
-       * Mobile:
-       * This area is fixed between the top header
-       * and bottom navigation.
-       *
-       * Desktop:
-       * It returns to the normal two-column layout.
-       */}
       <div
         className="
-          fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom))]
-          top-20 z-10 flex min-h-0 flex-col overflow-hidden
+          fixed inset-x-0
+          bottom-[calc(5.75rem+env(safe-area-inset-bottom))]
+          top-20 z-10
+          flex min-h-0 flex-col
+          overflow-hidden
           bg-[#f5f7f9]
 
-          md:static md:z-auto md:grid md:h-auto
-          md:grid-cols-[1.35fr_.65fr] md:gap-4
-          md:overflow-visible md:bg-transparent
+          md:static
+          md:z-auto
+          md:grid
+          md:grid-cols-[1.35fr_.65fr]
+          md:gap-4
+          md:overflow-visible
+          md:bg-transparent
         "
       >
         {/* Mobile status control */}
+
         <button
           type="button"
-          onClick={() => setStatusOpen(true)}
+          onClick={() =>
+            setStatusOpen(true)
+          }
           className="
-            flex h-14 shrink-0 items-center gap-3
+            flex h-14 shrink-0 items-center
+            gap-3
             border-b border-[#dce5ea]
             bg-white px-4 text-left
             md:hidden
@@ -148,12 +592,14 @@ export default function TrackRequest() {
         >
           <span className="relative flex h-3 w-3 shrink-0">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#0f6872]/35" />
+
             <span className="relative inline-flex h-3 w-3 rounded-full bg-[#0f6872]" />
           </span>
 
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-semibold text-[#102b3f]">
               {request.status}
+
               {request.etaMinutes
                 ? ` · ETA ${request.etaMinutes} min`
                 : " · ETA pending"}
@@ -167,18 +613,18 @@ export default function TrackRequest() {
           <ChevronRight className="h-4 w-4 shrink-0 text-[#0f6872]" />
         </button>
 
-        {/*
-         * The parent now has an actual height.
-         * flex-1 gives the map all remaining room
-         * below the status row.
-         */}
+        {/* Map */}
+
         <div className="min-h-0 flex-1 overflow-hidden md:h-auto md:overflow-visible">
           <LiveResponseMap
-            request={request}
-            responder={responder}
+            request={
+              mapRequest as any
+            }
+            responder={undefined}
             immersive
             className="
-              h-full min-h-0 w-full rounded-none
+              h-full min-h-0 w-full
+              rounded-none
 
               md:h-[72dvh]
               md:min-h-[500px]
@@ -196,7 +642,9 @@ export default function TrackRequest() {
                   variant="outline"
                   className="w-full"
                   onClick={() =>
-                    setDetailsOpen(true)
+                    setDetailsOpen(
+                      true,
+                    )
                   }
                 >
                   Request details
@@ -209,8 +657,18 @@ export default function TrackRequest() {
                     onClick={
                       requestCancellation
                     }
+                    disabled={
+                      cancelling
+                    }
                   >
-                    Cancel request
+                    {cancelling ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Cancelling...
+                      </>
+                    ) : (
+                      "Cancel request"
+                    )}
                   </Button>
                 ) : null}
               </div>
@@ -219,6 +677,7 @@ export default function TrackRequest() {
         </div>
 
         {/* Desktop response information */}
+
         <div className="hidden content-start gap-4 md:grid">
           <Panel>
             <PanelHeader
@@ -231,7 +690,9 @@ export default function TrackRequest() {
             />
 
             <StatusTimeline
-              entries={request.statusHistory}
+              entries={
+                request.statusHistory as any
+              }
             />
           </Panel>
 
@@ -239,7 +700,9 @@ export default function TrackRequest() {
             variant="outline"
             className="w-full"
             onClick={() =>
-              setDetailsOpen(true)
+              setDetailsOpen(
+                true,
+              )
             }
           >
             View request details
@@ -249,20 +712,37 @@ export default function TrackRequest() {
             <Button
               variant="danger"
               className="w-full"
-              onClick={requestCancellation}
+              onClick={
+                requestCancellation
+              }
+              disabled={
+                cancelling
+              }
             >
-              Request cancellation
+              {cancelling ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                "Request cancellation"
+              )}
             </Button>
           ) : null}
         </div>
       </div>
 
       {/* Mobile status sheet */}
+
       <Sheet
         open={statusOpen}
-        onOpenChange={setStatusOpen}
+        onOpenChange={
+          setStatusOpen
+        }
         title="Response status"
-        description={request.id}
+        description={
+          request.referenceCode
+        }
         className="max-h-[82dvh]"
       >
         <div className="border-b border-[#e2e8ed] px-5 py-4">
@@ -279,7 +759,7 @@ export default function TrackRequest() {
 
             <Badge
               tone={requestStatusTone(
-                request.status
+                request.status,
               )}
             >
               {request.etaMinutes
@@ -291,20 +771,29 @@ export default function TrackRequest() {
 
         <div className="max-h-[calc(82dvh-9rem)] overflow-y-auto">
           <StatusTimeline
-            entries={request.statusHistory}
+            entries={
+              request.statusHistory as any
+            }
           />
         </div>
       </Sheet>
 
       {/* Request details sheet */}
+
       <Sheet
         open={detailsOpen}
-        onOpenChange={setDetailsOpen}
+        onOpenChange={
+          setDetailsOpen
+        }
         title="Request details"
-        description={request.id}
+        description={
+          request.referenceCode
+        }
       >
         <div className="p-5">
           <dl className="divide-y divide-[#e2e8ed] border-y border-[#e2e8ed]">
+            {/* Location */}
+
             <div className="flex gap-3 py-4">
               <MapPin className="h-5 w-5 shrink-0 text-[#0f5b67]" />
 
@@ -314,14 +803,54 @@ export default function TrackRequest() {
                 </dt>
 
                 <dd className="mt-1 font-semibold">
-                  {request.location.address}
+                  {
+                    request
+                      .location
+                      .address
+                  }
                 </dd>
 
                 <dd className="mt-1 text-xs text-[#71828d]">
-                  {request.location.method}
+                  {
+                    request
+                      .location
+                      .method
+                  }
                 </dd>
+
+                {request.location
+                  .lat !==
+                    undefined &&
+                request.location
+                  .lng !==
+                    undefined ? (
+                  <dd className="mt-1 text-xs text-[#71828d]">
+                    {request.location.lat.toFixed(
+                      6,
+                    )}
+                    ,{" "}
+                    {request.location.lng.toFixed(
+                      6,
+                    )}
+                  </dd>
+                ) : null}
+
+                {request.location
+                  .accuracy !==
+                    undefined ? (
+                  <dd className="mt-1 text-xs text-[#71828d]">
+                    Accuracy: ±
+                    {Math.round(
+                      request.location
+                        .accuracy,
+                    )}
+                    m
+                  </dd>
+                ) : null}
               </div>
             </div>
+
+            {/* Callback */}
 
             <div className="flex gap-3 py-4">
               <PhoneCall className="h-5 w-5 shrink-0 text-[#0f5b67]" />
@@ -332,10 +861,14 @@ export default function TrackRequest() {
                 </dt>
 
                 <dd className="mt-1 font-semibold">
-                  {request.callbackNumber}
+                  {
+                    request.callbackNumber
+                  }
                 </dd>
               </div>
             </div>
+
+            {/* Incident note */}
 
             <div className="flex gap-3 py-4">
               <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
@@ -351,28 +884,28 @@ export default function TrackRequest() {
               </div>
             </div>
 
-            {responder ? (
-              <div className="flex gap-3 py-4">
-                <Clock3 className="h-5 w-5 shrink-0 text-[#0f5b67]" />
+            {/* Status */}
 
-                <div>
-                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
-                    Assigned response
-                  </dt>
+            <div className="flex gap-3 py-4">
+              <Clock3 className="h-5 w-5 shrink-0 text-[#0f5b67]" />
 
-                  <dd className="mt-1 font-semibold">
-                    {responder.team} ·{" "}
-                    {responder.vehicle}
-                  </dd>
-                </div>
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
+                  Current status
+                </dt>
+
+                <dd className="mt-1 font-semibold">
+                  {request.status}
+                </dd>
               </div>
-            ) : null}
+            </div>
           </dl>
 
           <div className="mt-5 border-l-4 border-[#d9a85d] bg-[#fff6e6] p-4 text-sm leading-6 text-[#78521e]">
-            LIVE is a prototype. It must not be
-            interpreted as confirmation that real
-            emergency services have been contacted.
+            LIVE is a prototype. It must
+            not be interpreted as
+            confirmation that real emergency
+            services have been contacted.
           </div>
         </div>
       </Sheet>
