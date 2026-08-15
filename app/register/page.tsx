@@ -37,11 +37,17 @@ export default function Register() {
     setError("");
 
     const cleanName = name.trim();
+    if (cleanName.length < 2) {
+      setError("Please enter your full name.");
+      setBusy(false);
+      return;
+    }
+
     const cleanEmail = email.trim().toLowerCase();
     const cleanPhone = phone.trim();
     const cleanEmergencyName =
-      emergencyContactName.trim();
-    const cleanEmergencyPhone =
+    emergencyContactName.trim();
+      const cleanEmergencyPhone =
       emergencyContactPhone.trim();
 
     // Name validation
@@ -63,7 +69,7 @@ export default function Register() {
 
     // Phone validation
     const phonePattern =
-      /^[0-9+\s()-]{7,20}$/;
+      /^0\d{9}$/;
 
     if (!phonePattern.test(cleanPhone)) {
       setError("Please enter a valid phone number.");

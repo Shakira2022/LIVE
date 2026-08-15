@@ -288,6 +288,103 @@ export default function LandingPage() {
             </div>
           </div>
         </section>
+                <section
+          id="about"
+          className="border-y border-[#dfe6ea] bg-[#f5f7f9]"
+        >
+          <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 sm:py-20">
+            <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:gap-16">
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#0f6872]">
+                  About LIVE
+                </p>
+
+                <h2 className="mt-3 text-3xl font-bold tracking-[-0.025em] text-[#102b3f] sm:text-4xl">
+                  Emergency coordination made simpler.
+                </h2>
+
+                <p className="mt-5 max-w-xl text-base leading-7 text-[#647783]">
+                  LIVE is designed to make emergency requests easier to
+                  understand, submit and coordinate. It connects the
+                  requester with authorised response teams while keeping
+                  important information visible throughout the process.
+                </p>
+
+                <Link href="/register" className="mt-7 inline-block">
+                  <Button size="lg">
+                    Get started
+                    <ArrowRight className="h-5 w-5" />
+                  </Button>
+                </Link>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+
+                <div className="rounded-2xl border border-[#d9e2e7] bg-white p-6 shadow-sm">
+                  <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f6872]">
+                    <MapPin className="h-5 w-5" />
+                  </span>
+
+                  <h3 className="mt-5 text-lg font-semibold text-[#102b3f]">
+                    Location-aware
+                  </h3>
+
+                  <p className="mt-2 text-sm leading-6 text-[#657985]">
+                    Help teams understand where assistance is needed by
+                    confirming the requester's location.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-[#d9e2e7] bg-white p-6 shadow-sm">
+                  <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f6872]">
+                    <Siren className="h-5 w-5" />
+                  </span>
+
+                  <h3 className="mt-5 text-lg font-semibold text-[#102b3f]">
+                    Simple requests
+                  </h3>
+
+                  <p className="mt-2 text-sm leading-6 text-[#657985]">
+                    A guided process helps users provide the essential
+                    information without unnecessary steps.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-[#d9e2e7] bg-white p-6 shadow-sm">
+                  <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e9f6ef] text-[#1f845b]">
+                    <ShieldCheck className="h-5 w-5" />
+                  </span>
+
+                  <h3 className="mt-5 text-lg font-semibold text-[#102b3f]">
+                    Controlled access
+                  </h3>
+
+                  <p className="mt-2 text-sm leading-6 text-[#657985]">
+                    Role-based access helps ensure that users and response
+                    teams see the information relevant to them.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-[#d9e2e7] bg-white p-6 shadow-sm">
+                  <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f6872]">
+                    <ClipboardCheck className="h-5 w-5" />
+                  </span>
+
+                  <h3 className="mt-5 text-lg font-semibold text-[#102b3f]">
+                    Clear progress
+                  </h3>
+
+                  <p className="mt-2 text-sm leading-6 text-[#657985]">
+                    Users can understand what is happening from request
+                    submission through to response.
+                  </p>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
 
       <footer className="border-t border-[#dfe6ea] bg-white">
