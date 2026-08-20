@@ -1,12 +1,10 @@
 "use client";
 
 import {
-  ArrowLeft,
   Mail,
   Phone,
   ShieldCheck,
 } from "lucide-react";
-import Link from "next/link";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,23 +18,15 @@ import {
   PanelHeader,
 } from "@/components/ui/panel";
 
-export default function RequesterProfile() {
+export default function AdminProfile() {
   const { user } = useAuth();
 
   if (!user) return null;
 
   return (
     <div className="app-page grid gap-5">
-      <Link
-        href="/app/requester"
-        className="inline-flex h-9 w-9 items-center justify-center rounded-full hover:bg-muted"
-        aria-label="Back to requester dashboard"
-      >
-        <ArrowLeft className="h-5 w-5" />
-      </Link>
-
       <PageHeading
-        eyebrow="Requester profile"
+        eyebrow="Dispatcher profile"
         title={user.name}
         description="Review the contact information LIVE uses automatically during emergency requests."
       />
@@ -82,27 +72,22 @@ export default function RequesterProfile() {
           className="-mx-5 border-x-0 md:mx-0 md:rounded-[22px] md:border-x"
         >
           <PanelHeader
-            title="Emergency information"
-            description="These details are attached automatically when a requester asks for assistance."
+            title="Dispatcher information"
+            description="These details are for the dispatcher."
             className="px-5"
           />
 
           <div className="grid gap-4 px-5 py-5 sm:grid-cols-2 md:p-5">
             <label>
               <FieldLabel>
-                Preferred callback number
+                Contact number
               </FieldLabel>
               <Input defaultValue={user.phone} />
             </label>
 
             <label>
-              <FieldLabel>Blood group</FieldLabel>
-              <Input placeholder="Optional" />
-            </label>
-
-            <label>
               <FieldLabel>
-                Emergency contact name
+                Dispatcher Name
               </FieldLabel>
               <Input
                 defaultValue={
@@ -113,20 +98,13 @@ export default function RequesterProfile() {
 
             <label>
               <FieldLabel>
-                Emergency contact phone
+                Dispatcher email
               </FieldLabel>
               <Input
                 defaultValue={
-                  user.emergencyContactPhone || ""
+                  user.email || ""
                 }
               />
-            </label>
-
-            <label className="sm:col-span-2">
-              <FieldLabel optional>
-                Important medical note
-              </FieldLabel>
-              <Input placeholder="Allergies or essential responder information" />
             </label>
 
             <Button className="w-full sm:col-span-2 sm:w-auto sm:justify-self-start">

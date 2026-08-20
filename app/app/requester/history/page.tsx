@@ -1,10 +1,15 @@
 "use client";
 
+<<<<<<< HEAD
 import {
   History,
   RefreshCw,
 } from "lucide-react";
 
+=======
+import { ArrowLeft, History } from "lucide-react";
+import Link from "next/link";
+>>>>>>> frontend
 import { useAuth } from "@/components/auth/auth-provider";
 import { RequestListItem } from "@/components/requests/request-list-item";
 
@@ -357,6 +362,14 @@ export default function RequestHistory() {
 
   return (
     <div className="app-page grid gap-5">
+      <Link
+        href="/app/requester"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-full hover:bg-muted"
+        aria-label="Back to requester dashboard"
+      >
+        <ArrowLeft className="h-5 w-5" />
+      </Link>
+
       <PageHeading
         eyebrow="Requester"
         title="Request history"

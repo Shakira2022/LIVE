@@ -14,6 +14,7 @@ import {
   Loader2,
   MapPin,
   RefreshCw,
+  Search,
   Siren,
 } from "lucide-react";
 
@@ -48,7 +49,12 @@ import type {
   Coordinates,
   Severity,
 } from "@/lib/types";
+<<<<<<< HEAD
 
+=======
+import { isActiveStatus } from "@/lib/utils";
+import { getAddressFromCoordinates } from "@/lib/location/reverseGeocode";
+>>>>>>> frontend
 type LocationState =
   | "idle"
   | "locating"
@@ -56,9 +62,19 @@ type LocationState =
   | "success"
   | "failed";
 
+  type SuggestionItem = {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+  class?: string;
+};
+
 const LOCATION_ATTEMPTS = 3;
 const ATTEMPT_SECONDS = 5;
 const CONFIRM_REVIEW_SECONDS = 5;
+const MAX_NOTE_LENGTH = 200;
 
 const MEDICAL_CATEGORIES = [
   "Medical emergency",
@@ -134,13 +150,25 @@ export default function NewRequest() {
   const [note, setNote] = useState("");
 
   const [coordinates, setCoordinates] =
-    useState<Coordinates | null>(null);
+  useState<Coordinates | null>(null);
 
-  const [accuracy, setAccuracy] =
-    useState<number | undefined>();
+const [isGeocoding, setIsGeocoding] =
+  useState(false);
 
-  const [address, setAddress] =
-    useState("");
+const [accuracy, setAccuracy] =
+  useState<number | undefined>();
+
+const [address, setAddress] =
+  useState("");
+
+const [manualAddress, setManualAddress] =
+  useState("");
+
+const [suggestions, setSuggestions] =
+  useState<SuggestionItem[]>([]);
+
+const [isSearchingSuggestions, setIsSearchingSuggestions] =
+  useState(false);
 
   const [locationState, setLocationState] =
     useState<LocationState>("idle");
@@ -187,6 +215,67 @@ export default function NewRequest() {
   /* Clear location timer                                                   */
   /* ---------------------------------------------------------------------- */
 
+  useEffect(() => {
+  const query = manualAddress.trim();
+
+  if (query.length < 3 || locationState !== "failed") {
+    setSuggestions([]);
+    setIsSearchingSuggestions(false);
+    return;
+  }
+
+  setIsSearchingSuggestions(true);
+
+  const timer = window.setTimeout(async () => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(
+          query,
+        )}`,
+      );
+
+      if (!response.ok) {
+        throw new Error("Address search failed");
+      }
+
+      const data: SuggestionItem[] = await response.json();
+
+      setSuggestions(data);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setIsSearchingSuggestions(false);
+    }
+  }, 400);
+
+  return () => {
+    window.clearTimeout(timer);
+  };
+}, [manualAddress, locationState]);
+
+function handleSelectSuggestion(item: SuggestionItem) {
+  const lat = Number.parseFloat(item.lat);
+  const lng = Number.parseFloat(item.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    setError("The selected address could not be located.");
+    return;
+  }
+
+  setManualAddress(item.display_name);
+  setCoordinates({ lat, lng });
+  setAccuracy(undefined);
+  setAddress(item.display_name);
+  setSuggestions([]);
+  setLocationState("success");
+  setLocationMessage("Manual location confirmed");
+
+  void (async () => {
+    await wait(1000);
+    setStep(2);
+  })();
+}
+
   function clearAttemptTimer() {
     if (
       countdownTimerRef.current !== null
@@ -216,6 +305,7 @@ export default function NewRequest() {
 
       clearAttemptTimer();
 
+<<<<<<< HEAD
       setAttempt(attemptNumber);
       setAttemptCountdown(
         ATTEMPT_SECONDS
@@ -228,6 +318,34 @@ export default function NewRequest() {
       );
 
       setError("");
+=======
+      setCoordinates(nextCoordinates);
+      setAccuracy(position.coords.accuracy);
+
+      try {
+        const realAddress = await getAddressFromCoordinates(
+          nextCoordinates.lat,
+          nextCoordinates.lng,
+        );
+
+        setAddress(realAddress);
+      } catch (error) {
+        console.error("Failed to reverse geocode location:", error);
+
+        setAddress(
+          `${nextCoordinates.lat.toFixed(6)}, ${nextCoordinates.lng.toFixed(6)}`,
+        );
+      }
+
+      setAttemptCountdown(0);
+      setLocationState("success");
+      setLocationMessage("Location confirmed");
+      /*
+       * Give the requester enough time to see
+       * that the location was successfully found.
+       */
+      await wait(1600);
+>>>>>>> frontend
 
       const startedAt = Date.now();
 
@@ -423,9 +541,104 @@ export default function NewRequest() {
       locationRunRef.current += 1;
       clearAttemptTimer();
     };
+<<<<<<< HEAD
   }, [
     step,
     startLocationSequence,
+=======
+
+    // The sequence must restart whenever
+    // the requester enters the location step.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  if (
+    loading ||
+    !db ||
+    !user
+  ) {
+    return <PageSkeleton map />;
+  }
+
+  const requester = user;
+
+  const active = db.requests.find(
+    (request) =>
+      request.requesterId ===
+        user.id &&
+      isActiveStatus(request.status)
+  );
+
+  const submit = useCallback(() => {
+    if (
+      submitting ||
+      autoSubmitRef.current
+    ) {
+      return;
+    }
+
+    if (
+      !coordinates ||
+      !address
+    ) {
+      setError(
+        "LIVE must confirm your current location before submission."
+      );
+
+      setStep(1);
+      return;
+    }
+
+    autoSubmitRef.current = true;
+    setSubmitting(true);
+
+    const emergencyContact =
+      requester.emergencyContactName &&
+      requester.emergencyContactPhone
+        ? `${requester.emergencyContactName} · ${requester.emergencyContactPhone}`
+        : undefined;
+
+    const request = createRequest({
+      requester,
+      callbackNumber:
+        requester.phone,
+      emergencyContact,
+      category,
+      severity,
+      note:
+        note ||
+        "No additional note provided.",
+      location: {
+        address,
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        accuracy,
+        capturedAt:
+          new Date().toISOString(),
+        method:
+          manualAddress.trim() || locationState === "failed"
+            ? "Manual"
+            : "GPS",
+      },
+    });
+
+    router.replace(
+      `/app/requester/track/${request.id}`
+    );
+  }, [
+    accuracy,
+    address,
+    category,
+    coordinates,
+    createRequest,
+    locationState,
+    manualAddress,
+    note,
+    requester,
+    router,
+    severity,
+    submitting,
+>>>>>>> frontend
   ]);
 
   /* ---------------------------------------------------------------------- */
@@ -919,9 +1132,15 @@ export default function NewRequest() {
                     </div>
 
                     <label>
-                      <FieldLabel>
-                        Short description
-                      </FieldLabel>
+                      <div className="flex items-center justify-between">
+                        <FieldLabel>
+                          Short description
+                        </FieldLabel>
+
+                        <span className="text-xs text-[#788a95]">
+                          {note.length}/{MAX_NOTE_LENGTH}
+                        </span>
+                      </div>
 
                       <Textarea
                         value={note}
@@ -991,36 +1210,166 @@ export default function NewRequest() {
                         </div>
                       ) : null}
 
-                      {locationState ===
-                      "failed" ? (
-                        <div className="absolute inset-0 z-30 grid place-items-center bg-[#fff6f5]/96 px-6 text-center backdrop-blur-sm">
-                          <div className="max-w-sm">
-                            <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-[#ffdddd] text-[#c73937]">
-                              <MapPin className="h-6 w-6" />
-                            </span>
+                      {locationState === "failed" ? (
+                        <div className="absolute inset-0 z-30 overflow-y-auto bg-[#fff6f5]/96 px-5 py-6 backdrop-blur-sm">
+                        <div className="mx-auto flex min-h-full max-w-md flex-col justify-center">
+                        <div className="text-center">
+                          <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-[#ffdddd] text-[#c73937]">
+                            <MapPin className="h-6 w-6" />
+                          </span>
 
-                            <h2 className="mt-3 font-semibold text-[#102b3f]">
-                              Location could not be
-                              confirmed
-                            </h2>
+                          <h2 className="mt-3 font-semibold text-[#102b3f]">
+                            Location could not be confirmed
+                          </h2>
 
-                            <p className="mt-2 text-sm leading-5 text-[#6f6767]">
-                              {locationMessage}
-                            </p>
+                          <p className="mt-2 text-sm leading-5 text-[#6f6767]">
+                            {locationMessage}
+                          </p>
 
-                            <Button
-                              variant="outline"
-                              className="mt-4"
-                              onClick={
-                                startLocationSequence
-                              }
-                            >
-                              <RefreshCw className="h-4 w-4" />
-                              Retry location
-                            </Button>
-                          </div>
+                          <p className="mt-2 text-sm leading-5 text-[#6f6767]">
+                            Enter your address manually below, or retry GPS.
+                          </p>
                         </div>
-                      ) : null}
+
+                        <div className="mt-5">
+                          <label className="block">
+                            <FieldLabel>Manual address</FieldLabel>
+
+                            <div className="relative mt-1">
+                              <input
+                                type="text"
+                                value={manualAddress}
+                                onChange={(event) => {
+                                setManualAddress(event.target.value);
+                                setError("");
+                              }}
+                              placeholder="Enter your street address or location"
+                              className="w-full rounded-lg border border-[#c2d1d9] bg-white px-3 py-3 pr-10 text-sm text-[#102b3f] outline-none focus:border-[#1f6f8b] focus:ring-2 focus:ring-[#1f6f8b]/20"
+                            />
+
+                            {isSearchingSuggestions ? (
+                              <Loader2 className="absolute right-3 top-3 h-4 w-4 animate-spin text-[#7a8c98]" />
+                            ) : (
+                              <Search className="absolute right-3 top-3 h-4 w-4 text-[#7a8c98]" />
+                            )}
+                          </div>
+                        </label>
+
+                        {suggestions.length > 0 ? (
+                          <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-[#c2d1d9] bg-white shadow-lg">
+                            {suggestions.map((item) => (
+                              <button
+                                key={item.place_id}
+                                type="button"
+                                onClick={() => handleSelectSuggestion(item)}
+                                className="block w-full border-b border-[#edf1f3] px-3 py-3 text-left text-sm text-[#102b3f] hover:bg-[#f3f7f8] last:border-b-0"
+                              >
+                                {item.display_name}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {error ? (
+                            <p className="mt-2 text-sm text-[#c73937]">
+                              {error}
+                            </p>
+                          ) : null}
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                          <Button
+                            variant="outline"
+                            onClick={startLocationSequence}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                              Retry GPS
+                          </Button>
+
+                          <Button
+                            disabled={!manualAddress.trim() || isGeocoding}
+                            onClick={async () => {
+                            const query = manualAddress.trim();
+
+                            if (!query) {
+                              setError("Please enter your address.");
+                              return;
+                            }
+
+                            setError("");
+                            setIsGeocoding(true);
+
+                            try {
+                              const response = await fetch(
+                                `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(
+                                  query,
+                                )}`,
+                              );
+
+                              if (!response.ok) {
+                                throw new Error("Address lookup failed");
+                              }
+
+                              const data: SuggestionItem[] =
+                                await response.json();
+
+                              if (!data.length) {
+                                  setError(
+                                    "We could not find that address. Please check it and try again.",
+                                  );
+                                  return;
+                              }
+
+                              const result = data[0];
+                              const lat = Number.parseFloat(result.lat);
+                              const lng = Number.parseFloat(result.lon);
+
+                              if (
+                                !Number.isFinite(lat) ||
+                                !Number.isFinite(lng)
+                              ) {
+                              setError(
+                                "The address returned an invalid location.",
+                              );
+                              return;
+                            }
+
+                            setCoordinates({ lat, lng });
+                            setAccuracy(undefined);
+                            setAddress(result.display_name || query);
+                            setSuggestions([]);
+                            setLocationState("success");
+                            setLocationMessage(
+                              "Manual location confirmed",
+                            );
+
+                            await wait(1000);
+                            setStep(2);
+                          } catch {
+                            setError(
+                              "We could not look up that address. Please check your connection and try again.",
+                            );
+                          } finally {
+                            setIsGeocoding(false);
+                          }
+                        }}
+                      >
+                        {isGeocoding ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Searching…
+                          </>
+                        ) : (
+                          <>
+                            <Check className="h-4 w-4" />
+                            Confirm address
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
                     </div>
 
                     <div className="grid content-start gap-3 lg:order-1">

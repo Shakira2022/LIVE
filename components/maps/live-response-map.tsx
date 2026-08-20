@@ -464,8 +464,10 @@ export function LiveResponseMap({
               </p>
 
               <p className="mt-1 truncate text-sm font-semibold">
-                {previewLocation.address ||
-                  "Current device location"}
+                {previewLocation.address &&
+                previewLocation.address !== "Current device location"
+                  ? previewLocation.address
+                  : `${previewLocation.lat.toFixed(6)}, ${previewLocation.lng.toFixed(6)}`}
               </p>
 
               <p className="mt-1 text-xs text-[#687b89]">
@@ -505,8 +507,16 @@ export function LiveResponseMap({
               </div>
 
               <p className="mt-1 truncate text-sm font-semibold">
+<<<<<<< HEAD
   Location attached to request
 </p>
+=======
+                {request.location.address &&
+                request.location.address !== "Current device location"
+                  ? request.location.address
+                  : `${request.location.lat.toFixed(6)}, ${request.location.lng.toFixed(6)}`}
+              </p>
+>>>>>>> frontend
 
 <p className="mt-1 text-xs text-[#687b89]">
   Emergency request location
