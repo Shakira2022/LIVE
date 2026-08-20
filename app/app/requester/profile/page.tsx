@@ -1,10 +1,12 @@
 "use client";
 
 import {
+  ArrowLeft,
   Mail,
   Phone,
   ShieldCheck,
 } from "lucide-react";
+import Link from "next/link";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +27,14 @@ export default function RequesterProfile() {
 
   return (
     <div className="app-page grid gap-5">
+      <Link
+        href="/app/requester"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-full hover:bg-muted"
+        aria-label="Back to requester dashboard"
+      >
+        <ArrowLeft className="h-5 w-5" />
+      </Link>
+
       <PageHeading
         eyebrow="Requester profile"
         title={user.name}
