@@ -1,5 +1,3 @@
-"use client";
-
 import { motion } from "framer-motion";
 import {
   Crosshair,
@@ -507,16 +505,12 @@ export function LiveResponseMap({
               </div>
 
               <p className="mt-1 truncate text-sm font-semibold">
-                {request.location.address}
-              </p>
+  Location attached to request
+</p>
 
-              <p className="mt-1 text-xs text-[#687b89]">
-                {request.location.method}
-
-                {request.location.accuracy
-                  ? ` · ±${request.location.accuracy}m`
-                  : ""}
-              </p>
+<p className="mt-1 text-xs text-[#687b89]">
+  Emergency request location
+</p>
             </div>
           </div>
 
@@ -530,3 +524,4 @@ export function LiveResponseMap({
     </div>
   );
 }
+

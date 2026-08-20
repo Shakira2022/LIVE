@@ -1,384 +1,588 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
 import { v4 as uuidv4 } from "uuid";
+import { createHash } from "crypto";
+import { createClient } from "@supabase/supabase-js";
+
+interface MailRequest {
+  first_name: string;
+  last_name: string;
+  id: string;
+  email: string;
+}
+
+// =====================================================
+// SUPABASE SERVER CLIENT
+// =====================================================
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export async function POST(request: Request) {
+// =====================================================
+// SHA-256 HASH
+// =====================================================
+
+function generateSHA256(input: string): string {
+  return createHash("sha256")
+    .update(input)
+    .digest("hex");
+}
+
+// =====================================================
+// POST
+// =====================================================
+
+export async function POST(req: Request) {
   try {
+    // =====================================================
+    // READ REQUEST
+    // =====================================================
+
+    const body = (await req.json()) as MailRequest;
+
     const {
-      name,
+      first_name,
+      last_name,
+      id,
       email,
-      phone,
-      emergencyContactName,
-      emergencyContactPhone,
-      password,
-    } = await request.json();
+    } = body;
 
-    // ------------------------------------------------------------
-    // Validate required fields
-    // ------------------------------------------------------------
+    // =====================================================
+    // VALIDATE REQUEST
+    // =====================================================
 
-    if (
-      !name ||
-      !email ||
-      !phone ||
-      !emergencyContactName ||
-      !emergencyContactPhone ||
-      !password
-    ) {
+    if (!first_name || !last_name || !id || !email) {
       return NextResponse.json(
         {
-          ok: false,
-          message: "All fields are required.",
+          success: false,
+          message:
+            "First name, last name, user ID and email are required.",
         },
         { status: 400 }
       );
     }
 
-    const cleanName = name.trim();
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPhone = phone.trim();
-    const cleanEmergencyContactName =
-      emergencyContactName.trim();
-    const cleanEmergencyContactPhone =
-      emergencyContactPhone.trim();
+    const fullName = `${first_name} ${last_name}`.trim();
 
-    // ------------------------------------------------------------
-    // Check existing email
-    // ------------------------------------------------------------
+    // =====================================================
+    // CHECK GMAIL ENVIRONMENT VARIABLES
+    // =====================================================
 
-    const { data: existingEmail, error: emailError } =
-      await supabase
-        .from("users")
-        .select("id")
-        .eq("email", cleanEmail)
-        .is("deleted_at", null)
-        .maybeSingle();
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailAppPassword =
+      process.env.GMAIL_APP_PASSWORD;
 
-    if (emailError) {
+    if (!gmailUser || !gmailAppPassword) {
       console.error(
-        "EMAIL CHECK ERROR:",
-        emailError
+        "GMAIL_USER or GMAIL_APP_PASSWORD is missing."
       );
 
       return NextResponse.json(
         {
-          ok: false,
-          message: "Unable to check existing account.",
+          success: false,
+          message:
+            "Gmail email service is not configured.",
         },
         { status: 500 }
       );
     }
 
-    if (existingEmail) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "An account with this email already exists.",
-        },
-        { status: 409 }
-      );
-    }
+    // =====================================================
+    // GENERATE VERIFICATION TOKEN
+    // =====================================================
 
-    // ------------------------------------------------------------
-    // Check existing phone
-    // ------------------------------------------------------------
+    const token = uuidv4();
 
-    const { data: existingPhone, error: phoneError } =
-      await supabase
-        .from("users")
-        .select("id")
-        .eq("phone", cleanPhone)
-        .is("deleted_at", null)
-        .maybeSingle();
+    const createdAt = new Date();
 
-    if (phoneError) {
-      console.error(
-        "PHONE CHECK ERROR:",
-        phoneError
-      );
+    const tokenExpiry = new Date(
+      createdAt.getTime() + 60 * 60 * 1000
+    );
 
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "Unable to check phone number.",
-        },
-        { status: 500 }
-      );
-    }
+    // Store only the SHA-256 hash in the database
+    const tokenHash = generateSHA256(token);
 
-    if (existingPhone) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "An account with this phone number already exists.",
-        },
-        { status: 409 }
-      );
-    }
+    console.log("VERIFICATION TOKEN CREATED");
 
-    // ------------------------------------------------------------
-    // Hash password
-    // ------------------------------------------------------------
+    // =====================================================
+    // SAVE TOKEN TO DATABASE
+    // =====================================================
 
-    const passwordHash =
-      await bcrypt.hash(password, 12);
-
-    // ------------------------------------------------------------
-    // Split name
-    // ------------------------------------------------------------
-
-    const names =
-      cleanName.split(/\s+/);
-
-    const firstName =
-      names[0] || "";
-
-    const lastName =
-      names.slice(1).join(" ") || "";
-
-    // ------------------------------------------------------------
-    // Generate email verification token
-    // ------------------------------------------------------------
-
-    const verificationToken =
-      uuidv4();
-
-    const tokenExpiry =
-      new Date(
-        Date.now() +
-          60 * 60 * 1000
-      );
-
-    // ------------------------------------------------------------
-    // Create user
-    // ------------------------------------------------------------
-
-    const {
-      data: user,
-      error: insertError,
-    } = await supabase
-      .from("users")
+    const { error: tokenError } = await supabase
+      .from("email_verification_tokens")
       .insert({
-        first_name: firstName,
-        last_name: lastName,
-        display_name: cleanName,
+        user_id: id,
+        token_hash: tokenHash,
+        created_at: createdAt.toISOString(),
+        expires_at: tokenExpiry.toISOString(),
+      });
 
-        email: cleanEmail,
-        phone: cleanPhone,
-
-        password_hash:
-          passwordHash,
-
-        role: "requester",
-
-        // User must verify email first
-        status: "pending",
-
-        // Verification information
-        verification_token:
-          verificationToken,
-
-        verification_token_expires_at:
-          tokenExpiry,
-
-        email_verified_at:
-          null,
-
-        created_at:
-          new Date().toISOString(),
-
-        updated_at:
-          new Date().toISOString(),
-      })
-      .select(
-        "id, email, phone, role, status, first_name, last_name, display_name"
-      )
-      .single();
-
-    if (insertError) {
+    if (tokenError) {
       console.error(
-        "REGISTRATION DATABASE ERROR:",
-        insertError
+        "VERIFICATION TOKEN DATABASE ERROR:",
+        {
+          code: tokenError.code,
+          message: tokenError.message,
+          details: tokenError.details,
+          hint: tokenError.hint,
+        }
       );
 
       return NextResponse.json(
         {
-          ok: false,
+          success: false,
           message:
-            "Unable to create account.",
+            "Failed to create email verification token.",
         },
         { status: 500 }
       );
     }
 
-    // ------------------------------------------------------------
-    // Send verification email
-    // ------------------------------------------------------------
+    console.log(
+      "VERIFICATION TOKEN SAVED FOR USER:",
+      id
+    );
 
-    try {
-      const transporter =
-        nodemailer.createTransport({
-          host: "smtp.gmail.com",
-          port: 587,
-          secure: false,
-          requireTLS: true,
+    // =====================================================
+    // CREATE GMAIL TRANSPORTER
+    // =====================================================
 
-          auth: {
-            user:
-              process.env.GMAIL_USER,
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
 
-            pass:
-              process.env.GMAIL_APP_PASSWORD,
-          },
-        });
+      auth: {
+        user: gmailUser,
+        pass: gmailAppPassword,
+      },
+    });
 
-      await transporter.sendMail({
-        from: `"LIVE" <${process.env.GMAIL_USER}>`,
+    // =====================================================
+    // VERIFY GMAIL CONNECTION
+    // =====================================================
 
-        to: cleanEmail,
+    await transporter.verify();
 
-        subject:
-          "Your LIVE verification code",
+    console.log(
+      "GMAIL SMTP CONNECTION SUCCESSFUL"
+    );
 
-        text: `
-Hello ${cleanName},
+    // =====================================================
+    // SEND VERIFICATION EMAIL
+    // =====================================================
+
+    await transporter.sendMail({
+      from: `"LIVE" <${gmailUser}>`,
+
+      to: email,
+
+      subject: "Your LIVE verification code",
+
+      // ===================================================
+      // PLAIN TEXT
+      // ===================================================
+
+      text: `
+Hello ${fullName},
 
 Welcome to LIVE.
 
 Your verification code is:
 
-${verificationToken}
+${token}
 
-This code expires in 1 hour.
+This code is required to verify your email address.
 
-If you did not create this account, you can safely ignore this email.
+The code expires in 1 hour.
+
+If you did not request this code, you can safely ignore this email.
 
 Thank you,
 The LIVE Team
-        `,
+      `,
 
-        html: `
+      // ===================================================
+      // HTML
+      // ===================================================
+
+      html: `
 <!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; background:#f5f7f9; padding:40px;">
 
-  <div style="max-width:620px;margin:auto;background:white;padding:40px;">
+<html lang="en">
 
-    <h1 style="color:#102b3f;">
-      Verify your email
-    </h1>
+<head>
 
-    <p style="color:#607482;">
-      Hello ${cleanName},
-    </p>
+  <meta charset="UTF-8" />
 
-    <p style="color:#607482;">
-      Welcome to LIVE. Use the verification code below
-      to confirm your email address.
-    </p>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
 
-    <div style="
-      margin:30px 0;
-      padding:25px;
-      text-align:center;
-      background:#f3f7f8;
-      font-size:30px;
-      font-weight:bold;
-      letter-spacing:5px;
-      color:#102b3f;
-    ">
-      ${verificationToken}
-    </div>
+  <title>LIVE Verification</title>
 
-    <p style="color:#607482;">
-      This verification code expires in 1 hour.
-    </p>
+</head>
 
-    <p style="color:#607482;">
-      If you did not create this account,
-      you can safely ignore this email.
-    </p>
+<body
+  style="
+    margin:0;
+    padding:0;
+    background-color:#f5f7f9;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#102b3f;
+  "
+>
 
-    <hr />
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    width:100%;
+    background-color:#f5f7f9;
+    padding:40px 16px;
+  "
+>
 
-    <p style="font-size:12px;color:#9aa7b0;">
-      LIVE — Location-aware emergency coordination
-    </p>
+<tr>
 
-  </div>
+<td align="center">
+
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    max-width:620px;
+    background-color:#ffffff;
+  "
+>
+
+<!-- HEADER -->
+
+<tr>
+
+<td
+  style="
+    padding:30px 40px;
+    border-bottom:1px solid #dfe6ea;
+  "
+>
+
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+>
+
+<tr>
+
+<td
+  style="
+    font-size:22px;
+    font-weight:800;
+    color:#102b3f;
+  "
+>
+LIVE
+</td>
+
+<td
+  align="right"
+  style="
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.4px;
+    text-transform:uppercase;
+    color:#0f6872;
+  "
+>
+Secure access
+</td>
+
+</tr>
+
+</table>
+
+</td>
+
+</tr>
+
+
+<!-- MAIN CONTENT -->
+
+<tr>
+
+<td
+  style="
+    padding:48px 40px 44px;
+  "
+>
+
+<div
+  style="
+    border-left:2px solid #0f6872;
+    padding-left:12px;
+    margin-bottom:22px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.4px;
+    text-transform:uppercase;
+    color:#0f6872;
+  "
+>
+Email verification
+</div>
+
+
+<h1
+  style="
+    margin:0;
+    font-size:34px;
+    line-height:1.08;
+    color:#102b3f;
+  "
+>
+Verify your email
+</h1>
+
+
+<p
+  style="
+    margin:18px 0 0;
+    font-size:16px;
+    line-height:1.7;
+    color:#607482;
+  "
+>
+
+Hello ${fullName},
+
+<br /><br />
+
+Welcome to LIVE. Use the verification
+code below to confirm your email address
+and continue.
+
+</p>
+
+
+<!-- VERIFICATION CODE -->
+
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    margin-top:36px;
+    border-top:1px solid #d9e2e7;
+    border-bottom:1px solid #d9e2e7;
+  "
+>
+
+<tr>
+
+<td
+  style="
+    padding:24px 0 26px;
+  "
+>
+
+<div
+  style="
+    margin-bottom:12px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:#8b9aa4;
+  "
+>
+Verification code
+</div>
+
+
+<div
+  style="
+    font-size:28px;
+    line-height:1.2;
+    font-weight:700;
+    letter-spacing:2px;
+    color:#102b3f;
+    word-break:break-all;
+  "
+>
+${token}
+</div>
+
+</td>
+
+</tr>
+
+</table>
+
+
+<p
+  style="
+    margin:24px 0 0;
+    font-size:14px;
+    line-height:1.7;
+    color:#607482;
+  "
+>
+
+Enter this code in the LIVE app to
+verify your email address.
+
+<br />
+
+This code expires in 1 hour.
+
+</p>
+
+
+<!-- SECURITY NOTICE -->
+
+<div
+  style="
+    margin-top:30px;
+    padding-top:20px;
+    border-top:1px solid #dfe6ea;
+    font-size:12px;
+    line-height:1.7;
+    color:#71838e;
+  "
+>
+
+<strong style="color:#536b78;">
+Security notice:
+</strong>
+
+If you did not request this verification
+code, you can safely ignore this email.
+
+</div>
+
+</td>
+
+</tr>
+
+
+<!-- FOOTER -->
+
+<tr>
+
+<td
+  style="
+    padding:24px 40px 28px;
+    border-top:1px solid #dfe6ea;
+    background-color:#f5f7f9;
+  "
+>
+
+<div
+  style="
+    font-size:13px;
+    font-weight:700;
+    color:#102b3f;
+  "
+>
+LIVE
+</div>
+
+
+<div
+  style="
+    margin-top:5px;
+    font-size:11px;
+    color:#71838e;
+  "
+>
+Location-aware emergency coordination
+</div>
+
+
+<div
+  style="
+    margin-top:16px;
+    padding-top:14px;
+    border-top:1px solid #dfe6ea;
+    font-size:10px;
+    color:#9aa7b0;
+  "
+>
+This is an automated message from
+the LIVE team. Please do not reply.
+</div>
+
+</td>
+
+</tr>
+
+</table>
+
+
+<div
+  style="
+    max-width:620px;
+    padding:18px 10px 0;
+    text-align:center;
+    font-size:10px;
+    color:#9aa7b0;
+  "
+>
+© ${new Date().getFullYear()}
+LIVE. All rights reserved.
+</div>
+
+</td>
+
+</tr>
+
+</table>
 
 </body>
+
 </html>
-        `,
-      });
-
-      console.log(
-        "VERIFICATION EMAIL SENT:",
-        cleanEmail
-      );
-    } catch (emailError) {
-      console.error(
-        "EMAIL SENDING ERROR:",
-        emailError
-      );
-
-      // Remove the account if email could not be sent
-      await supabase
-        .from("users")
-        .delete()
-        .eq("id", user.id);
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "Account could not be created because the verification email could not be sent.",
-        },
-        { status: 500 }
-      );
-    }
-
-    // ------------------------------------------------------------
-    // Success
-    // ------------------------------------------------------------
+      `,
+    });
 
     console.log(
-      "REGISTRATION SUCCESSFUL:",
-      user.id
+      "VERIFICATION EMAIL SENT TO:",
+      email
     );
+
+    // =====================================================
+    // SUCCESS
+    // =====================================================
 
     return NextResponse.json(
       {
-        ok: true,
-
+        success: true,
         message:
-          "Registration successful. Please check your email to verify your account.",
-
-        user,
+          "Verification email sent successfully!",
       },
-      { status: 201 }
+      { status: 200 }
     );
-  } catch (error) {
+
+  } catch (error: any) {
+
     console.error(
-      "Registration error:",
+      "SEND MAIL ERROR:",
       error
     );
 
     return NextResponse.json(
       {
-        ok: false,
+        success: false,
         message:
-          "Unable to register right now.",
+          error?.message ||
+          "Failed to send verification email.",
       },
       { status: 500 }
     );

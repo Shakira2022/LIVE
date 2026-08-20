@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
 import { v4 as uuidv4 } from "uuid";
+import { createHash } from "crypto";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,9 +21,9 @@ export async function POST(request: Request) {
       password,
     } = await request.json();
 
-    // ---------------------------------------------------------
-    // Validate required fields
-    // ---------------------------------------------------------
+    // =========================================================
+    // VALIDATE REQUIRED FIELDS
+    // =========================================================
 
     if (
       !name ||
@@ -41,23 +42,40 @@ export async function POST(request: Request) {
       );
     }
 
-    // ---------------------------------------------------------
-    // Clean input
-    // ---------------------------------------------------------
+    // =========================================================
+    // CLEAN INPUT
+    // =========================================================
 
-    const cleanName = name.trim();
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPhone = phone.trim();
+    const cleanName = String(name).trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPhone = String(phone).trim();
 
     const cleanEmergencyContactName =
-      emergencyContactName.trim();
+      String(emergencyContactName).trim();
 
     const cleanEmergencyContactPhone =
-      emergencyContactPhone.trim();
+      String(emergencyContactPhone).trim();
 
-    // ---------------------------------------------------------
-    // Check if email already exists
-    // ---------------------------------------------------------
+    // Prevent single-name registration
+    const names = cleanName.split(/\s+/);
+
+    if (names.length < 2) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Please enter your first name and surname.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const firstName = names[0];
+    const lastName = names.slice(1).join(" ");
+
+    // =========================================================
+    // CHECK EMAIL
+    // =========================================================
 
     const {
       data: existingEmail,
@@ -70,10 +88,7 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (emailError) {
-      console.error(
-        "EMAIL CHECK ERROR:",
-        emailError
-      );
+      console.error("EMAIL CHECK ERROR:", emailError);
 
       return NextResponse.json(
         {
@@ -96,9 +111,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // ---------------------------------------------------------
-    // Check if phone already exists
-    // ---------------------------------------------------------
+    // =========================================================
+    // CHECK PHONE
+    // =========================================================
 
     const {
       data: existingPhone,
@@ -111,10 +126,7 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (phoneError) {
-      console.error(
-        "PHONE CHECK ERROR:",
-        phoneError
-      );
+      console.error("PHONE CHECK ERROR:", phoneError);
 
       return NextResponse.json(
         {
@@ -137,35 +149,75 @@ export async function POST(request: Request) {
       );
     }
 
-    // ---------------------------------------------------------
-    // Hash password
-    // ---------------------------------------------------------
+    // =========================================================
+    // CHECK FIRST NAME + SURNAME
+    // CASE INSENSITIVE
+    // =========================================================
+
+    const {
+      data: existingNames,
+      error: nameError,
+    } = await supabase
+      .from("users")
+      .select("id")
+      .ilike("first_name", firstName)
+      .ilike("last_name", lastName)
+      .is("deleted_at", null)
+      .limit(1);
+
+    if (nameError) {
+      console.error("NAME CHECK ERROR:", nameError);
+
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Unable to check existing name.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (
+      existingNames &&
+      existingNames.length > 0
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "An account with this first name and surname already exists.",
+        },
+        { status: 409 }
+      );
+    }
+
+    // =========================================================
+    // HASH PASSWORD
+    // =========================================================
 
     const passwordHash =
       await bcrypt.hash(password, 12);
 
-    // ---------------------------------------------------------
-    // Split name
-    // ---------------------------------------------------------
-
-    const names =
-      cleanName.split(/\s+/);
-
-    const firstName =
-      names[0] || "";
-
-    const lastName =
-      names.slice(1).join(" ") || "";
-
-    // ---------------------------------------------------------
-    // Generate email verification token
-    // ---------------------------------------------------------
+    // =========================================================
+    // CREATE VERIFICATION TOKEN
+    // =========================================================
 
     const token = uuidv4();
 
-    // ---------------------------------------------------------
-    // Create user
-    // ---------------------------------------------------------
+    const tokenHash = createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    const tokenExpiry = new Date();
+
+    tokenExpiry.setHours(
+      tokenExpiry.getHours() + 1
+    );
+
+    // =========================================================
+    // CREATE USER
+    // =========================================================
 
     const {
       data: user,
@@ -176,23 +228,18 @@ export async function POST(request: Request) {
         first_name: firstName,
         last_name: lastName,
         display_name: cleanName,
+
         email: cleanEmail,
         phone: cleanPhone,
 
         password_hash: passwordHash,
 
         role: "requester",
-
         status: "active",
 
-        // Email is NOT verified yet
         email_verified_at: null,
-
-        // Verification token
-        token: token,
       })
-      .select(
-        `
+      .select(`
         id,
         email,
         phone,
@@ -201,33 +248,13 @@ export async function POST(request: Request) {
         first_name,
         last_name,
         display_name
-        `
-      )
+      `)
       .single();
 
     if (insertError) {
       console.error(
-        "REGISTRATION DATABASE ERROR:"
-      );
-
-      console.error(
-        "Code:",
-        insertError.code
-      );
-
-      console.error(
-        "Message:",
-        insertError.message
-      );
-
-      console.error(
-        "Details:",
-        insertError.details
-      );
-
-      console.error(
-        "Hint:",
-        insertError.hint
+        "REGISTRATION DATABASE ERROR:",
+        insertError
       );
 
       return NextResponse.json(
@@ -241,49 +268,106 @@ export async function POST(request: Request) {
     }
 
     console.log(
-      "REGISTRATION SUCCESSFUL:",
+      "USER CREATED:",
       user.id
     );
 
-    // ---------------------------------------------------------
-    // Create Gmail transporter
-    // ---------------------------------------------------------
+    // =========================================================
+    // STORE HASHED VERIFICATION TOKEN
+    // =========================================================
+
+    const {
+      error: tokenError,
+    } = await supabase
+      .from("email_verification_tokens")
+      .insert({
+        user_id: user.id,
+        token_hash: tokenHash,
+        created_at:
+          new Date().toISOString(),
+        expires_at:
+          tokenExpiry.toISOString(),
+      });
+
+    if (tokenError) {
+      console.error(
+        "VERIFICATION TOKEN DATABASE ERROR:",
+        tokenError
+      );
+
+      // Optional cleanup:
+      // remove the user if token creation failed
+
+      await supabase
+        .from("users")
+        .delete()
+        .eq("id", user.id);
+
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Unable to create email verification.",
+        },
+        { status: 500 }
+      );
+    }
+
+    console.log(
+      "VERIFICATION TOKEN CREATED"
+    );
+
+    // =========================================================
+    // SMTP TRANSPORTER
+    // =========================================================
 
     const transporter =
       nodemailer.createTransport({
-        host: "smtp.gmail.com",
-        port: 587,
-        secure: false,
-        requireTLS: true,
+        host:
+          process.env.SMTP_HOST,
+
+        port: Number(
+          process.env.SMTP_PORT || 587
+        ),
+
+        secure:
+          Number(
+            process.env.SMTP_PORT
+          ) === 465,
 
         auth: {
           user:
-            process.env.GMAIL_USER,
+            process.env.SMTP_USER,
 
           pass:
-            process.env.GMAIL_APP_PASSWORD,
+            process.env.SMTP_PASSWORD,
         },
       });
 
-    // ---------------------------------------------------------
-    // Verify SMTP connection
-    // ---------------------------------------------------------
+    // =========================================================
+    // VERIFY SMTP
+    // =========================================================
 
     await transporter.verify();
 
-    // ---------------------------------------------------------
-    // Send verification email
-    // ---------------------------------------------------------
+    console.log(
+      "SMTP CONNECTION SUCCESSFUL"
+    );
+
+    // =========================================================
+    // SEND VERIFICATION EMAIL
+    // =========================================================
 
     await transporter.sendMail({
-      from: `"LIVE" <${process.env.GMAIL_USER}>`,
+      from:
+        process.env.SMTP_FROM ||
+        process.env.SMTP_USER,
 
       to: cleanEmail,
 
       subject:
         "Your LIVE verification code",
 
-      // Plain text version
       text: `
 Hello ${cleanName},
 
@@ -293,25 +377,28 @@ Your verification code is:
 
 ${token}
 
-Use this code to verify your email address.
 
-If you did not create a LIVE account, you can safely ignore this email.
+
+If you did not create a LIVE account,
+you can safely ignore this email.
 
 Thank you,
 The LIVE Team
       `,
 
-      // HTML version
       html: `
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
   <meta charset="UTF-8" />
+
   <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0"
   />
+
   <title>LIVE Verification</title>
 </head>
 
@@ -325,293 +412,324 @@ The LIVE Team
   "
 >
 
-  <table
-    width="100%"
-    cellpadding="0"
-    cellspacing="0"
-    border="0"
-    style="
-      width: 100%;
-      background-color: #f5f7f9;
-      padding: 40px 16px;
-    "
-  >
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    width: 100%;
+    background-color: #f5f7f9;
+    padding: 40px 16px;
+  "
+>
 
-    <tr>
-      <td align="center">
+<tr>
 
-        <table
-          width="100%"
-          cellpadding="0"
-          cellspacing="0"
-          border="0"
-          style="
-            max-width: 620px;
-            background-color: #ffffff;
-          "
-        >
+<td align="center">
 
-          <!-- HEADER -->
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    max-width: 620px;
+    background-color: #ffffff;
+  "
+>
 
-          <tr>
-            <td
-              style="
-                padding: 30px 40px;
-                border-bottom: 1px solid #dfe6ea;
-              "
-            >
+<!-- HEADER -->
 
-              <div
-                style="
-                  font-size: 22px;
-                  font-weight: 800;
-                  color: #102b3f;
-                "
-              >
-                LIVE
-              </div>
+<tr>
 
-              <div
-                style="
-                  margin-top: 6px;
-                  font-size: 10px;
-                  font-weight: 700;
-                  letter-spacing: 1.4px;
-                  text-transform: uppercase;
-                  color: #0f6872;
-                "
-              >
-                Secure access
-              </div>
+<td
+  style="
+    padding: 30px 40px;
+    border-bottom: 1px solid #dfe6ea;
+  "
+>
 
-            </td>
-          </tr>
+<div
+  style="
+    font-size: 22px;
+    font-weight: 800;
+    color: #102b3f;
+  "
+>
+LIVE
+</div>
 
-          <!-- CONTENT -->
+<div
+  style="
+    margin-top: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: #0f6872;
+  "
+>
+Secure access
+</div>
 
-          <tr>
-            <td
-              style="
-                padding: 48px 40px 44px;
-              "
-            >
+</td>
 
-              <div
-                style="
-                  border-left: 2px solid #0f6872;
-                  padding-left: 12px;
-                  margin-bottom: 22px;
-                  font-size: 10px;
-                  font-weight: 700;
-                  letter-spacing: 1.4px;
-                  text-transform: uppercase;
-                  color: #0f6872;
-                "
-              >
-                Email verification
-              </div>
+</tr>
 
-              <h1
-                style="
-                  margin: 0;
-                  font-size: 34px;
-                  line-height: 1.08;
-                  color: #102b3f;
-                "
-              >
-                Verify your email
-              </h1>
+<!-- CONTENT -->
 
-              <p
-                style="
-                  margin-top: 18px;
-                  font-size: 16px;
-                  line-height: 1.7;
-                  color: #607482;
-                "
-              >
-                Hello ${cleanName},
-                <br /><br />
+<tr>
 
-                Welcome to LIVE. Use the
-                verification code below to
-                confirm your email address.
-              </p>
+<td
+  style="
+    padding: 48px 40px 44px;
+  "
+>
 
-              <!-- CODE -->
+<div
+  style="
+    border-left: 2px solid #0f6872;
+    padding-left: 12px;
+    margin-bottom: 22px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: #0f6872;
+  "
+>
+Email verification
+</div>
 
-              <table
-                width="100%"
-                cellpadding="0"
-                cellspacing="0"
-                border="0"
-                style="
-                  margin-top: 36px;
-                  border-top: 1px solid #d9e2e7;
-                  border-bottom: 1px solid #d9e2e7;
-                "
-              >
+<h1
+  style="
+    margin: 0;
+    font-size: 34px;
+    line-height: 1.08;
+    color: #102b3f;
+  "
+>
+Verify your email
+</h1>
 
-                <tr>
-                  <td
-                    style="
-                      padding: 24px 0 26px;
-                    "
-                  >
+<p
+  style="
+    margin-top: 18px;
+    font-size: 16px;
+    line-height: 1.7;
+    color: #607482;
+  "
+>
 
-                    <div
-                      style="
-                        margin-bottom: 12px;
-                        font-size: 10px;
-                        font-weight: 700;
-                        letter-spacing: 1.5px;
-                        text-transform: uppercase;
-                        color: #8b9aa4;
-                      "
-                    >
-                      Verification code
-                    </div>
+Hello ${cleanName},
 
-                    <div
-                      style="
-                        font-size: 38px;
-                        font-weight: 700;
-                        letter-spacing: 4px;
-                        word-break: break-all;
-                        color: #102b3f;
-                      "
-                    >
-                      ${token}
-                    </div>
+<br />
+<br />
 
-                  </td>
-                </tr>
+Welcome to LIVE.
 
-              </table>
+Use the verification code below
+to confirm your email address.
 
-              <p
-                style="
-                  margin-top: 24px;
-                  font-size: 14px;
-                  line-height: 1.7;
-                  color: #607482;
-                "
-              >
-                Enter this code in the LIVE
-                app to verify your email address.
-              </p>
+</p>
 
-              <div
-                style="
-                  margin-top: 30px;
-                  padding-top: 20px;
-                  border-top: 1px solid #dfe6ea;
-                  font-size: 12px;
-                  line-height: 1.7;
-                  color: #71838e;
-                "
-              >
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    margin-top: 36px;
+    border-top: 1px solid #d9e2e7;
+    border-bottom: 1px solid #d9e2e7;
+  "
+>
 
-                <strong>
-                  Security notice:
-                </strong>
+<tr>
 
-                If you did not request this
-                verification code, you can
-                safely ignore this email.
+<td
+  style="
+    padding: 24px 0 26px;
+  "
+>
 
-              </div>
+<div
+  style="
+    margin-bottom: 12px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #8b9aa4;
+  "
+>
+Verification code
+</div>
 
-            </td>
-          </tr>
+<div
+  style="
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    word-break: break-all;
+    color: #102b3f;
+  "
+>
+${token}
+</div>
 
-          <!-- FOOTER -->
+</td>
 
-          <tr>
-            <td
-              style="
-                padding: 24px 40px 28px;
-                border-top: 1px solid #dfe6ea;
-                background-color: #f5f7f9;
-              "
-            >
+</tr>
 
-              <div
-                style="
-                  font-size: 13px;
-                  font-weight: 700;
-                  color: #102b3f;
-                "
-              >
-                LIVE
-              </div>
+</table>
 
-              <div
-                style="
-                  margin-top: 5px;
-                  font-size: 11px;
-                  color: #71838e;
-                "
-              >
-                Location-aware emergency coordination
-              </div>
+<p
+  style="
+    margin-top: 24px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #607482;
+  "
+>
 
-              <div
-                style="
-                  margin-top: 16px;
-                  padding-top: 14px;
-                  border-top: 1px solid #dfe6ea;
-                  font-size: 10px;
-                  color: #9aa7b0;
-                "
-              >
-                This is an automated message from
-                the LIVE team.
-              </div>
+Enter this code in the LIVE
+app to verify your email address.
 
-            </td>
-          </tr>
+<br />
+<br />
 
-        </table>
+This code expires in 1 hour.
 
-        <div
-          style="
-            max-width: 620px;
-            padding: 18px 10px 0;
-            text-align: center;
-            font-size: 10px;
-            color: #9aa7b0;
-          "
-        >
-          © ${new Date().getFullYear()}
-          LIVE. All rights reserved.
-        </div>
+</p>
 
-      </td>
-    </tr>
+<div
+  style="
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #dfe6ea;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #71838e;
+  "
+>
 
-  </table>
+<strong>
+Security notice:
+</strong>
+
+If you did not request this
+verification code, you can safely
+ignore this email.
+
+</div>
+
+</td>
+
+</tr>
+
+<!-- FOOTER -->
+
+<tr>
+
+<td
+  style="
+    padding: 24px 40px 28px;
+    border-top: 1px solid #dfe6ea;
+    background-color: #f5f7f9;
+  "
+>
+
+<div
+  style="
+    font-size: 13px;
+    font-weight: 700;
+    color: #102b3f;
+  "
+>
+LIVE
+</div>
+
+<div
+  style="
+    margin-top: 5px;
+    font-size: 11px;
+    color: #71838e;
+  "
+>
+Location-aware emergency coordination
+</div>
+
+<div
+  style="
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid #dfe6ea;
+    font-size: 10px;
+    color: #9aa7b0;
+  "
+>
+This is an automated message from
+the LIVE team.
+</div>
+
+</td>
+
+</tr>
+
+</table>
+
+<div
+  style="
+    max-width: 620px;
+    padding: 18px 10px 0;
+    text-align: center;
+    font-size: 10px;
+    color: #9aa7b0;
+  "
+>
+
+© ${new Date().getFullYear()}
+LIVE. All rights reserved.
+
+</div>
+
+</td>
+
+</tr>
+
+</table>
 
 </body>
+
 </html>
       `,
     });
 
-    // ---------------------------------------------------------
-    // Everything succeeded
-    // ---------------------------------------------------------
+    console.log(
+      "VERIFICATION EMAIL SENT:",
+      cleanEmail
+    );
+
+    // =========================================================
+    // SUCCESS
+    // =========================================================
 
     return NextResponse.json(
       {
         ok: true,
+
         message:
           "Registration successful. A verification email has been sent.",
+
         user,
       },
       { status: 201 }
     );
 
-  } catch (error) {
+  } catch (error: any) {
+
     console.error(
       "REGISTRATION ERROR:",
       error
@@ -620,7 +738,9 @@ The LIVE Team
     return NextResponse.json(
       {
         ok: false,
+
         message:
+          error?.message ||
           "Unable to register right now.",
       },
       { status: 500 }

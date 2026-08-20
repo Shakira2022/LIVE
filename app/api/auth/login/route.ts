@@ -75,7 +75,6 @@ export async function POST(request: Request) {
       console.error("Message:", error.message);
       console.error("Details:", error.details);
       console.error("Hint:", error.hint);
-      console.error("Full error:", error);
 
       return NextResponse.json(
         {
@@ -138,7 +137,16 @@ export async function POST(request: Request) {
       );
     }
 
-    await supabase
+    // Create our application JWT
+    const accessToken = await createAccessToken(
+      user.id,
+      user.role
+    );
+
+    console.log("JWT CREATED SUCCESSFULLY");
+
+    // Update login information
+    const { error: updateError } = await supabase
       .from("users")
       .update({
         last_login_at: new Date().toISOString(),
@@ -146,11 +154,12 @@ export async function POST(request: Request) {
       })
       .eq("id", user.id);
 
-    // Create JWT after successful authentication
-    const accessToken = await createAccessToken(
-      user.id,
-      user.role
-    );
+    if (updateError) {
+      console.error(
+        "Failed to update last login information:",
+        updateError
+      );
+    }
 
     const safeUser = {
       id: user.id,
@@ -166,15 +175,26 @@ export async function POST(request: Request) {
       display_name: user.display_name,
     };
 
-    console.log("LOGIN SUCCESSFUL");
-    console.log("JWT CREATED FOR USER:", user.id);
-
-    return NextResponse.json({
+    // Store JWT in an HTTP-only cookie
+    const response = NextResponse.json({
       ok: true,
       message: "Login successful.",
-      accessToken,
       user: safeUser,
     });
+
+    response.cookies.set({
+      name: "access_token",
+      value: accessToken,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60,
+    });
+
+    console.log("LOGIN SUCCESSFUL");
+
+    return response;
   } catch (error) {
     console.error("Login error:", error);
 
