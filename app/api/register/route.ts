@@ -5,13 +5,25 @@ import nodemailer from "nodemailer";
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 
+// =========================================================
+// SUPABASE SERVER CLIENT
+// =========================================================
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// =========================================================
+// POST - REGISTER USER
+// =========================================================
+
 export async function POST(request: Request) {
   try {
+    // =======================================================
+    // READ REQUEST
+    // =======================================================
+
     const {
       name,
       email,
@@ -21,9 +33,9 @@ export async function POST(request: Request) {
       password,
     } = await request.json();
 
-    // =========================================================
+    // =======================================================
     // VALIDATE REQUIRED FIELDS
-    // =========================================================
+    // =======================================================
 
     if (
       !name ||
@@ -42,9 +54,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // =========================================================
+    // =======================================================
     // CLEAN INPUT
-    // =========================================================
+    // =======================================================
 
     const cleanName = String(name).trim();
     const cleanEmail = String(email).trim().toLowerCase();
@@ -56,7 +68,10 @@ export async function POST(request: Request) {
     const cleanEmergencyContactPhone =
       String(emergencyContactPhone).trim();
 
-    // Prevent single-name registration
+    // =======================================================
+    // REQUIRE FIRST NAME + SURNAME
+    // =======================================================
+
     const names = cleanName.split(/\s+/);
 
     if (names.length < 2) {
@@ -73,9 +88,9 @@ export async function POST(request: Request) {
     const firstName = names[0];
     const lastName = names.slice(1).join(" ");
 
-    // =========================================================
+    // =======================================================
     // CHECK EMAIL
-    // =========================================================
+    // =======================================================
 
     const {
       data: existingEmail,
@@ -88,7 +103,10 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (emailError) {
-      console.error("EMAIL CHECK ERROR:", emailError);
+      console.error(
+        "EMAIL CHECK ERROR:",
+        emailError
+      );
 
       return NextResponse.json(
         {
@@ -111,9 +129,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // =========================================================
+    // =======================================================
     // CHECK PHONE
-    // =========================================================
+    // =======================================================
 
     const {
       data: existingPhone,
@@ -126,7 +144,10 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (phoneError) {
-      console.error("PHONE CHECK ERROR:", phoneError);
+      console.error(
+        "PHONE CHECK ERROR:",
+        phoneError
+      );
 
       return NextResponse.json(
         {
@@ -149,10 +170,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // =========================================================
+    // =======================================================
     // CHECK FIRST NAME + SURNAME
     // CASE INSENSITIVE
-    // =========================================================
+    // =======================================================
 
     const {
       data: existingNames,
@@ -166,7 +187,10 @@ export async function POST(request: Request) {
       .limit(1);
 
     if (nameError) {
-      console.error("NAME CHECK ERROR:", nameError);
+      console.error(
+        "NAME CHECK ERROR:",
+        nameError
+      );
 
       return NextResponse.json(
         {
@@ -192,16 +216,44 @@ export async function POST(request: Request) {
       );
     }
 
-    // =========================================================
-    // HASH PASSWORD
-    // =========================================================
+    // =======================================================
+    // CHECK GMAIL CONFIGURATION
+    // =======================================================
+
+    const gmailUser =
+      process.env.GMAIL_USER;
+
+    const gmailAppPassword =
+      process.env.GMAIL_APP_PASSWORD;
+
+    if (
+      !gmailUser ||
+      !gmailAppPassword
+    ) {
+      console.error(
+        "GMAIL_USER or GMAIL_APP_PASSWORD is missing."
+      );
+
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Email service is not configured.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // =======================================================
+    // CREATE PASSWORD HASH
+    // =======================================================
 
     const passwordHash =
       await bcrypt.hash(password, 12);
 
-    // =========================================================
+    // =======================================================
     // CREATE VERIFICATION TOKEN
-    // =========================================================
+    // =======================================================
 
     const token = uuidv4();
 
@@ -209,15 +261,16 @@ export async function POST(request: Request) {
       .update(token)
       .digest("hex");
 
-    const tokenExpiry = new Date();
+    const createdAt = new Date();
 
-    tokenExpiry.setHours(
-      tokenExpiry.getHours() + 1
+    const tokenExpiry = new Date(
+      createdAt.getTime() +
+        60 * 60 * 1000
     );
 
-    // =========================================================
+    // =======================================================
     // CREATE USER
-    // =========================================================
+    // =======================================================
 
     const {
       data: user,
@@ -239,7 +292,8 @@ export async function POST(request: Request) {
 
         email_verified_at: null,
       })
-      .select(`
+      .select(
+        `
         id,
         email,
         phone,
@@ -248,7 +302,8 @@ export async function POST(request: Request) {
         first_name,
         last_name,
         display_name
-      `)
+        `
+      )
       .single();
 
     if (insertError) {
@@ -272,9 +327,9 @@ export async function POST(request: Request) {
       user.id
     );
 
-    // =========================================================
+    // =======================================================
     // STORE HASHED VERIFICATION TOKEN
-    // =========================================================
+    // =======================================================
 
     const {
       error: tokenError,
@@ -284,7 +339,7 @@ export async function POST(request: Request) {
         user_id: user.id,
         token_hash: tokenHash,
         created_at:
-          new Date().toISOString(),
+          createdAt.toISOString(),
         expires_at:
           tokenExpiry.toISOString(),
       });
@@ -295,9 +350,7 @@ export async function POST(request: Request) {
         tokenError
       );
 
-      // Optional cleanup:
-      // remove the user if token creation failed
-
+      // Remove user if token creation failed
       await supabase
         .from("users")
         .delete()
@@ -314,61 +367,68 @@ export async function POST(request: Request) {
     }
 
     console.log(
-      "VERIFICATION TOKEN CREATED"
+      "VERIFICATION TOKEN SAVED FOR USER:",
+      user.id
     );
 
-    // =========================================================
-    // SMTP TRANSPORTER
-    // =========================================================
+    // =======================================================
+    // CREATE GMAIL TRANSPORTER
+    // =======================================================
 
     const transporter =
       nodemailer.createTransport({
-        host:
-          process.env.SMTP_HOST,
-
-        port: Number(
-          process.env.SMTP_PORT || 587
-        ),
-
-        secure:
-          Number(
-            process.env.SMTP_PORT
-          ) === 465,
+        service: "gmail",
 
         auth: {
-          user:
-            process.env.SMTP_USER,
-
-          pass:
-            process.env.SMTP_PASSWORD,
+          user: gmailUser,
+          pass: gmailAppPassword,
         },
       });
 
-    // =========================================================
-    // VERIFY SMTP
-    // =========================================================
+    // =======================================================
+    // VERIFY GMAIL CONNECTION
+    // =======================================================
 
-    await transporter.verify();
+    try {
+      await transporter.verify();
 
-    console.log(
-      "SMTP CONNECTION SUCCESSFUL"
-    );
+      console.log(
+        "GMAIL SMTP CONNECTION SUCCESSFUL"
+      );
+    } catch (smtpError) {
+      console.error(
+        "GMAIL SMTP CONNECTION FAILED:",
+        smtpError
+      );
 
-    // =========================================================
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Registration was created, but the verification email could not be sent. Please try again later.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // =======================================================
     // SEND VERIFICATION EMAIL
-    // =========================================================
+    // =======================================================
 
-    await transporter.sendMail({
-      from:
-        process.env.SMTP_FROM ||
-        process.env.SMTP_USER,
+    try {
+      await transporter.sendMail({
+        from: `"LIVE" <${gmailUser}>`,
 
-      to: cleanEmail,
+        to: cleanEmail,
 
-      subject:
-        "Your LIVE verification code",
+        subject:
+          "Your LIVE verification code",
 
-      text: `
+        // ===================================================
+        // PLAIN TEXT
+        // ===================================================
+
+        text: `
 Hello ${cleanName},
 
 Welcome to LIVE.
@@ -377,21 +437,28 @@ Your verification code is:
 
 ${token}
 
+This code is required to verify your email address.
 
+The code expires in 1 hour.
 
 If you did not create a LIVE account,
 you can safely ignore this email.
 
 Thank you,
 The LIVE Team
-      `,
+        `,
 
-      html: `
+        // ===================================================
+        // HTML
+        // ===================================================
+
+        html: `
 <!DOCTYPE html>
 
 <html lang="en">
 
 <head>
+
   <meta charset="UTF-8" />
 
   <meta
@@ -400,15 +467,16 @@ The LIVE Team
   />
 
   <title>LIVE Verification</title>
+
 </head>
 
 <body
   style="
-    margin: 0;
-    padding: 0;
-    background-color: #f5f7f9;
-    font-family: Arial, Helvetica, sans-serif;
-    color: #102b3f;
+    margin:0;
+    padding:0;
+    background-color:#f5f7f9;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#102b3f;
   "
 >
 
@@ -418,9 +486,9 @@ The LIVE Team
   cellspacing="0"
   border="0"
   style="
-    width: 100%;
-    background-color: #f5f7f9;
-    padding: 40px 16px;
+    width:100%;
+    background-color:#f5f7f9;
+    padding:40px 16px;
   "
 >
 
@@ -434,8 +502,8 @@ The LIVE Team
   cellspacing="0"
   border="0"
   style="
-    max-width: 620px;
-    background-color: #ffffff;
+    max-width:620px;
+    background-color:#ffffff;
   "
 >
 
@@ -445,16 +513,16 @@ The LIVE Team
 
 <td
   style="
-    padding: 30px 40px;
-    border-bottom: 1px solid #dfe6ea;
+    padding:30px 40px;
+    border-bottom:1px solid #dfe6ea;
   "
 >
 
 <div
   style="
-    font-size: 22px;
-    font-weight: 800;
-    color: #102b3f;
+    font-size:22px;
+    font-weight:800;
+    color:#102b3f;
   "
 >
 LIVE
@@ -462,12 +530,12 @@ LIVE
 
 <div
   style="
-    margin-top: 6px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    color: #0f6872;
+    margin-top:6px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.4px;
+    text-transform:uppercase;
+    color:#0f6872;
   "
 >
 Secure access
@@ -477,26 +545,26 @@ Secure access
 
 </tr>
 
-<!-- CONTENT -->
+<!-- MAIN CONTENT -->
 
 <tr>
 
 <td
   style="
-    padding: 48px 40px 44px;
+    padding:48px 40px 44px;
   "
 >
 
 <div
   style="
-    border-left: 2px solid #0f6872;
-    padding-left: 12px;
-    margin-bottom: 22px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    color: #0f6872;
+    border-left:2px solid #0f6872;
+    padding-left:12px;
+    margin-bottom:22px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.4px;
+    text-transform:uppercase;
+    color:#0f6872;
   "
 >
 Email verification
@@ -504,10 +572,10 @@ Email verification
 
 <h1
   style="
-    margin: 0;
-    font-size: 34px;
-    line-height: 1.08;
-    color: #102b3f;
+    margin:0;
+    font-size:34px;
+    line-height:1.08;
+    color:#102b3f;
   "
 >
 Verify your email
@@ -515,24 +583,26 @@ Verify your email
 
 <p
   style="
-    margin-top: 18px;
-    font-size: 16px;
-    line-height: 1.7;
-    color: #607482;
+    margin:18px 0 0;
+    font-size:16px;
+    line-height:1.7;
+    color:#607482;
   "
 >
 
 Hello ${cleanName},
 
-<br />
-<br />
+<br /><br />
 
 Welcome to LIVE.
 
-Use the verification code below
-to confirm your email address.
+Use the verification
+code below to confirm
+your email address.
 
 </p>
+
+<!-- VERIFICATION CODE -->
 
 <table
   width="100%"
@@ -540,9 +610,9 @@ to confirm your email address.
   cellspacing="0"
   border="0"
   style="
-    margin-top: 36px;
-    border-top: 1px solid #d9e2e7;
-    border-bottom: 1px solid #d9e2e7;
+    margin-top:36px;
+    border-top:1px solid #d9e2e7;
+    border-bottom:1px solid #d9e2e7;
   "
 >
 
@@ -550,18 +620,18 @@ to confirm your email address.
 
 <td
   style="
-    padding: 24px 0 26px;
+    padding:24px 0 26px;
   "
 >
 
 <div
   style="
-    margin-bottom: 12px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: #8b9aa4;
+    margin-bottom:12px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:#8b9aa4;
   "
 >
 Verification code
@@ -569,11 +639,12 @@ Verification code
 
 <div
   style="
-    font-size: 28px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    word-break: break-all;
-    color: #102b3f;
+    font-size:28px;
+    line-height:1.2;
+    font-weight:700;
+    letter-spacing:2px;
+    color:#102b3f;
+    word-break:break-all;
   "
 >
 ${token}
@@ -587,41 +658,42 @@ ${token}
 
 <p
   style="
-    margin-top: 24px;
-    font-size: 14px;
-    line-height: 1.7;
-    color: #607482;
+    margin:24px 0 0;
+    font-size:14px;
+    line-height:1.7;
+    color:#607482;
   "
 >
 
 Enter this code in the LIVE
 app to verify your email address.
 
-<br />
-<br />
+<br /><br />
 
 This code expires in 1 hour.
 
 </p>
 
+<!-- SECURITY NOTICE -->
+
 <div
   style="
-    margin-top: 30px;
-    padding-top: 20px;
-    border-top: 1px solid #dfe6ea;
-    font-size: 12px;
-    line-height: 1.7;
-    color: #71838e;
+    margin-top:30px;
+    padding-top:20px;
+    border-top:1px solid #dfe6ea;
+    font-size:12px;
+    line-height:1.7;
+    color:#71838e;
   "
 >
 
-<strong>
+<strong style="color:#536b78;">
 Security notice:
 </strong>
 
 If you did not request this
-verification code, you can safely
-ignore this email.
+verification code, you can
+safely ignore this email.
 
 </div>
 
@@ -635,17 +707,17 @@ ignore this email.
 
 <td
   style="
-    padding: 24px 40px 28px;
-    border-top: 1px solid #dfe6ea;
-    background-color: #f5f7f9;
+    padding:24px 40px 28px;
+    border-top:1px solid #dfe6ea;
+    background-color:#f5f7f9;
   "
 >
 
 <div
   style="
-    font-size: 13px;
-    font-weight: 700;
-    color: #102b3f;
+    font-size:13px;
+    font-weight:700;
+    color:#102b3f;
   "
 >
 LIVE
@@ -653,9 +725,9 @@ LIVE
 
 <div
   style="
-    margin-top: 5px;
-    font-size: 11px;
-    color: #71838e;
+    margin-top:5px;
+    font-size:11px;
+    color:#71838e;
   "
 >
 Location-aware emergency coordination
@@ -663,15 +735,15 @@ Location-aware emergency coordination
 
 <div
   style="
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px solid #dfe6ea;
-    font-size: 10px;
-    color: #9aa7b0;
+    margin-top:16px;
+    padding-top:14px;
+    border-top:1px solid #dfe6ea;
+    font-size:10px;
+    color:#9aa7b0;
   "
 >
 This is an automated message from
-the LIVE team.
+the LIVE team. Please do not reply.
 </div>
 
 </td>
@@ -682,11 +754,11 @@ the LIVE team.
 
 <div
   style="
-    max-width: 620px;
-    padding: 18px 10px 0;
-    text-align: center;
-    font-size: 10px;
-    color: #9aa7b0;
+    max-width:620px;
+    padding:18px 10px 0;
+    text-align:center;
+    font-size:10px;
+    color:#9aa7b0;
   "
 >
 
@@ -704,17 +776,32 @@ LIVE. All rights reserved.
 </body>
 
 </html>
-      `,
-    });
+        `,
+      });
 
-    console.log(
-      "VERIFICATION EMAIL SENT:",
-      cleanEmail
-    );
+      console.log(
+        "VERIFICATION EMAIL SENT:",
+        cleanEmail
+      );
+    } catch (mailError) {
+      console.error(
+        "GMAIL SEND ERROR:",
+        mailError
+      );
 
-    // =========================================================
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Registration was created, but the verification email could not be sent. Please use resend verification.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // =======================================================
     // SUCCESS
-    // =========================================================
+    // =======================================================
 
     return NextResponse.json(
       {
@@ -729,7 +816,6 @@ LIVE. All rights reserved.
     );
 
   } catch (error: any) {
-
     console.error(
       "REGISTRATION ERROR:",
       error
