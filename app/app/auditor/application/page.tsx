@@ -7,29 +7,31 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/utils";
 
-type AuditLog = {
+type ApplicationLog = {
   id: string;
-  action: string;
-  target_type?: string;
-  target_id?: string | null;
-  result: string;
-  actor_role?: string | null;
-  correlation_id?: string;
+  level: string;
+  service_name: string;
+  event_name: string;
+  message: string;
+  request_id?: string | null;
+  correlation_id?: string | null;
+  error_code?: string | null;
+  safe_context?: Record<string, unknown>;
   created_at: string;
 };
 
-export default function AuditorAudit() {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
+export default function AuditorApplication() {
+  const [logs, setLogs] = useState<ApplicationLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    async function loadAuditLogs() {
+    async function loadApplicationLogs() {
       try {
         setLoading(true);
 
         const response = await fetch(
-          "/api/auditor/logs?type=audit",
+          "/api/auditor/logs?type=application",
           {
             method: "GET",
             credentials: "include",
@@ -40,26 +42,49 @@ export default function AuditorAudit() {
 
         if (!response.ok) {
           throw new Error(
-            data.message || "Failed to load audit logs."
+            data.message || "Failed to load application logs."
           );
         }
 
         setLogs(data.logs || []);
       } catch (error) {
-        console.error("Failed to load audit logs:", error);
+        console.error(
+          "Failed to load application logs:",
+          error
+        );
 
         setError(
           error instanceof Error
             ? error.message
-            : "Unable to load audit logs."
+            : "Unable to load application logs."
         );
       } finally {
         setLoading(false);
       }
     }
 
-    loadAuditLogs();
+    loadApplicationLogs();
   }, []);
+
+  function getBadgeTone(level: string) {
+    switch (level.toLowerCase()) {
+      case "info":
+        return "blue";
+
+      case "warning":
+        return "warning";
+
+      case "error":
+      case "critical":
+        return "danger";
+
+      case "debug":
+        return "slate";
+
+      default:
+        return "warning";
+    }
+  }
 
   if (loading) {
     return <PageSkeleton />;
@@ -69,8 +94,8 @@ export default function AuditorAudit() {
     <div className="app-page grid gap-5">
       <PageHeading
         eyebrow="Read-only review"
-        title="Audit logs"
-        description="Approved security and operational events. No modification controls are available."
+        title="Application logs"
+        description="Review application events, service activity and system errors. No modification controls are available."
       />
 
       {error && (
@@ -86,7 +111,7 @@ export default function AuditorAudit() {
 
         {logs.length === 0 && !error ? (
           <div className="p-5 text-sm text-[#617582]">
-            No audit events were found.
+            No application events were found.
           </div>
         ) : (
           <div className="divide-y divide-[#e2e8ed]">
@@ -96,35 +121,36 @@ export default function AuditorAudit() {
                 className="p-4 sm:p-5"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="font-semibold">
-                      {log.action}
+                      {log.event_name}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
-                      {log.actor_role || "Unknown role"} ·{" "}
-                      {log.target_type || "Unknown target"}
-                      {log.target_id
-                        ? ` · ${log.target_id}`
-                        : ""}
+                      {log.service_name} · {log.message}
                     </p>
+
+                    {log.error_code && (
+                      <p className="mt-1 text-xs text-red-600">
+                        Error code: {log.error_code}
+                      </p>
+                    )}
 
                     <p className="mt-2 text-xs text-[#87959e]">
                       {formatDateTime(log.created_at)} ·{" "}
-                      {log.correlation_id || "No correlation ID"}
+                      {log.correlation_id ||
+                        "No correlation ID"}
                     </p>
+
+                    {log.request_id && (
+                      <p className="mt-1 text-xs text-[#87959e]">
+                        Request ID: {log.request_id}
+                      </p>
+                    )}
                   </div>
 
-                  <Badge
-                    tone={
-                      log.result.toLowerCase() === "success"
-                        ? "success"
-                        : log.result.toLowerCase() === "denied"
-                        ? "danger"
-                        : "warning"
-                    }
-                  >
-                    {log.result}
+                  <Badge tone={getBadgeTone(log.level)}>
+                    {log.level}
                   </Badge>
                 </div>
               </article>
