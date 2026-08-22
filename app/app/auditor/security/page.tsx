@@ -7,29 +7,29 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/utils";
 
-type AuditLog = {
+type SecurityLog = {
   id: string;
-  action: string;
-  target_type?: string;
-  target_id?: string | null;
+  user_id?: string | null;
+  event_type: string;
   result: string;
-  actor_role?: string | null;
-  correlation_id?: string;
+  correlation_id?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
   created_at: string;
 };
 
-export default function AuditorAudit() {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
+export default function AuditorSecurity() {
+  const [logs, setLogs] = useState<SecurityLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    async function loadAuditLogs() {
+    async function loadSecurityLogs() {
       try {
         setLoading(true);
 
         const response = await fetch(
-          "/api/auditor/logs?type=audit",
+          "/api/auditor/logs?type=security",
           {
             method: "GET",
             credentials: "include",
@@ -40,25 +40,28 @@ export default function AuditorAudit() {
 
         if (!response.ok) {
           throw new Error(
-            data.message || "Failed to load audit logs."
+            data.message || "Failed to load security logs."
           );
         }
 
         setLogs(data.logs || []);
       } catch (error) {
-        console.error("Failed to load audit logs:", error);
+        console.error(
+          "Failed to load security logs:",
+          error
+        );
 
         setError(
           error instanceof Error
             ? error.message
-            : "Unable to load audit logs."
+            : "Unable to load security logs."
         );
       } finally {
         setLoading(false);
       }
     }
 
-    loadAuditLogs();
+    loadSecurityLogs();
   }, []);
 
   if (loading) {
@@ -69,8 +72,8 @@ export default function AuditorAudit() {
     <div className="app-page grid gap-5">
       <PageHeading
         eyebrow="Read-only review"
-        title="Audit logs"
-        description="Approved security and operational events. No modification controls are available."
+        title="Security logs"
+        description="Review authentication and security-related events. No modification controls are available."
       />
 
       {error && (
@@ -86,7 +89,7 @@ export default function AuditorAudit() {
 
         {logs.length === 0 && !error ? (
           <div className="p-5 text-sm text-[#617582]">
-            No audit events were found.
+            No security events were found.
           </div>
         ) : (
           <div className="divide-y divide-[#e2e8ed]">
@@ -98,20 +101,18 @@ export default function AuditorAudit() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="font-semibold">
-                      {log.action}
+                      {log.event_type}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
-                      {log.actor_role || "Unknown role"} ·{" "}
-                      {log.target_type || "Unknown target"}
-                      {log.target_id
-                        ? ` · ${log.target_id}`
-                        : ""}
+                      {log.user_id || "System event"} ·{" "}
+                      {log.ip_address || "Unknown IP"}
                     </p>
 
                     <p className="mt-2 text-xs text-[#87959e]">
                       {formatDateTime(log.created_at)} ·{" "}
-                      {log.correlation_id || "No correlation ID"}
+                      {log.correlation_id ||
+                        "No correlation ID"}
                     </p>
                   </div>
 

@@ -28,9 +28,12 @@ export const roleNavigation: Record<UserRole, NavItem[]> = {
     { label: "Settings", href: "/app/admin/settings", icon: Settings },
   ],
   auditor: [
-    { label: "Review", href: "/app/auditor", icon: FileSearch },
-    { label: "Incidents", href: "/app/auditor/incidents", icon: ClipboardList },
-    { label: "Audit logs", mobileLabel: "Logs", href: "/app/auditor/audit", icon: ShieldCheck },
-    { label: "Profile", href: "/app/auditor/profile", icon: UserRound },
-  ],
+  { label: "Review", href: "/app/auditor", icon: FileSearch },
+  { label: "Incidents", href: "/app/auditor/incidents", icon: ClipboardList },
+  { label: "Audit logs", mobileLabel: "Logs", href: "/app/auditor/audit", icon: ShieldCheck },
+  { label: "Security logs", mobileLabel: "Security", href: "/app/auditor/security", icon: ShieldCheck },
+  { label: "Application logs", mobileLabel: "Application", href: "/app/auditor/application", icon: Activity },
+  { label: "Integration logs", mobileLabel: "Integration", href: "/app/auditor/integration", icon: Radio },
+  { label: "Profile", href: "/app/auditor/profile", icon: UserRound },
+],
 };

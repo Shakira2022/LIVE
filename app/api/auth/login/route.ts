@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import bcrypt from "bcryptjs";
 import { createAccessToken } from "@/lib/auth/jwt";
+import { logSecurityEvent } from "@/lib/security-logger";
 
 console.log(
   "Supabase URL:",
@@ -20,6 +21,17 @@ const supabase = createClient(
 
 export async function POST(request: Request) {
   try {
+    const forwardedFor = request.headers.get("x-forwarded-for");
+    const realIp = request.headers.get("x-real-ip");
+
+    const ipAddress =
+      forwardedFor?.split(",")[0]?.trim() ||
+      realIp ||
+      null;
+
+    const userAgent =
+      request.headers.get("user-agent") || null;
+
     const { identifier, password } = await request.json();
 
     if (!identifier || !password) {
@@ -97,6 +109,17 @@ export async function POST(request: Request) {
     if (!user) {
       console.log("LOGIN FAILED: USER NOT FOUND");
 
+      await logSecurityEvent({
+        event_type: "auth.login.failed",
+        result: "denied",
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        safe_metadata: {
+          reason: "user_not_found",
+          identifier_type: value.includes("@") ? "email" : "phone",
+        },
+      });
+
       return NextResponse.json(
         {
           ok: false,
@@ -127,6 +150,18 @@ export async function POST(request: Request) {
 
     if (!passwordCorrect) {
       console.log("LOGIN FAILED: PASSWORD DOES NOT MATCH");
+
+      await logSecurityEvent({
+        user_id: user.id,
+        event_type: "auth.login.failed",
+        result: "denied",
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        safe_metadata: {
+          reason: "invalid_password",
+          identifier_type: value.includes("@") ? "email" : "phone",
+        },
+      });
 
       return NextResponse.json(
         {
@@ -190,6 +225,17 @@ export async function POST(request: Request) {
       sameSite: "lax",
       path: "/",
       maxAge: 60 * 60,
+    });
+
+    await logSecurityEvent({
+      user_id: user.id,
+      event_type: "auth.login.success",
+      result: "success",
+      ip_address: ipAddress,
+      user_agent: userAgent,
+      safe_metadata: {
+        identifier_type: value.includes("@") ? "email" : "phone",
+      },
     });
 
     console.log("LOGIN SUCCESSFUL");
