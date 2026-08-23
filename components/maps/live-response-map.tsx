@@ -1,3 +1,4 @@
+
 import { motion } from "framer-motion";
 import {
   Crosshair,
@@ -52,6 +53,46 @@ export function LiveResponseMap({
 }: LiveResponseMapProps) {
   const [zoom, setZoom] = useState(1);
   const [layer, setLayer] = useState(false);
+
+  /*
+   * Safely format coordinates.
+   * Some emergency requests may not contain a valid
+   * latitude or longitude, so we must not call
+   * .toFixed() directly on possibly undefined values.
+   */
+  const formatCoordinate = (
+    value: unknown,
+    decimals = 6
+  ): string => {
+    const number = Number(value);
+
+    return Number.isFinite(number)
+      ? number.toFixed(decimals)
+      : "Location unavailable";
+  };
+
+  const hasValidLocation = (
+    location: unknown
+  ): location is {
+    lat: number;
+    lng: number;
+    address?: string;
+    accuracy?: number;
+  } => {
+    if (!location || typeof location !== "object") {
+      return false;
+    }
+
+    const value = location as {
+      lat?: unknown;
+      lng?: unknown;
+    };
+
+    return (
+      Number.isFinite(Number(value.lat)) &&
+      Number.isFinite(Number(value.lng))
+    );
+  };
 
   /*
    * The landing page uses its own requester marker.
@@ -202,22 +243,14 @@ export function LiveResponseMap({
         </svg>
       </div>
 
-      {/*
-       * Normal emergency markers.
-       * These are hidden from the landing preview so that
-       * the landing page contains only one requester marker.
-       */}
+      {/* Normal emergency markers */}
       {all.map((item, index) => (
         <div
           key={item.id}
           className="absolute"
           style={{
-            left: `${
-              42 + (index % 3) * 15
-            }%`,
-            top: `${
-              48 - (index % 2) * 21
-            }%`,
+            left: `${42 + (index % 3) * 15}%`,
+            top: `${48 - (index % 2) * 21}%`,
           }}
         >
           <span className="pulse-ring absolute inset-0 rounded-full bg-[#d53f3d]/30" />
@@ -228,10 +261,7 @@ export function LiveResponseMap({
         </div>
       ))}
 
-      {/*
-       * Landing-page requester marker or location-preview marker.
-       * This is the only red requester marker shown on the landing page.
-       */}
+      {/* Landing-page requester marker */}
       {showPreviewPin ? (
         <div className="absolute left-[46%] top-[47%] -translate-x-1/2 -translate-y-1/2">
           <span className="pulse-ring absolute inset-0 rounded-full bg-[#d53f3d]/30" />
@@ -287,19 +317,7 @@ export function LiveResponseMap({
         </div>
       ) : null}
 
-      {/*
-       * Landing-page responder.
-       *
-       * Its position follows the same approximate points as
-       * the teal SVG response route:
-       *
-       * M340 420
-       * C440 375
-       * 520 355
-       * 610 330
-       * S710 295
-       * 760 245
-       */}
+      {/* Landing-page responder */}
       {landingPreview ? (
         <motion.div
           className="absolute z-20"
@@ -337,10 +355,6 @@ export function LiveResponseMap({
           </span>
         </motion.div>
       ) : request && responder ? (
-        /*
-         * Operational-map responder.
-         * This keeps the existing application animation.
-         */
         <motion.div
           className="absolute left-[70%] top-[28%]"
           animate={{
@@ -419,10 +433,7 @@ export function LiveResponseMap({
               type="button"
               onClick={() =>
                 setZoom((value) =>
-                  Math.min(
-                    1.35,
-                    value + 0.08
-                  )
+                  Math.min(1.35, value + 0.08)
                 )
               }
               className="grid h-10 w-10 place-items-center hover:bg-[#eef3f5]"
@@ -435,10 +446,7 @@ export function LiveResponseMap({
               type="button"
               onClick={() =>
                 setZoom((value) =>
-                  Math.max(
-                    0.85,
-                    value - 0.08
-                  )
+                  Math.max(0.85, value - 0.08)
                 )
               }
               className="grid h-10 w-10 place-items-center border-t border-[#e1e7eb] hover:bg-[#eef3f5]"
@@ -465,14 +473,26 @@ export function LiveResponseMap({
 
               <p className="mt-1 truncate text-sm font-semibold">
                 {previewLocation.address &&
-                previewLocation.address !== "Current device location"
+                previewLocation.address !==
+                  "Current device location"
                   ? previewLocation.address
-                  : `${previewLocation.lat.toFixed(6)}, ${previewLocation.lng.toFixed(6)}`}
+                  : `${formatCoordinate(
+                      previewLocation.lat
+                    )}, ${formatCoordinate(
+                      previewLocation.lng
+                    )}`}
               </p>
 
               <p className="mt-1 text-xs text-[#687b89]">
-                {previewLocation.lat.toFixed(5)},{" "}
-                {previewLocation.lng.toFixed(5)}
+                {formatCoordinate(
+                  previewLocation.lat,
+                  5
+                )}
+                ,{" "}
+                {formatCoordinate(
+                  previewLocation.lng,
+                  5
+                )}
 
                 {previewLocation.accuracy
                   ? ` · ±${Math.round(
@@ -507,20 +527,25 @@ export function LiveResponseMap({
               </div>
 
               <p className="mt-1 truncate text-sm font-semibold">
-<<<<<<< HEAD
-  Location attached to request
-</p>
-=======
-                {request.location.address &&
-                request.location.address !== "Current device location"
+                {hasValidLocation(request.location) &&
+                request.location.address &&
+                request.location.address !==
+                  "Current device location"
                   ? request.location.address
-                  : `${request.location.lat.toFixed(6)}, ${request.location.lng.toFixed(6)}`}
+                  : hasValidLocation(
+                      request.location
+                    )
+                    ? `${formatCoordinate(
+                        request.location.lat
+                      )}, ${formatCoordinate(
+                        request.location.lng
+                      )}`
+                    : "Location unavailable"}
               </p>
->>>>>>> frontend
 
-<p className="mt-1 text-xs text-[#687b89]">
-  Emergency request location
-</p>
+              <p className="mt-1 text-xs text-[#687b89]">
+                Emergency request location
+              </p>
             </div>
           </div>
 
@@ -534,4 +559,3 @@ export function LiveResponseMap({
     </div>
   );
 }
-

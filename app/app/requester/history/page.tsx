@@ -1,15 +1,9 @@
+
 "use client";
 
-<<<<<<< HEAD
-import {
-  History,
-  RefreshCw,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { History, RefreshCw } from "lucide-react";
 
-=======
-import { ArrowLeft, History } from "lucide-react";
-import Link from "next/link";
->>>>>>> frontend
 import { useAuth } from "@/components/auth/auth-provider";
 import { RequestListItem } from "@/components/requests/request-list-item";
 
@@ -22,8 +16,7 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-
-import { useEffect, useState } from "react";
+import { requestStatusTone } from "@/lib/utils";
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -33,8 +26,10 @@ type EmergencyStatus =
   | "submitted"
   | "received"
   | "assigned"
+  | "acknowledged"
   | "en_route"
   | "arrived"
+  | "completed"
   | "closed"
   | "cancelled"
   | "rejected";
@@ -92,14 +87,9 @@ function getLocation(
 export default function RequestHistory() {
   const { user } = useAuth();
 
-  const [requests, setRequests] =
-    useState<ApiRequest[]>([]);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [error, setError] =
-    useState("");
+  const [requests, setRequests] = useState<ApiRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   /* ---------------------------------------------------------------------- */
   /* Load request history                                                   */
@@ -125,32 +115,14 @@ export default function RequestHistory() {
       setLoading(true);
       setError("");
 
-      /*
-       * IMPORTANT:
-       *
-       * The current /api/requests route identifies
-       * the requester using their phone number.
-       *
-       * Therefore we send the logged-in user's
-       * phone number as a query parameter.
-       *
-       * We are NOT using JWT here.
-       */
-
       const response = await fetch(
-        `/api/requests?phone=${encodeURIComponent(
-          user.phone,
-        )}`,
+        `/api/requests?phone=${encodeURIComponent(user.phone)}`,
         {
           method: "GET",
-
           headers: {
-            "Content-Type":
-              "application/json",
+            "Content-Type": "application/json",
           },
-
           credentials: "include",
-
           cache: "no-store",
         },
       );
@@ -158,6 +130,7 @@ export default function RequestHistory() {
       let data: {
         requests?: ApiRequest[];
         error?: string;
+        message?: string;
       } | null = null;
 
       try {
@@ -179,12 +152,15 @@ export default function RequestHistory() {
       if (!response.ok) {
         throw new Error(
           data?.error ||
+            data?.message ||
             `Failed to load request history. Server returned ${response.status}.`,
         );
       }
 
       setRequests(
-        data?.requests ?? [],
+        Array.isArray(data?.requests)
+          ? data.requests
+          : [],
       );
     } catch (error) {
       console.error(
@@ -210,6 +186,7 @@ export default function RequestHistory() {
 
   useEffect(() => {
     if (!user) {
+      setRequests([]);
       setLoading(false);
       return;
     }
@@ -256,9 +233,7 @@ export default function RequestHistory() {
           <Button
             variant="outline"
             className="mt-5"
-            onClick={() =>
-              void loadRequests()
-            }
+            onClick={() => void loadRequests()}
           >
             <RefreshCw className="h-4 w-4" />
             Try again
@@ -276,32 +251,20 @@ export default function RequestHistory() {
     .sort(
       (a, b) =>
         new Date(
-          b.updated_at ||
-            b.created_at,
+          b.updated_at || b.created_at,
         ).getTime() -
         new Date(
-          a.updated_at ||
-            a.created_at,
+          a.updated_at || a.created_at,
         ).getTime(),
     )
     .map((request) => {
-      const location =
-        getLocation(
-          request.request_locations,
-        );
+      const location = getLocation(
+        request.request_locations,
+      );
 
       return {
-        /*
-         * REAL SUPABASE UUID.
-         *
-         * Used by:
-         * /app/requester/track/[id]
-         */
         id: request.id,
 
-        /*
-         * Human-readable reference.
-         */
         referenceCode:
           request.reference_code,
 
@@ -318,15 +281,13 @@ export default function RequestHistory() {
           request.note || "",
 
         callbackNumber:
-          request.callback_number ||
-          "",
+          request.callback_number || "",
 
         status:
           request.current_status,
 
         etaMinutes:
-          request.eta_minutes ??
-          undefined,
+          request.eta_minutes ?? undefined,
 
         createdAt:
           request.created_at,
@@ -362,14 +323,6 @@ export default function RequestHistory() {
 
   return (
     <div className="app-page grid gap-5">
-      <Link
-        href="/app/requester"
-        className="inline-flex h-9 w-9 items-center justify-center rounded-full hover:bg-muted"
-        aria-label="Back to requester dashboard"
-      >
-        <ArrowLeft className="h-5 w-5" />
-      </Link>
-
       <PageHeading
         eyebrow="Requester"
         title="Request history"
@@ -387,13 +340,15 @@ export default function RequestHistory() {
         />
 
         {items.length > 0 ? (
-          items.map((request) => (
-            <RequestListItem
-              key={request.id}
-              request={request as any}
-              href={`/app/requester/track/${request.id}`}
-            />
-          ))
+          <div>
+            {items.map((request) => (
+              <RequestListItem
+                key={request.id}
+                request={request as any}
+                href={`/app/requester/track/${request.id}`}
+              />
+            ))}
+          </div>
         ) : (
           <EmptyState
             icon={
