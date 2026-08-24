@@ -1,127 +1,52 @@
-import { NextRequest, NextResponse } from "next/server";
-import { verifyAccessToken } from "@/lib/auth/jwt";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { logAuditEvent } from "@/lib/audit-logger";
+import { z } from "zod";
 
-const VALID_STATUSES = [
-    "active",
-    "paused",
-    "inactive",
-];
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-export async function PATCH(
-    request: NextRequest,
-    context: {
-        params: Promise<{ id: string }>;
+export const runtime = "nodejs";
+
+const paramsSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const bodySchema = z.object({
+  status: z.enum(["active", "paused", "inactive"]),
+});
+
+export const PATCH = createHandler(
+  {
+    name: "admin.organisation.update",
+    auth: "required",
+    roles: ["admin"],
+    params: paramsSchema,
+    body: bodySchema,
+    rateLimit: { limit: 60, windowMs: 60_000, by: "user" },
+    audit: {
+      action: "admin_organisation_status_updated",
+      targetType: "organisation",
+    },
+  },
+  async (ctx) => {
+    const { data, error } = await db()
+      .from("organisations")
+      .update({
+        status: ctx.body.status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", ctx.params.id)
+      .select("*")
+      .single();
+
+    if (error) {
+      throw ApiError.internal("Unable to update the organisation.", error.message);
     }
-) {
-    try {
-        const token = request.cookies.get("access_token")?.value;
 
-        if (!token) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Authentication required.",
-                },
-                { status: 401 }
-            );
-        }
+    ctx.audit({
+      targetId: ctx.params.id,
+      newStatus: ctx.body.status,
+    });
 
-        const payload = await verifyAccessToken(token);
-
-        if (!payload) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Invalid or expired authentication token.",
-                },
-                { status: 401 }
-            );
-        }
-
-        if (payload.role !== "admin") {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Administrator access required.",
-                },
-                { status: 403 }
-            );
-        }
-
-        const { id } = await context.params;
-        const body = await request.json();
-
-        const status =
-            typeof body.status === "string"
-                ? body.status.toLowerCase()
-                : "";
-
-        if (!VALID_STATUSES.includes(status)) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Invalid organisation status.",
-                },
-                { status: 400 }
-            );
-        }
-
-        const { data, error } = await supabaseAdmin
-            .from("organisations")
-            .update({
-                status,
-                updated_at: new Date().toISOString(),
-            })
-            .eq("id", id)
-            .select("*")
-            .single();
-
-        if (error) {
-            console.error(
-                "Admin organisation update failed:",
-                error
-            );
-
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Unable to update the organisation.",
-                },
-                { status: 500 }
-            );
-        }
-
-        // Record the admin action in the audit log
-        await logAuditEvent({
-            actor_user_id: payload.userId,
-            actor_role: payload.role,
-            action: "admin_organisation_status_updated",
-            target_type: "organisation",
-            target_id: id,
-            result: "success",
-            safe_metadata: {
-                newStatus: status,
-            },
-        });
-
-        return NextResponse.json({
-            ok: true,
-            organisation: data,
-        });
-    } catch (error) {
-        console.error(
-            "Admin organisation API error:",
-            error
-        );
-
-        return NextResponse.json(
-            {
-                ok: false,
-                message: "Internal server error.",
-            },
-            { status: 500 }
-        );
-    }
-}
+    return { organisation: data };
+  },
+);

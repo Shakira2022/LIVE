@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/field";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
 
 type AuditResult =
@@ -32,43 +33,187 @@ interface AuditLog {
   created_at: string;
 }
 
+
+type AuditResponse = {
+  ok?: boolean;
+  data?: {
+    type?: string;
+    count?: number;
+    logs?: AuditLog[];
+  };
+  logs?: AuditLog[];
+  message?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+      };
+};
+
+async function readJson<T>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function getApiMessage(
+  result: AuditResponse | null,
+  fallback: string,
+) {
+  if (!result) return fallback;
+
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+
+  if (
+    result.error &&
+    typeof result.error === "object"
+  ) {
+    return (
+      result.error.message ||
+      result.message ||
+      fallback
+    );
+  }
+
+  return result.message || fallback;
+}
+
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(
+    input,
+    requestInit,
+  );
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse = await fetch(
+    "/api/auth/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    },
+  );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  return fetch(input, requestInit);
+}
+
 type FilterValue = "All" | "success" | "denied" | "warning" | "failure";
 
 export default function AdminAudit() {
+  const {
+    user,
+    loading: authLoading,
+    refresh,
+  } = useAuth();
+
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<FilterValue>("All");
 
-  async function loadAuditLogs() {
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await fetch("/api/auditor/logs?type=audit");
-
-      const result = await response.json();
-
-      if (!response.ok || !result.ok) {
-        setError(
-          result.message || "Unable to load audit logs."
-        );
+  const loadAuditLogs =
+    useCallback(async () => {
+      if (!user?.id) {
+        setLogs([]);
+        setLoading(false);
         return;
       }
 
-      setLogs(result.logs ?? []);
-    } catch {
-      setError(
-        "Unable to connect to the audit logging service."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+      try {
+        setLoading(true);
+        setError("");
+
+        const response =
+          await authenticatedFetch(
+            "/api/auditor/logs?type=audit",
+            {
+              method: "GET",
+              cache: "no-store",
+            },
+          );
+
+        const result =
+          await readJson<AuditResponse>(
+            response,
+          );
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            await refresh();
+          }
+
+          setLogs([]);
+          setError(
+            getApiMessage(
+              result,
+              "Unable to load audit logs.",
+            ),
+          );
+          return;
+        }
+
+        const nextLogs =
+          result?.data?.logs ??
+          result?.logs ??
+          [];
+
+        setLogs(
+          Array.isArray(nextLogs)
+            ? nextLogs
+            : [],
+        );
+      } catch {
+        setLogs([]);
+        setError(
+          "Unable to connect to the audit logging service.",
+        );
+      } finally {
+        setLoading(false);
+      }
+    }, [
+      refresh,
+      user?.id,
+    ]);
 
   useEffect(() => {
-    loadAuditLogs();
-  }, []);
+    if (authLoading) {
+      return;
+    }
+
+    if (!user?.id) {
+      setLogs([]);
+      setLoading(false);
+      return;
+    }
+
+    void loadAuditLogs();
+  }, [
+    authLoading,
+    loadAuditLogs,
+    user?.id,
+  ]);
 
   const filteredLogs =
     filter === "All"
@@ -109,7 +254,7 @@ export default function AdminAudit() {
     }
   }
 
-  if (loading) {
+  if (authLoading || loading || !user) {
     return <PageSkeleton />;
   }
 

@@ -64,12 +64,125 @@ type Mission = {
   } | null;
 };
 
+type MissionResponse = {
+  ok?: boolean;
+  data?: {
+    mission?: Mission | null;
+    message?: string;
+    assignment?: Mission["assignment"];
+    requestStatus?: string;
+    request_status?: string;
+  };
+  mission?: Mission | null;
+  assignment?: Mission["assignment"];
+  message?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+      };
+};
+
+function getApiMessage(
+  result: MissionResponse | null,
+  fallback: string,
+) {
+  if (!result) {
+    return fallback;
+  }
+
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+
+  if (
+    result.error &&
+    typeof result.error === "object"
+  ) {
+    const firstDetail =
+      result.error.details
+        ? Object.values(
+            result.error.details,
+          )
+            .flat()
+            .find(Boolean)
+        : undefined;
+
+    return (
+      firstDetail ||
+      result.error.message ||
+      result.message ||
+      fallback
+    );
+  }
+
+  return (
+    result.message ||
+    fallback
+  );
+}
+
+async function readJson<T>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(
+    input,
+    requestInit,
+  );
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse = await fetch(
+    "/api/auth/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    },
+  );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  response = await fetch(
+    input,
+    requestInit,
+  );
+
+  return response;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Page                                                                       */
 /* -------------------------------------------------------------------------- */
 
 export default function ResponderMission() {
-  const { user, loading: authLoading } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    refresh,
+  } = useAuth();
 
   const [mission, setMission] =
     useState<Mission | null>(null);
@@ -97,56 +210,60 @@ export default function ResponderMission() {
       setLoading(true);
       setError(null);
 
-      console.log(
-        "==========================================",
-      );
+      const response =
+        await authenticatedFetch(
+          "/api/responder/mission",
+          {
+            method: "GET",
+            cache: "no-store",
+          },
+        );
 
-      console.log("RESPONDER MISSION");
-
-      console.log("LOGGED IN USER:", user.id);
-
-      console.log(
-        "==========================================",
-      );
-
-      const response = await fetch(
-        "/api/responder/mission",
-        {
-          method: "GET",
-          cache: "no-store",
-        },
-      );
-
-      let result: any = null;
-
-      try {
-        result = await response.json();
-      } catch {
-        result = null;
-      }
-
-      console.log(
-        "RESPONDER MISSION RESPONSE:",
-        result,
-      );
+      const result =
+        await readJson<MissionResponse>(
+          response,
+        );
 
       if (!response.ok) {
+        if (response.status === 401) {
+          /*
+           * Refresh failed too. Synchronise AuthProvider with the server.
+           */
+          await refresh();
+        }
+
         setError(
-          result?.message ||
-            result?.error ||
+          getApiMessage(
+            result,
             "Unable to load responder mission.",
+          ),
         );
 
         setMission(null);
-
         return;
       }
 
-      setMission(result?.mission || null);
+      /*
+       * New middleware route:
+       * { ok: true, data: { mission } }
+       *
+       * Old route fallback:
+       * { ok: true, mission }
+       */
+      const nextMission =
+        result?.data?.mission ??
+        result?.mission ??
+        null;
+
+      setMission(
+        nextMission,
+      );
     } catch (err) {
-      console.error(
+      console.warn(
         "Responder mission loading error:",
-        err,
+        err instanceof Error
+          ? err.message
+          : String(err),
       );
 
       setError(
@@ -157,7 +274,10 @@ export default function ResponderMission() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [
+    refresh,
+    user?.id,
+  ]);
 
   /* ------------------------------------------------------------------------ */
   /* Load mission when authentication is ready                                */
@@ -220,39 +340,39 @@ export default function ResponderMission() {
         "==========================================",
       );
 
-      const response = await fetch(
-        "/api/responder/mission",
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
+      const response =
+        await authenticatedFetch(
+          "/api/responder/mission",
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            cache: "no-store",
+            body: JSON.stringify({
+              assignment_id:
+                mission.assignment.id,
+              status,
+            }),
           },
-          body: JSON.stringify({
-            assignment_id:
-              mission.assignment.id,
-            status,
-          }),
-        },
-      );
+        );
 
-      let result: any = null;
-
-      try {
-        result = await response.json();
-      } catch {
-        result = null;
-      }
-
-      console.log(
-        "RESPONDER STATUS RESPONSE:",
-        result,
-      );
+      const result =
+        await readJson<MissionResponse>(
+          response,
+        );
 
       if (!response.ok) {
+        if (response.status === 401) {
+          await refresh();
+        }
+
         alert(
-          result?.message ||
-            result?.error ||
+          getApiMessage(
+            result,
             "Failed to update mission status.",
+          ),
         );
 
         return;
@@ -302,9 +422,11 @@ export default function ResponderMission() {
             : "Arrival recorded.",
       );
     } catch (err) {
-      console.error(
+      console.warn(
         "Responder status update error:",
-        err,
+        err instanceof Error
+          ? err.message
+          : String(err),
       );
 
       alert(

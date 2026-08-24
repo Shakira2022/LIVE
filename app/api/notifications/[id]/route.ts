@@ -1,120 +1,107 @@
-import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase-server";
-import { getCurrentUser } from "@/lib/auth/get-current-user";
+import { z } from "zod";
 
-type RouteContext = {
-  params: Promise<{
-    id: string;
-  }>;
-};
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-export async function PATCH(
-  request: Request,
-  context: RouteContext,
-) {
-  try {
-    const session = await getCurrentUser(request);
+export const runtime = "nodejs";
 
-    if (!session) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication is required.",
-        },
-        { status: 401 },
+const paramsSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const updateSchema = z.object({
+  read: z.boolean().optional().default(true),
+});
+
+/* -------------------------------------------------------------------------- */
+/* PATCH /api/notifications/[id]                                              */
+/* -------------------------------------------------------------------------- */
+
+export const PATCH = createHandler(
+  {
+    name: "notifications.update",
+    auth: "required",
+    params: paramsSchema,
+    body: updateSchema,
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
+  },
+  async (ctx) => {
+    /*
+     * Ownership is enforced in the database query itself.
+     *
+     * A user can only update a notification where:
+     *   recipient_user_id === authenticated user id
+     */
+    const {
+      data: existing,
+      error: lookupError,
+    } = await db()
+      .from("notifications")
+      .select(
+        "id, recipient_user_id, read_at",
+      )
+      .eq(
+        "id",
+        ctx.params.id,
+      )
+      .eq(
+        "recipient_user_id",
+        ctx.user.userId,
+      )
+      .maybeSingle();
+
+    if (lookupError) {
+      throw ApiError.internal(
+        "Unable to find notification.",
+        lookupError.message,
       );
     }
 
-    const { id } = await context.params;
-
-    if (!id) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Notification ID is required.",
-        },
-        { status: 400 },
+    if (!existing) {
+      throw new ApiError(
+        "NOT_FOUND",
+        "Notification not found.",
       );
     }
 
-    const { data: notification, error: findError } =
-      await supabaseServer
-        .from("notifications")
-        .select("id, recipient_user_id, read_at")
-        .eq("id", id)
-        .eq("recipient_user_id", session.userId)
-        .maybeSingle();
-
-    if (findError) {
-      console.error(
-        "Notification lookup error:",
-        findError,
-      );
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to find notification.",
-        },
-        { status: 500 },
-      );
-    }
-
-    if (!notification) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Notification not found.",
-        },
-        { status: 404 },
-      );
-    }
-
-    const body = await request.json().catch(() => ({}));
-
-    const read =
-      typeof body.read === "boolean" ? body.read : true;
-
-    const { data, error } = await supabaseServer
+    const {
+      data,
+      error,
+    } = await db()
       .from("notifications")
       .update({
-        read_at: read ? new Date().toISOString() : null,
+        read_at:
+          ctx.body.read
+            ? new Date().toISOString()
+            : null,
       })
-      .eq("id", id)
-      .eq("recipient_user_id", session.userId)
+      .eq(
+        "id",
+        ctx.params.id,
+      )
+      .eq(
+        "recipient_user_id",
+        ctx.user.userId,
+      )
       .select(
         "id, recipient_user_id, request_id, notification_type, title, message, sensitivity, created_at, read_at, expires_at",
       )
       .single();
 
     if (error) {
-      console.error(
-        "Notification update error:",
-        error,
-      );
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to update notification.",
-        },
-        { status: 500 },
+      throw ApiError.internal(
+        "Unable to update notification.",
+        error.message,
       );
     }
 
-    return NextResponse.json({
-      ok: true,
+    return {
       notification: data,
-    });
-  } catch (error) {
-    console.error("Notification PATCH error:", error);
-
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to update notification.",
-      },
-      { status: 500 },
-    );
-  }
-}
+    };
+  },
+);

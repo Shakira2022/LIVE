@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import {
+    useCallback,
     useEffect,
     useState,
 } from "react";
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
 
 interface DashboardMetrics {
@@ -46,7 +48,125 @@ interface DashboardAuditLog {
     timestamp: string;
 }
 
+
+interface DashboardResponse {
+    ok?: boolean;
+
+    data?: {
+        metrics?: DashboardMetrics;
+        auditLogs?: DashboardAuditLog[];
+    };
+
+    /*
+     * Compatibility with the older non-middleware response.
+     */
+    metrics?: DashboardMetrics;
+    auditLogs?: DashboardAuditLog[];
+
+    message?: string;
+
+    error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+    };
+}
+
+function getApiMessage(
+    result: DashboardResponse | null,
+    fallback: string
+) {
+    if (!result) {
+        return fallback;
+    }
+
+    if (typeof result.error === "string") {
+        return result.error;
+    }
+
+    if (
+        result.error &&
+        typeof result.error === "object"
+    ) {
+        const firstDetail =
+            result.error.details
+                ? Object.values(
+                    result.error.details
+                )
+                    .flat()
+                    .find(Boolean)
+                : undefined;
+
+        return (
+            firstDetail ||
+            result.error.message ||
+            result.message ||
+            fallback
+        );
+    }
+
+    return result.message || fallback;
+}
+
+async function readJson<T>(
+    response: Response
+): Promise<T | null> {
+    try {
+        return (await response.json()) as T;
+    } catch {
+        return null;
+    }
+}
+
+async function authenticatedFetch(
+    input: RequestInfo | URL,
+    init?: RequestInit
+): Promise<Response> {
+    const requestInit: RequestInit = {
+        ...init,
+        credentials: "include",
+    };
+
+    let response = await fetch(
+        input,
+        requestInit
+    );
+
+    if (response.status !== 401) {
+        return response;
+    }
+
+    const refreshResponse =
+        await fetch(
+            "/api/auth/refresh",
+            {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+            }
+        );
+
+    if (!refreshResponse.ok) {
+        return response;
+    }
+
+    response = await fetch(
+        input,
+        requestInit
+    );
+
+    return response;
+}
+
 export default function AdminHome() {
+    const {
+        user,
+        loading: authLoading,
+        refresh,
+    } = useAuth();
+
     const [loading, setLoading] =
         useState(true);
 
@@ -64,53 +184,133 @@ export default function AdminHome() {
     const [auditLogs, setAuditLogs] =
         useState<DashboardAuditLog[]>([]);
 
-    async function loadDashboard() {
-        try {
-            setLoading(true);
-            setError("");
-
-            const response = await fetch(
-                "/api/admin/dashboard"
-            );
-
-            const result =
-                await response.json();
-
-            if (!response.ok || !result.ok) {
-                setError(
-                    result.message ||
-                    "Unable to load the administration dashboard."
-                );
-
-                return;
-            }
-
-            setMetrics(
-                result.metrics ?? {
+    const loadDashboard =
+        useCallback(async () => {
+            if (!user?.id) {
+                setMetrics({
                     users: 0,
                     organisations: 0,
                     activeRequests: 0,
                     deniedEvents: 0,
-                }
-            );
+                });
+                setAuditLogs([]);
+                setLoading(false);
+                return;
+            }
 
-            setAuditLogs(
-                result.auditLogs ?? []
-            );
-        } catch {
-            setError(
-                "Unable to connect to the administration dashboard service."
-            );
-        } finally {
-            setLoading(false);
-        }
-    }
+            try {
+                setLoading(true);
+                setError("");
+
+                const response =
+                    await authenticatedFetch(
+                        "/api/admin/dashboard",
+                        {
+                            method: "GET",
+                            cache: "no-store",
+                        }
+                    );
+
+                const result =
+                    await readJson<DashboardResponse>(
+                        response
+                    );
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        await refresh();
+                    }
+
+                    setError(
+                        getApiMessage(
+                            result,
+                            "Unable to load the administration dashboard."
+                        )
+                    );
+
+                    return;
+                }
+
+                /*
+                 * createHandler() wraps successful route results as:
+                 *
+                 * {
+                 *   ok: true,
+                 *   data: {
+                 *     metrics: {...},
+                 *     auditLogs: [...]
+                 *   },
+                 *   requestId: "..."
+                 * }
+                 *
+                 * The old page incorrectly read result.metrics and
+                 * result.auditLogs directly. That made every metric
+                 * fall back to zero even though the database query
+                 * succeeded.
+                 */
+                const nextMetrics =
+                    result?.data?.metrics ??
+                    result?.metrics ??
+                    {
+                        users: 0,
+                        organisations: 0,
+                        activeRequests: 0,
+                        deniedEvents: 0,
+                    };
+
+                const nextAuditLogs =
+                    result?.data?.auditLogs ??
+                    result?.auditLogs ??
+                    [];
+
+                setMetrics(nextMetrics);
+
+                setAuditLogs(
+                    Array.isArray(nextAuditLogs)
+                        ? nextAuditLogs
+                        : []
+                );
+            } catch (error) {
+                console.warn(
+                    "Unable to load admin dashboard:",
+                    error instanceof Error
+                        ? error.message
+                        : String(error)
+                );
+
+                setError(
+                    "Unable to connect to the administration dashboard service."
+                );
+            } finally {
+                setLoading(false);
+            }
+        }, [
+            refresh,
+            user?.id,
+        ]);
 
     useEffect(() => {
-        loadDashboard();
-    }, []);
+        if (authLoading) {
+            return;
+        }
 
-    if (loading) {
+        if (!user?.id) {
+            setLoading(false);
+            return;
+        }
+
+        void loadDashboard();
+    }, [
+        authLoading,
+        loadDashboard,
+        user?.id,
+    ]);
+
+    if (
+        authLoading ||
+        loading ||
+        !user
+    ) {
         return <PageSkeleton />;
     }
 

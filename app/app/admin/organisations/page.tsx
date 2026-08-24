@@ -68,7 +68,7 @@ export default function AdminOrgs() {
       setLoading(true);
       setError("");
 
-      const response = await fetch("/api/organizations", {
+      const response = await fetch("/api/admin/organisations", {
         method: "GET",
         credentials: "include",
       });
@@ -81,7 +81,17 @@ export default function AdminOrgs() {
         );
       }
 
-      setOrganisations(data.organizations || []);
+      const nextOrganisations =
+        data?.data?.organisations ??
+        data?.organisations ??
+        data?.organizations ??
+        [];
+
+      setOrganisations(
+        Array.isArray(nextOrganisations)
+          ? nextOrganisations
+          : [],
+      );
     } catch (error) {
       console.error("Failed to load organizations:", error);
 
@@ -116,7 +126,7 @@ export default function AdminOrgs() {
 
     try {
       const response = await fetch(
-        "/api/organizations",
+        "/api/admin/organisations",
         {
           method: "POST",
           headers: {
@@ -752,7 +762,7 @@ async function toggleOrganisationStatus(
 
   try {
     const response = await fetch(
-      `/api/organizations/${organisationId}`,
+      `/api/admin/organisations/${organisationId}`,
       {
         method: "PATCH",
         headers: {

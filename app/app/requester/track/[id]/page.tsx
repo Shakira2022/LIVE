@@ -1,130 +1,180 @@
 "use client";
 
+import Link from "next/link";
 import {
-  ChevronRight,
+  AlertCircle,
   Clock3,
+  History,
   MapPin,
-  PhoneCall,
+  RefreshCw,
   Siren,
-  Loader2,
 } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  useParams,
+  useRouter,
+} from "next/navigation";
 
-import { LiveResponseMap } from "@/components/maps/live-response-map";
-import { StatusTimeline } from "@/components/requests/status-timeline";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import {
+  useAuth,
+} from "@/components/auth/auth-provider";
+import {
+  LiveResponseMap,
+} from "@/components/maps/live-response-map";
+import {
+  Badge,
+} from "@/components/ui/badge";
+import {
+  Button,
+} from "@/components/ui/button";
+import {
+  PageHeading,
+} from "@/components/ui/page-heading";
 import {
   Panel,
   PanelHeader,
 } from "@/components/ui/panel";
-import { PageHeading } from "@/components/ui/page-heading";
-import { Sheet } from "@/components/ui/sheet";
-import { PageSkeleton } from "@/components/ui/skeleton";
 import {
-  isActiveStatus,
+  PageSkeleton,
+} from "@/components/ui/skeleton";
+import {
   requestStatusTone,
 } from "@/lib/utils";
-import type { RequestStatus } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
-/* Types                                                                      */
+/* API types                                                                  */
 /* -------------------------------------------------------------------------- */
 
 type EmergencyStatus =
   | "submitted"
   | "received"
   | "assigned"
+  | "acknowledged"
   | "en_route"
   | "arrived"
+  | "completed"
   | "closed"
   | "cancelled"
   | "rejected";
 
-function toUiStatus(
-  status: EmergencyStatus,
-): RequestStatus {
-  const statusMap: Record<
-    EmergencyStatus,
-    RequestStatus
-  > = {
-    submitted: "Submitted",
-    received: "Received",
-    assigned: "Assigned",
-    en_route: "En route",
-    arrived: "Arrived",
-    closed: "Closed",
-    cancelled: "Cancelled",
-    rejected: "Rejected",
-  };
+type ApiLocation = {
+  latitude?: number | null;
+  longitude?: number | null;
 
-  return statusMap[status];
-}
+  accuracyMeters?: number | null;
+  accuracy_meters?: number | null;
+
+  addressText?: string | null;
+  address_text?: string | null;
+
+  landmark?: string | null;
+
+  locationMethod?: string | null;
+  location_method?: string | null;
+
+  capturedAt?: string | null;
+  captured_at?: string | null;
+};
+
+type StatusHistoryItem = {
+  id?: string;
+
+  previousStatus?: string | null;
+  previous_status?: string | null;
+
+  newStatus?: string;
+  new_status?: string;
+
+  note?: string | null;
+  reason?: string | null;
+
+  createdAt?: string;
+  created_at?: string;
+};
 
 type ApiRequest = {
   id: string;
+
+  /* Middleware/canonical fields */
+  reference?: string;
+  requesterId?: string;
+  currentStatus?: EmergencyStatus;
+  callbackNumber?: string | null;
+  etaMinutes?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+  location?: ApiLocation | null;
+  statusHistory?: StatusHistoryItem[];
+  history?: StatusHistoryItem[];
+
+  /* Old backend fields kept as compatibility fallbacks */
   reference_code?: string;
   requester_id?: string;
+  current_status?: EmergencyStatus;
+  callback_number?: string | null;
+  eta_minutes?: number | null;
+  created_at?: string;
+  updated_at?: string;
+
+  request_locations?:
+    | ApiLocation[]
+    | ApiLocation
+    | null;
+
+  request_status_history?:
+    | StatusHistoryItem[]
+    | null;
+
   category: string;
   severity: string;
   note?: string | null;
-  callback_number?: string | null;
-  current_status: EmergencyStatus;
-  eta_minutes?: number | null;
-
-  request_locations?:
-    | {
-        latitude: number;
-        longitude: number;
-        accuracy_meters?: number | null;
-        address_text?: string | null;
-        location_method?: string;
-        captured_at?: string;
-      }[]
-    | {
-        latitude: number;
-        longitude: number;
-        accuracy_meters?: number | null;
-        address_text?: string | null;
-        location_method?: string;
-        captured_at?: string;
-      }
-    | null;
-
-  request_status_history?: Array<{
-    id: string;
-    previous_status?: EmergencyStatus | null;
-    new_status: EmergencyStatus;
-    note?: string | null;
-    actor_role?: string | null;
-    changed_by_system?: boolean;
-    created_at: string;
-  }>;
 };
 
-type TrackingRequest = {
-  /*
-   * Database UUID.
-   *
-   * Used internally when talking to the API.
-   */
+type DetailResponse = {
+  ok?: boolean;
+
+  data?: ApiRequest;
+
+  /* Older backend response */
+  request?: ApiRequest;
+
+  message?: string;
+
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<
+          string,
+          string[]
+        >;
+      };
+
+  requestId?: string;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Normalized UI request                                                      */
+/* -------------------------------------------------------------------------- */
+
+type UiRequest = {
   id: string;
-
-  /*
-   * Human-readable LIVE reference.
-   *
-   * Example:
-   * LIVE-1786490501079
-   */
   referenceCode: string;
-
+  requesterId: string;
   category: string;
   severity: string;
   note: string;
   callbackNumber: string;
-  status: RequestStatus;
+  status: EmergencyStatus;
   etaMinutes?: number;
+  createdAt: string;
+  updatedAt: string;
 
   location: {
     address: string;
@@ -134,10 +184,10 @@ type TrackingRequest = {
     accuracy?: number;
   };
 
-  statusHistory: Array<{
+  history: Array<{
     id: string;
-    status: RequestStatus;
-    note?: string;
+    status: string;
+    note: string;
     createdAt: string;
   }>;
 };
@@ -146,9 +196,57 @@ type TrackingRequest = {
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function getLocation(
-  locations: ApiRequest["request_locations"],
+function getErrorMessage(
+  payload: DetailResponse | null,
+  fallback: string,
 ) {
+  if (!payload) {
+    return fallback;
+  }
+
+  if (
+    typeof payload.error === "string"
+  ) {
+    return payload.error;
+  }
+
+  if (
+    payload.error &&
+    typeof payload.error === "object"
+  ) {
+    const firstDetail =
+      payload.error.details
+        ? Object.values(
+            payload.error.details,
+          )
+            .flat()
+            .find(Boolean)
+        : undefined;
+
+    return (
+      firstDetail ||
+      payload.error.message ||
+      payload.message ||
+      fallback
+    );
+  }
+
+  return (
+    payload.message ||
+    fallback
+  );
+}
+
+function getLocation(
+  request: ApiRequest,
+): ApiLocation | null {
+  if (request.location) {
+    return request.location;
+  }
+
+  const locations =
+    request.request_locations;
+
   if (!locations) {
     return null;
   }
@@ -160,256 +258,561 @@ function getLocation(
   return locations;
 }
 
-function convertApiRequest(
-  apiRequest: ApiRequest,
-): TrackingRequest {
-  const location = getLocation(
-    apiRequest.request_locations,
-  );
+function normalizeRequest(
+  request: ApiRequest,
+): UiRequest {
+  const location =
+    getLocation(request);
+
+  const createdAt =
+    request.createdAt ??
+    request.created_at ??
+    new Date().toISOString();
+
+  const updatedAt =
+    request.updatedAt ??
+    request.updated_at ??
+    createdAt;
+
+  const status =
+    request.currentStatus ??
+    request.current_status ??
+    "submitted";
+
+  const rawHistory =
+    request.statusHistory ??
+    request.history ??
+    request.request_status_history ??
+    [];
 
   return {
-    /*
-     * KEEP THE REAL DATABASE UUID.
-     *
-     * The API can use this UUID for:
-     *
-     * GET  /api/requests/<uuid>
-     * PATCH /api/requests/<uuid>
-     */
-    id: apiRequest.id,
+    id:
+      request.id,
 
-    /*
-     * Human-readable reference shown to requester.
-     */
     referenceCode:
-      apiRequest.reference_code ||
-      apiRequest.id,
+      request.reference ??
+      request.reference_code ??
+      request.id,
 
-    category: apiRequest.category,
+    requesterId:
+      request.requesterId ??
+      request.requester_id ??
+      "",
 
-    severity: apiRequest.severity,
+    category:
+      request.category,
+
+    severity:
+      request.severity,
 
     note:
-      apiRequest.note ||
-      "No additional description provided.",
+      request.note?.trim() ||
+      "No incident note provided.",
 
     callbackNumber:
-      apiRequest.callback_number ||
-      "Not provided",
+      request.callbackNumber ??
+      request.callback_number ??
+      "",
 
-    status: toUiStatus(
-      apiRequest.current_status,
-    ),
+    status,
 
     etaMinutes:
-      apiRequest.eta_minutes ??
+      request.etaMinutes ??
+      request.eta_minutes ??
       undefined,
+
+    createdAt,
+
+    updatedAt,
 
     location: {
       address:
-        location?.address_text ||
-        "Location confirmed",
+        location?.addressText ??
+        location?.address_text ??
+        location?.landmark ??
+        "Emergency request location",
 
       method:
-        location?.location_method ||
+        location?.locationMethod ??
+        location?.location_method ??
         "gps",
 
-      lat: location?.latitude,
+      lat:
+        typeof location?.latitude ===
+        "number"
+          ? location.latitude
+          : undefined,
 
-      lng: location?.longitude,
+      lng:
+        typeof location?.longitude ===
+        "number"
+          ? location.longitude
+          : undefined,
 
       accuracy:
+        location?.accuracyMeters ??
         location?.accuracy_meters ??
         undefined,
     },
 
-    statusHistory: (
-      apiRequest.request_status_history ||
-      []
-    ).map((entry) => ({
-      id: entry.id,
-      status: toUiStatus(
-        entry.new_status,
-      ),
-      note:
-        entry.note ||
-        undefined,
-      createdAt: entry.created_at,
-    })),
+    history:
+      Array.isArray(rawHistory)
+        ? rawHistory
+            .map(
+              (
+                item,
+                index,
+              ) => ({
+                id:
+                  item.id ??
+                  `${request.id}-${index}`,
+
+                status:
+                  item.newStatus ??
+                  item.new_status ??
+                  status,
+
+                note:
+                  item.note ??
+                  item.reason ??
+                  "",
+
+                createdAt:
+                  item.createdAt ??
+                  item.created_at ??
+                  updatedAt,
+              }),
+            )
+            .sort(
+              (a, b) =>
+                new Date(
+                  b.createdAt,
+                ).getTime() -
+                new Date(
+                  a.createdAt,
+                ).getTime(),
+            )
+        : [],
   };
+}
+
+function formatDateTime(
+  value: string,
+) {
+  const date =
+    new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime(),
+    )
+  ) {
+    return "Unknown time";
+  }
+
+  return date.toLocaleString(
+    undefined,
+    {
+      dateStyle: "medium",
+      timeStyle: "short",
+    },
+  );
 }
 
 /* -------------------------------------------------------------------------- */
 /* Page                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export default function TrackRequest() {
+export default function RequestTrackingPage() {
   const params =
-    useParams<{ id: string }>();
+    useParams<{
+      id: string;
+    }>();
 
-  /*
-   * The URL can contain either:
-   *
-   * UUID:
-   * 54c36827-4b93-4606-8dd1-7b7bcae23afe
-   *
-   * OR:
-   * LIVE-1786490501079
-   */
-  const id = params?.id;
+  const router =
+    useRouter();
 
-  const router = useRouter();
+  const {
+    user,
+    loading: authLoading,
+  } = useAuth();
 
-  const [request, setRequest] =
-    useState<TrackingRequest | null>(
+  const id =
+    typeof params?.id === "string"
+      ? params.id
+      : "";
+
+  const [
+    request,
+    setRequest,
+  ] =
+    useState<UiRequest | null>(
       null,
     );
 
-  const [loading, setLoading] =
+  const [
+    loading,
+    setLoading,
+  ] =
     useState(true);
 
-  const [loadError, setLoadError] =
+  const [
+    notFound,
+    setNotFound,
+  ] =
+    useState(false);
+
+  const [
+    error,
+    setError,
+  ] =
     useState("");
 
-  const [detailsOpen, setDetailsOpen] =
-    useState(false);
-
-  const [statusOpen, setStatusOpen] =
-    useState(false);
-
-  const [cancelling, setCancelling] =
-    useState(false);
-
   /* ---------------------------------------------------------------------- */
-  /* Load request                                                            */
+  /* Load request                                                           */
   /* ---------------------------------------------------------------------- */
 
-  async function loadRequest() {
+  const loadRequest =
+    useCallback(
+      async (
+        silent = false,
+      ) => {
+        /*
+         * Do not decide "not found" while auth is still restoring the
+         * httpOnly-cookie session. That was one cause of the false screen.
+         */
+        if (
+          authLoading ||
+          !user ||
+          !id
+        ) {
+          return;
+        }
+
+        if (!silent) {
+          setLoading(true);
+        }
+
+        setError("");
+        setNotFound(false);
+
+        try {
+          const response =
+            await fetch(
+              `/api/requests/${encodeURIComponent(
+                id,
+              )}`,
+              {
+                method:
+                  "GET",
+
+                credentials:
+                  "include",
+
+                cache:
+                  "no-store",
+              },
+            );
+
+          let payload:
+            | DetailResponse
+            | null = null;
+
+          try {
+            payload =
+              (await response.json()) as
+                DetailResponse;
+          } catch {
+            payload = null;
+          }
+
+          console.log(
+            "TRACK REQUEST STATUS:",
+            response.status,
+          );
+
+          console.log(
+            "TRACK REQUEST RESPONSE:",
+            payload,
+          );
+
+          /*
+           * Only show the "not found" screen when the SERVER truly returned
+           * 404. A successful 200 with a different response envelope must not
+           * be interpreted as a missing request.
+           */
+          if (
+            response.status ===
+            404
+          ) {
+            setRequest(null);
+            setNotFound(true);
+
+            setError(
+              getErrorMessage(
+                payload,
+                "Emergency request not found.",
+              ),
+            );
+
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error(
+              getErrorMessage(
+                payload,
+                `Unable to load this emergency request. Server returned ${response.status}.`,
+              ),
+            );
+          }
+
+          /*
+           * CURRENT middleware response:
+           *
+           * {
+           *   ok: true,
+           *   data: { ...request },
+           *   requestId: "..."
+           * }
+           *
+           * OLD backend response:
+           *
+           * {
+           *   request: { ...request }
+           * }
+           *
+           * Support both while the project is being migrated.
+           */
+          const apiRequest =
+            payload?.data ??
+            payload?.request ??
+            null;
+
+          if (!apiRequest) {
+            throw new Error(
+              "The server returned a successful response but did not include the emergency request.",
+            );
+          }
+
+          setRequest(
+            normalizeRequest(
+              apiRequest,
+            ),
+          );
+
+          setNotFound(false);
+        } catch (loadError) {
+          console.error(
+            "Unable to load tracked request:",
+            loadError,
+          );
+
+          /*
+           * A network/parsing error is NOT "request not found".
+           * Keep the retry screen separate from a real 404.
+           */
+          setError(
+            loadError instanceof
+            Error
+              ? loadError.message
+              : "Unable to load this emergency request.",
+          );
+        } finally {
+          if (!silent) {
+            setLoading(false);
+          }
+        }
+      },
+      [
+        authLoading,
+        id,
+        user,
+      ],
+    );
+
+  /* ---------------------------------------------------------------------- */
+  /* Initial load                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (
+      authLoading
+    ) {
+      return;
+    }
+
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
     if (!id) {
       setLoading(false);
-      setLoadError(
-        "Request ID is missing.",
+      setNotFound(true);
+      setError(
+        "Emergency request not found.",
       );
       return;
     }
 
-    try {
-      setLoading(true);
-      setLoadError("");
+    void loadRequest();
+  }, [
+    authLoading,
+    id,
+    loadRequest,
+    user,
+  ]);
 
-      /*
-       * IMPORTANT:
-       *
-       * We are NOT requiring JWT here.
-       *
-       * The old requester flow uses the
-       * request ID/reference from the URL.
-       */
-      const response = await fetch(
-        `/api/requests/${encodeURIComponent(
-          id,
-        )}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        },
-      );
-
-      let data: {
-        request?: ApiRequest;
-        error?: string;
-      } | null = null;
-
-      try {
-        data = await response.json();
-      } catch {
-        data = null;
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "Emergency request not found.",
-        );
-      }
-
-      if (!data?.request) {
-        throw new Error(
-          "Emergency request not found.",
-        );
-      }
-
-      const converted =
-        convertApiRequest(
-          data.request,
-        );
-
-      setRequest(converted);
-    } catch (error) {
-      console.error(
-        "Failed to load emergency request:",
-        error,
-      );
-
-      setRequest(null);
-
-      setLoadError(
-        error instanceof Error
-          ? error.message
-          : "Emergency request could not be loaded.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+  /* ---------------------------------------------------------------------- */
+  /* Lightweight tracking refresh                                          */
+  /* ---------------------------------------------------------------------- */
 
   useEffect(() => {
-    void loadRequest();
+    if (
+      authLoading ||
+      !user ||
+      !id ||
+      notFound ||
+      !request
+    ) {
+      return;
+    }
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    const timer =
+      window.setInterval(
+        () => {
+          void loadRequest(true);
+        },
+        15_000,
+      );
+
+    return () => {
+      window.clearInterval(
+        timer,
+      );
+    };
+  }, [
+    authLoading,
+    id,
+    loadRequest,
+    notFound,
+    request,
+    user,
+  ]);
 
   /* ---------------------------------------------------------------------- */
-  /* Loading state                                                           */
+  /* Map request                                                            */
   /* ---------------------------------------------------------------------- */
 
-  if (loading) {
-    return <PageSkeleton map />;
+  const mapRequest =
+    useMemo(() => {
+      if (!request) {
+        return undefined;
+      }
+
+      /*
+       * LiveResponseMap in the existing requester GUI consumes the old
+       * frontend-friendly shape. Keep that shape at the component boundary.
+       */
+      return {
+        id:
+          request.id,
+
+        referenceCode:
+          request.referenceCode,
+
+        requesterId:
+          request.requesterId,
+
+        category:
+          request.category,
+
+        severity:
+          request.severity,
+
+        note:
+          request.note,
+
+        callbackNumber:
+          request.callbackNumber,
+
+        status:
+          request.status,
+
+        etaMinutes:
+          request.etaMinutes,
+
+        createdAt:
+          request.createdAt,
+
+        updatedAt:
+          request.updatedAt,
+
+        location:
+          request.location,
+      } as any;
+    }, [request]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Loading                                                                */
+  /* ---------------------------------------------------------------------- */
+
+  if (
+    authLoading ||
+    loading
+  ) {
+    return (
+      <PageSkeleton map />
+    );
+  }
+
+  /*
+   * If AuthProvider has not restored a user, do not pretend the request is
+   * missing. The protected layout/middleware will handle the auth redirect.
+   */
+  if (!user) {
+    return (
+      <PageSkeleton map />
+    );
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Error state                                                             */
+  /* Real 404                                                               */
   /* ---------------------------------------------------------------------- */
 
-  if (!request) {
+  if (
+    notFound
+  ) {
     return (
       <div className="app-page">
         <Panel
           mobileCard={false}
           className="-mx-5 border-x-0 p-8 text-center md:mx-0 md:rounded-[22px] md:border-x"
         >
-          <h1 className="text-xl font-semibold">
+          <h1 className="text-xl font-semibold text-[#102b3f]">
             Request not found
           </h1>
 
-          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[#687b89]">
-            {loadError ||
-              "This emergency request could not be found."}
+          <p className="mt-2 text-sm text-[#687b89]">
+            {error ||
+              "Emergency request not found."}
           </p>
 
-          <div className="mt-5 flex justify-center gap-2">
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
             <Button
               variant="outline"
               onClick={() =>
                 void loadRequest()
               }
             >
+              <RefreshCw className="h-4 w-4" />
               Try again
             </Button>
 
             <Button
               onClick={() =>
-                router.replace(
+                router.push(
                   "/app/requester/history",
                 )
               }
@@ -423,408 +826,155 @@ export default function TrackRequest() {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Active request                                                          */
+  /* Load error that was NOT a 404                                         */
   /* ---------------------------------------------------------------------- */
 
-  const hasActiveRequest =
-    isActiveStatus(
-      request.status,
+  if (
+    error &&
+    !request
+  ) {
+    return (
+      <div className="app-page">
+        <Panel
+          mobileCard={false}
+          className="-mx-5 border-x-0 p-8 text-center md:mx-0 md:rounded-[22px] md:border-x"
+        >
+          <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#fff0ef] text-[#c73937]">
+            <AlertCircle className="h-5 w-5" />
+          </span>
+
+          <h1 className="mt-4 text-xl font-semibold text-[#102b3f]">
+            Unable to load request
+          </h1>
+
+          <p className="mx-auto mt-2 max-w-md text-sm text-[#687b89]">
+            {error}
+          </p>
+
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() =>
+                void loadRequest()
+              }
+            >
+              <RefreshCw className="h-4 w-4" />
+              Try again
+            </Button>
+
+            <Link
+              href="/app/requester/history"
+            >
+              <Button>
+                <History className="h-4 w-4" />
+                Back to history
+              </Button>
+            </Link>
+          </div>
+        </Panel>
+      </div>
     );
+  }
 
-  /* ---------------------------------------------------------------------- */
-  /* Cancellation                                                            */
-  /* ---------------------------------------------------------------------- */
-
-  async function requestCancellation() {
-    if (
-      !request ||
-      cancelling
-    ) {
-      return;
-    }
-
-    try {
-      setCancelling(true);
-
-      /*
-       * Use the REAL database UUID.
-       *
-       * Example:
-       *
-       * /api/requests/54c36827-4b93-4606-8dd1-7b7bcae23afe
-       *
-       * The backend also supports LIVE references,
-       * but once the request is loaded we have the
-       * real UUID available.
-       */
-      const response = await fetch(
-        `/api/requests/${encodeURIComponent(
-          request.id,
-        )}`,
-        {
-          method: "PATCH",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            status: "cancelled",
-
-            note:
-              "Cancellation requested by requester.",
-          }),
-        },
-      );
-
-      let data: {
-        request?: ApiRequest;
-        error?: string;
-      } | null = null;
-
-      try {
-        data = await response.json();
-      } catch {
-        data = null;
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            "The request could not be cancelled.",
-        );
-      }
-
-      await loadRequest();
-    } catch (error) {
-      console.error(
-        "Failed to cancel request:",
-        error,
-      );
-
-      setLoadError(
-        error instanceof Error
-          ? error.message
-          : "The request could not be cancelled.",
-      );
-    } finally {
-      setCancelling(false);
-    }
+  if (!request) {
+    return (
+      <PageSkeleton map />
+    );
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Map request                                                             */
-  /* ---------------------------------------------------------------------- */
-
-  const mapRequest = {
-    ...request,
-
-    location: {
-      ...request.location,
-
-      address:
-        request.location.address,
-    },
-  };
-
-  /* ---------------------------------------------------------------------- */
-  /* Render                                                                  */
+  /* Tracking page                                                          */
   /* ---------------------------------------------------------------------- */
 
   return (
-    <div className="md:grid md:gap-5">
-      {/* Desktop heading */}
+    <div className="app-page grid gap-5">
+      <PageHeading
+        eyebrow="Emergency request"
+        title={request.referenceCode}
+        description={`${request.category} · ${request.severity} priority`}
+        action={
+          <Badge
+            tone={requestStatusTone(
+              request.status as any,
+            )}
+            className="min-h-9 px-4"
+          >
+            {request.status}
+          </Badge>
+        }
+      />
 
-      <div className="hidden md:block">
-        <PageHeading
-          eyebrow="Live tracking"
-          title={
-            request.referenceCode
-          }
-          description={`${request.category} · ${request.severity} priority`}
-          action={
-            <Badge
-              tone={requestStatusTone(
-                request.status,
-              )}
-              className="min-h-9 px-4"
-            >
-              {request.status}
-            </Badge>
-          }
+      <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
+        <LiveResponseMap
+          request={mapRequest}
+          immersive
+          className="h-[48dvh] min-h-[360px] md:h-[62dvh] md:min-h-[480px]"
         />
-      </div>
 
-      <div
-        className="
-          fixed inset-x-0
-          bottom-[calc(5.75rem+env(safe-area-inset-bottom))]
-          top-20 z-10
-          flex min-h-0 flex-col
-          overflow-hidden
-          bg-[#f5f7f9]
-
-          md:static
-          md:z-auto
-          md:grid
-          md:grid-cols-[1.35fr_.65fr]
-          md:gap-4
-          md:overflow-visible
-          md:bg-transparent
-        "
-      >
-        {/* Mobile status control */}
-
-        <button
-          type="button"
-          onClick={() =>
-            setStatusOpen(true)
-          }
-          className="
-            flex h-14 shrink-0 items-center
-            gap-3
-            border-b border-[#dce5ea]
-            bg-white px-4 text-left
-            md:hidden
-          "
-          aria-label="Open response status"
-        >
-          <span className="relative flex h-3 w-3 shrink-0">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#0f6872]/35" />
-
-            <span className="relative inline-flex h-3 w-3 rounded-full bg-[#0f6872]" />
-          </span>
-
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold text-[#102b3f]">
-              {request.status}
-
-              {request.etaMinutes
-                ? ` · ETA ${request.etaMinutes} min`
-                : " · ETA pending"}
-            </span>
-          </span>
-
-          <span className="text-xs font-semibold text-[#0f6872]">
-            Updates
-          </span>
-
-          <ChevronRight className="h-4 w-4 shrink-0 text-[#0f6872]" />
-        </button>
-
-        {/* Map */}
-
-        <div className="min-h-0 flex-1 overflow-hidden md:h-auto md:overflow-visible">
-          <LiveResponseMap
-            request={
-              mapRequest as any
-            }
-            responder={undefined}
-            immersive
-            className="
-              h-full min-h-0 w-full
-              rounded-none
-
-              md:h-[72dvh]
-              md:min-h-[500px]
-              md:rounded-[22px]
-            "
-            mobileAction={
-              <div
-                className={
-                  hasActiveRequest
-                    ? "grid grid-cols-2 gap-2"
-                    : "grid grid-cols-1 gap-2"
-                }
-              >
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={() =>
-                    setDetailsOpen(
-                      true,
-                    )
-                  }
-                >
-                  Request details
-                </Button>
-
-                {hasActiveRequest ? (
-                  <Button
-                    variant="danger"
-                    className="w-full"
-                    onClick={
-                      requestCancellation
-                    }
-                    disabled={
-                      cancelling
-                    }
-                  >
-                    {cancelling ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Cancelling...
-                      </>
-                    ) : (
-                      "Cancel request"
-                    )}
-                  </Button>
-                ) : null}
-              </div>
-            }
-          />
-        </div>
-
-        {/* Desktop response information */}
-
-        <div className="hidden content-start gap-4 md:grid">
+        <div className="grid content-start gap-4">
           <Panel>
             <PanelHeader
-              title="Response status"
-              description={
-                request.etaMinutes
-                  ? `Estimated arrival in ${request.etaMinutes} minutes`
-                  : "No trusted ETA is currently available"
-              }
+              title="Request status"
+              description="LIVE will show changes to your emergency request here."
             />
 
-            <StatusTimeline
-              entries={
-                request.statusHistory as any
-              }
-            />
-          </Panel>
+            <div className="grid gap-3 p-5">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-[#f2f6f8] p-3">
+                  <Clock3 className="h-4 w-4 text-[#0f5b67]" />
 
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() =>
-              setDetailsOpen(
-                true,
-              )
-            }
-          >
-            View request details
-          </Button>
+                  <p className="mt-2 text-xs font-semibold text-[#748693]">
+                    Estimated arrival
+                  </p>
 
-          {hasActiveRequest ? (
-            <Button
-              variant="danger"
-              className="w-full"
-              onClick={
-                requestCancellation
-              }
-              disabled={
-                cancelling
-              }
-            >
-              {cancelling ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Cancelling...
-                </>
-              ) : (
-                "Request cancellation"
-              )}
-            </Button>
-          ) : null}
-        </div>
-      </div>
+                  <p className="mt-1 font-semibold text-[#102b3f]">
+                    {request.etaMinutes
+                      ? `${request.etaMinutes} min`
+                      : "Pending"}
+                  </p>
+                </div>
 
-      {/* Mobile status sheet */}
+                <div className="rounded-xl bg-[#f2f6f8] p-3">
+                  <MapPin className="h-4 w-4 text-[#0f5b67]" />
 
-      <Sheet
-        open={statusOpen}
-        onOpenChange={
-          setStatusOpen
-        }
-        title="Response status"
-        description={
-          request.referenceCode
-        }
-        className="max-h-[82dvh]"
-      >
-        <div className="border-b border-[#e2e8ed] px-5 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.1em] text-[#758792]">
-                Current update
-              </p>
+                  <p className="mt-2 text-xs font-semibold text-[#748693]">
+                    Location
+                  </p>
 
-              <p className="mt-1 text-lg font-semibold text-[#102b3f]">
-                {request.status}
-              </p>
-            </div>
+                  <p className="mt-1 truncate font-semibold text-[#102b3f]">
+                    {request.location.method}
+                  </p>
+                </div>
+              </div>
 
-            <Badge
-              tone={requestStatusTone(
-                request.status,
-              )}
-            >
-              {request.etaMinutes
-                ? `ETA ${request.etaMinutes} min`
-                : "ETA pending"}
-            </Badge>
-          </div>
-        </div>
+              <div className="border-t border-[#e2e8ed] pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
+                  Incident
+                </p>
 
-        <div className="max-h-[calc(82dvh-9rem)] overflow-y-auto">
-          <StatusTimeline
-            entries={
-              request.statusHistory as any
-            }
-          />
-        </div>
-      </Sheet>
+                <p className="mt-1 font-semibold text-[#102b3f]">
+                  {request.category}
+                </p>
 
-      {/* Request details sheet */}
+                <p className="mt-2 text-sm leading-6 text-[#5f7482]">
+                  {request.note}
+                </p>
+              </div>
 
-      <Sheet
-        open={detailsOpen}
-        onOpenChange={
-          setDetailsOpen
-        }
-        title="Request details"
-        description={
-          request.referenceCode
-        }
-      >
-        <div className="p-5">
-          <dl className="divide-y divide-[#e2e8ed] border-y border-[#e2e8ed]">
-            {/* Location */}
+              <div className="border-t border-[#e2e8ed] pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
+                  Confirmed location
+                </p>
 
-            <div className="flex gap-3 py-4">
-              <MapPin className="h-5 w-5 shrink-0 text-[#0f5b67]" />
+                <p className="mt-1 text-sm font-semibold text-[#102b3f]">
+                  {request.location.address}
+                </p>
 
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
-                  Location
-                </dt>
-
-                <dd className="mt-1 font-semibold">
-                  {
-                    request
-                      .location
-                      .address
-                  }
-                </dd>
-
-                <dd className="mt-1 text-xs text-[#71828d]">
-                  {
-                    request
-                      .location
-                      .method
-                  }
-                </dd>
-
-                {request.location
-                  .lat !==
-                    undefined &&
-                request.location
-                  .lng !==
-                    undefined ? (
-                  <dd className="mt-1 text-xs text-[#71828d]">
+                {typeof request.location.lat ===
+                  "number" &&
+                typeof request.location.lng ===
+                  "number" ? (
+                  <p className="mt-1 text-xs text-[#71828d]">
                     {request.location.lat.toFixed(
                       6,
                     )}
@@ -832,83 +982,108 @@ export default function TrackRequest() {
                     {request.location.lng.toFixed(
                       6,
                     )}
-                  </dd>
-                ) : null}
-
-                {request.location
-                  .accuracy !==
-                    undefined ? (
-                  <dd className="mt-1 text-xs text-[#71828d]">
-                    Accuracy: ±
-                    {Math.round(
-                      request.location
-                        .accuracy,
-                    )}
-                    m
-                  </dd>
+                  </p>
                 ) : null}
               </div>
-            </div>
 
-            {/* Callback */}
+              <div className="border-t border-[#e2e8ed] pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
+                  Submitted
+                </p>
 
-            <div className="flex gap-3 py-4">
-              <PhoneCall className="h-5 w-5 shrink-0 text-[#0f5b67]" />
+                <p className="mt-1 text-sm text-[#5f7482]">
+                  {formatDateTime(
+                    request.createdAt,
+                  )}
+                </p>
+              </div>
 
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
-                  Callback
-                </dt>
-
-                <dd className="mt-1 font-semibold">
-                  {
-                    request.callbackNumber
+              <div className="flex gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() =>
+                    void loadRequest()
                   }
-                </dd>
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Refresh
+                </Button>
+
+                <Link
+                  href="/app/requester/history"
+                  className="flex-1"
+                >
+                  <Button
+                    className="w-full"
+                  >
+                    <History className="h-4 w-4" />
+                    History
+                  </Button>
+                </Link>
               </div>
             </div>
+          </Panel>
 
-            {/* Incident note */}
+          <Panel>
+            <PanelHeader
+              title="Activity"
+              description="Latest request updates."
+            />
 
-            <div className="flex gap-3 py-4">
-              <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
+            <div className="p-5">
+              {request.history.length >
+              0 ? (
+                <div className="grid gap-4">
+                  {request.history.map(
+                    (
+                      item,
+                    ) => (
+                      <div
+                        key={
+                          item.id
+                        }
+                        className="flex gap-3"
+                      >
+                        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#e7f3f4] text-[#0f5b67]">
+                          <Siren className="h-4 w-4" />
+                        </span>
 
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
-                  Incident note
-                </dt>
+                        <div className="min-w-0">
+                          <p className="font-semibold capitalize text-[#102b3f]">
+                            {item.status.replace(
+                              /_/g,
+                              " ",
+                            )}
+                          </p>
 
-                <dd className="mt-1 leading-6">
-                  {request.note}
-                </dd>
-              </div>
+                          {item.note ? (
+                            <p className="mt-1 text-sm text-[#607581]">
+                              {
+                                item.note
+                              }
+                            </p>
+                          ) : null}
+
+                          <p className="mt-1 text-xs text-[#84949d]">
+                            {formatDateTime(
+                              item.createdAt,
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                    ),
+                  )}
+                </div>
+              ) : (
+                <div className="py-3 text-sm text-[#687b89]">
+                  Your request has been submitted. New status updates will appear here.
+                </div>
+              )}
             </div>
-
-            {/* Status */}
-
-            <div className="flex gap-3 py-4">
-              <Clock3 className="h-5 w-5 shrink-0 text-[#0f5b67]" />
-
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-[#748693]">
-                  Current status
-                </dt>
-
-                <dd className="mt-1 font-semibold">
-                  {request.status}
-                </dd>
-              </div>
-            </div>
-          </dl>
-
-          <div className="mt-5 border-l-4 border-[#d9a85d] bg-[#fff6e6] p-4 text-sm leading-6 text-[#78521e]">
-            LIVE is a prototype. It must
-            not be interpreted as
-            confirmation that real emergency
-            services have been contacted.
-          </div>
+          </Panel>
         </div>
-      </Sheet>
+      </div>
     </div>
   );
 }

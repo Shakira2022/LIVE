@@ -1,7 +1,7 @@
 "use client";
 
 import { Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,8 +23,103 @@ interface AdminUser {
   created_at: string;
 }
 
+
+type AdminUsersResponse = {
+  ok?: boolean;
+  data?: {
+    users?: AdminUser[];
+    user?: AdminUser;
+  };
+  users?: AdminUser[];
+  user?: AdminUser;
+  message?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+      };
+};
+
+function getApiMessage(
+  result: AdminUsersResponse | null,
+  fallback: string,
+) {
+  if (!result) return fallback;
+
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+
+  if (
+    result.error &&
+    typeof result.error === "object"
+  ) {
+    return (
+      result.error.message ||
+      result.message ||
+      fallback
+    );
+  }
+
+  return result.message || fallback;
+}
+
+async function readJson<T>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(
+    input,
+    requestInit,
+  );
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse = await fetch(
+    "/api/auth/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    },
+  );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  return fetch(
+    input,
+    requestInit,
+  );
+}
+
+
 export default function AdminUsers() {
-  const { user } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    refresh,
+  } = useAuth();
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,31 +127,87 @@ export default function AdminUsers() {
   const [error, setError] = useState("");
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
 
-  async function loadUsers() {
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await fetch("/api/admin/users");
-
-      const result = await response.json();
-
-      if (!response.ok || !result.ok) {
-        setError(result.message || "Unable to load users.");
+  const loadUsers =
+    useCallback(async () => {
+      if (!user?.id) {
+        setUsers([]);
+        setLoading(false);
         return;
       }
 
-      setUsers(result.users ?? []);
-    } catch {
-      setError("Unable to connect to the admin users service.");
-    } finally {
-      setLoading(false);
-    }
-  }
+      try {
+        setLoading(true);
+        setError("");
+
+        const response =
+          await authenticatedFetch(
+            "/api/admin/users",
+            {
+              method: "GET",
+              cache: "no-store",
+            },
+          );
+
+        const result =
+          await readJson<AdminUsersResponse>(
+            response,
+          );
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            await refresh();
+          }
+
+          setUsers([]);
+          setError(
+            getApiMessage(
+              result,
+              "Unable to load users.",
+            ),
+          );
+          return;
+        }
+
+        const nextUsers =
+          result?.data?.users ??
+          result?.users ??
+          [];
+
+        setUsers(
+          Array.isArray(nextUsers)
+            ? nextUsers
+            : [],
+        );
+      } catch {
+        setUsers([]);
+        setError(
+          "Unable to connect to the admin users service.",
+        );
+      } finally {
+        setLoading(false);
+      }
+    }, [
+      refresh,
+      user?.id,
+    ]);
 
   useEffect(() => {
-    loadUsers();
-  }, []);
+    if (authLoading) {
+      return;
+    }
+
+    if (!user?.id) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
+
+    void loadUsers();
+  }, [
+    authLoading,
+    loadUsers,
+    user?.id,
+  ]);
 
   async function updateUser(
     id: string,
@@ -69,24 +220,54 @@ export default function AdminUsers() {
       setBusyUserId(id);
       setError("");
 
-      const response = await fetch(`/api/admin/users/${id}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(changes),
-      });
+      const response =
+        await authenticatedFetch(
+          `/api/admin/users/${id}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(changes),
+          },
+        );
 
-      const result = await response.json();
+      const result =
+        await readJson<AdminUsersResponse>(
+          response,
+        );
 
-      if (!response.ok || !result.ok) {
-        setError(result.message || "Unable to update the user.");
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refresh();
+        }
+
+        setError(
+          getApiMessage(
+            result,
+            "Unable to update the user.",
+          ),
+        );
+        return;
+      }
+
+      const updatedUser =
+        result?.data?.user ??
+        result?.user ??
+        null;
+
+      if (!updatedUser) {
+        setError(
+          "The user was updated, but the server did not return the updated record.",
+        );
         return;
       }
 
       setUsers((current) =>
         current.map((item) =>
-          item.id === id ? result.user : item,
+          item.id === id
+            ? updatedUser
+            : item,
         ),
       );
     } catch {
@@ -114,7 +295,7 @@ export default function AdminUsers() {
     });
   }, [users, search]);
 
-  if (loading || !user) {
+  if (authLoading || loading || !user) {
     return <PageSkeleton />;
   }
 

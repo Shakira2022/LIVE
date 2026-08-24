@@ -15,43 +15,46 @@ import {
 interface SupabaseEmergencyRequest {
   id: string;
 
-  reference_code?:
-    | string
-    | null;
+  /*
+   * Support both the real Supabase/database field names and the
+   * camelCase middleware/UI shape used by the newer pages.
+   */
+  reference_code?: string | null;
+  referenceCode?: string | null;
+  reference?: string | null;
 
-  requester_id?:
-    | string
-    | null;
+  requester_id?: string | null;
+  requesterId?: string | null;
 
-  category?:
-    | string
-    | null;
+  category?: string | null;
 
-  severity?:
-    | string
-    | null;
+  severity?: string | null;
 
-  note?:
-    | string
-    | null;
+  note?: string | null;
 
-  callback_number?:
-    | string
-    | null;
+  callback_number?: string | null;
+  callbackNumber?: string | null;
 
-  current_status?:
-    | string
-    | null;
+  current_status?: string | null;
+  currentStatus?: string | null;
+  status?: string | null;
+
+  /*
+   * emergency_requests has both submitted_at and created_at.
+   * New auditor pages return camelCase aliases, while older pages
+   * still pass snake_case rows directly.
+   */
+  submitted_at?: string | null;
+  submittedAt?: string | null;
 
   created_at?: string | null;
+  createdAt?: string | null;
 
-  updated_at?:
-    | string
-    | null;
+  updated_at?: string | null;
+  updatedAt?: string | null;
 
-  is_active?:
-    | boolean
-    | null;
+  is_active?: boolean | null;
+  isActive?: boolean | null;
 }
 
 export function RequestListItem({
@@ -74,7 +77,22 @@ export function RequestListItem({
 
   const status =
     request.current_status ||
+    request.currentStatus ||
+    request.status ||
     "submitted";
+
+  const referenceCode =
+    request.reference_code ||
+    request.referenceCode ||
+    request.reference ||
+    request.id;
+
+  const requestTime =
+    request.submitted_at ||
+    request.submittedAt ||
+    request.created_at ||
+    request.createdAt ||
+    null;
 
   const content = (
     <div className="flex items-start gap-3">
@@ -104,8 +122,7 @@ export function RequestListItem({
 
             {/* Reference code */}
             <p className="mt-1 truncate text-xs font-semibold text-[#71828d]">
-              {request.reference_code ||
-                request.id}
+              {referenceCode}
             </p>
           </div>
 
@@ -133,8 +150,8 @@ export function RequestListItem({
           <span className="inline-flex items-center gap-1.5">
             <Clock3 className="h-3.5 w-3.5" />
 
-            {request.created_at
-              ? timeAgo(request.created_at)
+            {requestTime
+              ? timeAgo(requestTime)
               : "Unknown time"}
           </span>
         </div>

@@ -1,56 +1,162 @@
-/**
- * GET /api/admin/audit-logs   (Block 8, Person 10 - test evidence)
- *
- * Read-only audit trail for admins and auditors. This is what the auditor
- * screens in app/app/auditor read, and what Person 10 exports as evidence for
- * the handover pack.
- */
+import { z } from "zod";
 
-import { createHandler } from '@/lib/middleware/api/handler';
-import { auditQuerySchema } from '@/lib/middleware/validation';
-import { db } from '@/lib/middleware/server/db';
-import { ApiError } from '@/lib/middleware/errors';
-import type { AuditLogEntry } from '@/types';
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
+
+const logQuerySchema = z.object({
+  type: z.enum([
+    "audit",
+    "security",
+    "application",
+    "integration",
+  ]),
+});
+
+const LOG_TABLES = {
+  audit: "audit_logs",
+  security: "security_logs",
+  application: "application_logs",
+  integration: "integration_logs",
+} as const;
+
+
+function toIsoTimestamp(
+  value: unknown,
+): unknown {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return value;
+  }
+
+  const direct = new Date(value);
+
+  if (!Number.isNaN(direct.getTime())) {
+    return direct.toISOString();
+  }
+
+  /*
+   * PostgreSQL timestamptz example:
+   * 2026-08-19 21:05:11.193614+00
+   */
+  const match = value
+    .trim()
+    .match(
+      /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2}(?::?\d{2})?|Z)?$/,
+    );
+
+  if (!match) {
+    return value;
+  }
+
+  const [, datePart, timePart, fractionRaw, zoneRaw] =
+    match;
+
+  const fraction = fractionRaw
+    ? `.${fractionRaw.slice(0, 3).padEnd(3, "0")}`
+    : "";
+
+  let zone = zoneRaw || "Z";
+
+  if (/^[+-]\d{2}$/.test(zone)) {
+    zone = `${zone}:00`;
+  } else if (/^[+-]\d{4}$/.test(zone)) {
+    zone = `${zone.slice(0, 3)}:${zone.slice(3)}`;
+  }
+
+  const parsed = new Date(
+    `${datePart}T${timePart}${fraction}${zone}`,
+  );
+
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toISOString();
+}
+
+function normalizeLogTimestamps(
+  rows: unknown[],
+) {
+  return rows.map((row) => {
+    if (
+      !row ||
+      typeof row !== "object"
+    ) {
+      return row;
+    }
+
+    const record =
+      row as Record<string, unknown>;
+
+    return {
+      ...record,
+      created_at:
+        toIsoTimestamp(
+          record.created_at,
+        ),
+      updated_at:
+        toIsoTimestamp(
+          record.updated_at,
+        ),
+    };
+  });
+}
 
 export const GET = createHandler(
   {
-    name: 'admin.audit_logs',
-    auth: 'required',
-    roles: ['admin', 'auditor'],
-    query: auditQuerySchema,
-    rateLimit: { limit: 60, windowMs: 60_000, by: 'user' },
+    name: "auditor.logs",
+    auth: "required",
+    roles: ["auditor", "admin"],
+    query: logQuerySchema,
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
   },
   async (ctx) => {
-    let query = db()
-      .from('audit_logs')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(ctx.query.offset, ctx.query.offset + ctx.query.limit - 1);
+    /*
+     * Authentication and role checks are handled by createHandler().
+     * Do not manually read an "access_token" cookie here.
+     *
+     * createHandler reads the configured COOKIE_ACCESS value and verifies
+     * the same JWT that /api/auth/login issued.
+     */
+    const table =
+      LOG_TABLES[ctx.query.type];
 
-    if (ctx.query.action) query = query.ilike('action', `%${ctx.query.action}%`);
-    if (ctx.query.targetType) query = query.eq('target_type', ctx.query.targetType);
-    if (ctx.query.result) query = query.eq('result', ctx.query.result);
+    const {
+      data,
+      error,
+    } = await db()
+      .from(table)
+      .select("*")
+      .order("created_at", {
+        ascending: false,
+      })
+      .limit(100);
 
-    const { data, error, count } = await query;
-    if (error) throw ApiError.internal('Could not load the audit log.', error.message);
+    if (error) {
+      throw ApiError.internal(
+        "Unable to retrieve logs.",
+        error.message,
+      );
+    }
 
-    const items: AuditLogEntry[] = (data ?? []).map((row: Record<string, unknown>) => ({
-      id: row.id as string,
-      actorUserId: (row.actor_user_id as string | null) ?? null,
-      actorRole: row.actor_role as AuditLogEntry['actorRole'],
-      organisationId: (row.organisation_id as string | null) ?? null,
-      action: row.action as string,
-      targetType: row.target_type as string,
-      targetId: (row.target_id as string | null) ?? null,
-      requestId: (row.request_id as string | null) ?? null,
-      correlationId: row.correlation_id as string,
-      result: row.result as AuditLogEntry['result'],
-      safeMetadata: (row.safe_metadata as Record<string, unknown>) ?? {},
-      createdAt: row.created_at as string,
-    }));
+    const normalizedLogs =
+      normalizeLogTimestamps(
+        data ?? [],
+      );
 
-    return { items, total: count ?? 0, limit: ctx.query.limit, offset: ctx.query.offset };
+    return {
+      type: ctx.query.type,
+      count:
+        normalizedLogs.length,
+      logs:
+        normalizedLogs,
+    };
   },
 );

@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 import { supabaseAdmin } from "./supabase-admin";
 
 export type IntegrationResult =
@@ -23,60 +25,85 @@ export interface IntegrationLogData {
 
   error_message?: string | null;
 
+  /*
+   * Related calls should explicitly reuse the request/workflow correlation ID.
+   * A fallback UUID is generated only when the caller does not have one.
+   */
   correlation_id?: string | null;
 
   safe_request_metadata?: Record<string, unknown>;
   safe_response_metadata?: Record<string, unknown>;
 }
 
+export interface IntegrationLogResult {
+  success: boolean;
+  correlationId: string;
+  error?: string;
+}
+
 export async function logIntegrationEvent(
   data: IntegrationLogData,
-) {
-  const { error } = await supabaseAdmin
-    .from("integration_logs")
-    .insert({
-      integration_id:
-        data.integration_id ?? null,
+): Promise<IntegrationLogResult> {
+  const correlationId =
+    data.correlation_id?.trim() ||
+    randomUUID();
 
-      organisation_id:
-        data.organisation_id ?? null,
+  const { error } =
+    await supabaseAdmin
+      .from("integration_logs")
+      .insert({
+        integration_id:
+          data.integration_id ??
+          null,
 
-      request_id:
-        data.request_id ?? null,
+        organisation_id:
+          data.organisation_id ??
+          null,
 
-      provider_name:
-        data.provider_name,
+        request_id:
+          data.request_id ??
+          null,
 
-      operation:
-        data.operation,
+        provider_name:
+          data.provider_name,
 
-      endpoint_name:
-        data.endpoint_name ?? null,
+        operation:
+          data.operation,
 
-      http_status:
-        data.http_status ?? null,
+        endpoint_name:
+          data.endpoint_name ??
+          null,
 
-      result:
-        data.result,
+        http_status:
+          data.http_status ??
+          null,
 
-      duration_ms:
-        data.duration_ms ?? null,
+        result:
+          data.result,
 
-      attempt_number:
-        data.attempt_number ?? 1,
+        duration_ms:
+          data.duration_ms ??
+          null,
 
-      error_message:
-        data.error_message ?? null,
+        attempt_number:
+          data.attempt_number ??
+          1,
 
-      correlation_id:
-        data.correlation_id ?? undefined,
+        error_message:
+          data.error_message ??
+          null,
 
-      safe_request_metadata:
-        data.safe_request_metadata ?? {},
+        correlation_id:
+          correlationId,
 
-      safe_response_metadata:
-        data.safe_response_metadata ?? {},
-    });
+        safe_request_metadata:
+          data.safe_request_metadata ??
+          {},
+
+        safe_response_metadata:
+          data.safe_response_metadata ??
+          {},
+      });
 
   if (error) {
     console.error(
@@ -86,11 +113,14 @@ export async function logIntegrationEvent(
 
     return {
       success: false,
-      error: error.message,
+      correlationId,
+      error:
+        error.message,
     };
   }
 
   return {
     success: true,
+    correlationId,
   };
 }

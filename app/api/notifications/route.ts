@@ -1,129 +1,121 @@
-import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase-server";
+import { z } from "zod";
+
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 import { createNotification } from "@/lib/notifications/service";
-import { getCurrentUser } from "@/lib/auth/get-current-user";
 
-export async function GET(request: Request) {
-  try {
-    const session = await getCurrentUser(request);
+export const runtime = "nodejs";
 
-    if (!session) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication is required.",
-        },
-        { status: 401 },
-      );
-    }
+const createNotificationSchema = z.object({
+  recipientUserId: z.string().uuid(),
+  requestId: z.string().uuid().nullable().optional(),
+  notificationType: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(200),
+  message: z.string().trim().min(1).max(4000),
+  sensitivity: z.string().trim().max(50).optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
+});
 
-    const { data, error } = await supabaseServer
+/* -------------------------------------------------------------------------- */
+/* GET /api/notifications                                                     */
+/* -------------------------------------------------------------------------- */
+
+export const GET = createHandler(
+  {
+    name: "notifications.list",
+    auth: "required",
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
+  },
+  async (ctx) => {
+    /*
+     * Authentication comes from createHandler().
+     *
+     * Do NOT manually call getCurrentUser() here. The middleware pipeline
+     * reads the configured access-token cookie and verifies the same JWT
+     * issued by /api/auth/login.
+     */
+    const { data, error } = await db()
       .from("notifications")
       .select(
         "id, recipient_user_id, request_id, notification_type, title, message, sensitivity, created_at, read_at, expires_at",
       )
-      .eq("recipient_user_id", session.userId)
+      .eq(
+        "recipient_user_id",
+        ctx.user.userId,
+      )
       .order("created_at", {
         ascending: false,
       });
 
     if (error) {
-      console.error("Notification fetch error:", error);
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to retrieve notifications.",
-        },
-        { status: 500 },
+      throw ApiError.internal(
+        "Unable to retrieve notifications.",
+        error.message,
       );
     }
 
-    return NextResponse.json({
-      ok: true,
+    return {
       notifications: data ?? [],
-    });
-  } catch (error) {
-    console.error("Notifications GET error:", error);
+    };
+  },
+);
 
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to retrieve notifications.",
-      },
-      { status: 500 },
-    );
-  }
-}
+/* -------------------------------------------------------------------------- */
+/* POST /api/notifications                                                    */
+/* -------------------------------------------------------------------------- */
 
-export async function POST(request: Request) {
-  try {
-    const session = await getCurrentUser(request);
+export const POST = createHandler(
+  {
+    name: "notifications.create",
+    auth: "required",
+    body: createNotificationSchema,
+    rateLimit: {
+      limit: 60,
+      windowMs: 60_000,
+      by: "user",
+    },
+    successStatus: 201,
+  },
+  async (ctx) => {
+    /*
+     * Preserve the existing createNotification service.
+     *
+     * This route only changes authentication/validation so it uses the same
+     * middleware session as the rest of the application.
+     */
+    const notification =
+      await createNotification({
+        recipientUserId:
+          ctx.body.recipientUserId,
 
-    if (!session) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication is required.",
-        },
-        { status: 401 },
-      );
-    }
+        requestId:
+          ctx.body.requestId ??
+          undefined,
 
-    const body = await request.json();
+        notificationType:
+          ctx.body.notificationType,
 
-    const {
-      recipientUserId,
-      requestId,
-      notificationType,
-      title,
-      message,
-      sensitivity,
-      expiresAt,
-    } = body;
+        title:
+          ctx.body.title,
 
-    if (
-      !recipientUserId ||
-      !notificationType ||
-      !title ||
-      !message
-    ) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "recipientUserId, notificationType, title and message are required.",
-        },
-        { status: 400 },
-      );
-    }
+        message:
+          ctx.body.message,
 
-    const notification = await createNotification({
-      recipientUserId,
-      requestId,
-      notificationType,
-      title,
-      message,
-      sensitivity,
-      expiresAt,
-    });
+        sensitivity:
+          ctx.body.sensitivity,
 
-    return NextResponse.json(
-      {
-        ok: true,
-        notification,
-      },
-      { status: 201 },
-    );
-  } catch (error) {
-    console.error("Notifications POST error:", error);
+        expiresAt:
+          ctx.body.expiresAt ??
+          undefined,
+      });
 
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to create notification.",
-      },
-      { status: 500 },
-    );
-  }
-}
+    return {
+      notification,
+    };
+  },
+);

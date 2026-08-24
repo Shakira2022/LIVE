@@ -1,55 +1,52 @@
-import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase-server";
-import { getCurrentUser } from "@/lib/auth/get-current-user";
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-export async function GET(request: Request) {
-  try {
-    const session = await getCurrentUser(request);
+export const runtime = "nodejs";
 
-    if (!session) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication is required.",
-        },
-        { status: 401 },
-      );
-    }
+/* -------------------------------------------------------------------------- */
+/* GET /api/notifications/unread-count                                        */
+/* -------------------------------------------------------------------------- */
 
-    const { count, error } = await supabaseServer
+export const GET = createHandler(
+  {
+    name: "notifications.unread_count",
+    auth: "required",
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
+  },
+  async (ctx) => {
+    const {
+      count,
+      error,
+    } = await db()
       .from("notifications")
       .select("id", {
         count: "exact",
         head: true,
       })
-      .eq("recipient_user_id", session.userId)
-      .is("read_at", null);
+      .eq(
+        "recipient_user_id",
+        ctx.user.userId,
+      )
+      .is(
+        "read_at",
+        null,
+      );
 
     if (error) {
-      console.error("Unread notification count error:", error);
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to retrieve unread notification count.",
-        },
-        { status: 500 },
+      throw ApiError.internal(
+        "Unable to retrieve unread notification count.",
+        error.message,
       );
     }
 
-    return NextResponse.json({
-      ok: true,
-      unreadCount: count ?? 0,
-    });
-  } catch (error) {
-    console.error("Unread count GET error:", error);
-
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to retrieve unread notification count.",
-      },
-      { status: 500 },
-    );
-  }
-}
+    return {
+      unreadCount:
+        count ?? 0,
+    };
+  },
+);

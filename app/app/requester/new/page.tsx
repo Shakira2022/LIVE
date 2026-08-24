@@ -73,6 +73,81 @@ const ATTEMPT_SECONDS = 5;
 const CONFIRM_REVIEW_SECONDS = 5;
 const MAX_NOTE_LENGTH = 200;
 
+/* ---------------------------------------------------------------------- */
+/* Middleware API response helpers                                        */
+/* ---------------------------------------------------------------------- */
+
+type RequestListItem = {
+  id: string;
+  currentStatus?: string;
+  current_status?: string;
+};
+
+type MiddlewareErrorBody = {
+  ok?: boolean;
+  message?: string;
+  requestId?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+      };
+};
+
+type CreateRequestResponse = MiddlewareErrorBody & {
+  data?: {
+    id?: string;
+    reference?: string;
+    referenceCode?: string;
+  };
+  request?: {
+    id?: string;
+    reference_code?: string;
+  };
+};
+
+function getApiErrorMessage(
+  payload: MiddlewareErrorBody | null,
+  fallback: string
+) {
+  if (!payload) {
+    return fallback;
+  }
+
+  if (typeof payload.error === "string") {
+    return payload.error;
+  }
+
+  if (
+    payload.error &&
+    typeof payload.error === "object"
+  ) {
+    const details = payload.error.details;
+
+    if (details) {
+      const firstDetail = Object.values(details)
+        .flat()
+        .find(Boolean);
+
+      if (firstDetail) {
+        return firstDetail;
+      }
+    }
+
+    if (payload.error.message) {
+      return payload.error.message;
+    }
+  }
+
+  if (payload.message) {
+    return payload.message;
+  }
+
+  return fallback;
+}
+
 const MEDICAL_CATEGORIES = [
   "Medical emergency",
   "Severe Injury / Trauma",
@@ -89,6 +164,52 @@ const POLICE_CATEGORIES = [
   "Suspicious Activity",
   "Other Police Emergency",
 ];
+
+type ApiEmergencyCategory =
+  | "medical"
+  | "accident"
+  | "fire"
+  | "crime"
+  | "rescue"
+  | "other";
+
+function toApiCategory(
+  categoryLabel: string,
+  mainCategory: string | null
+): ApiEmergencyCategory {
+  const label = categoryLabel.trim().toLowerCase();
+
+  if (mainCategory === "Police") {
+    return "crime";
+  }
+
+  if (
+    label.includes("accident") ||
+    label.includes("vehicle")
+  ) {
+    return "accident";
+  }
+
+  if (label.includes("fire")) {
+    return "fire";
+  }
+
+  if (label.includes("rescue")) {
+    return "rescue";
+  }
+
+  if (
+    label.includes("medical") ||
+    label.includes("injury") ||
+    label.includes("trauma") ||
+    label.includes("unconscious") ||
+    label.includes("breathing")
+  ) {
+    return "medical";
+  }
+
+  return "other";
+}
 
 function wait(milliseconds: number) {
   return new Promise((resolve) =>
@@ -214,6 +335,14 @@ export default function NewRequest() {
 
   const autoSubmitRef =
     useRef(false);
+
+  /*
+   * One stable idempotency key is used for this logical submission.
+   * If the browser retries after a network failure, the middleware
+   * can return the existing request instead of creating a duplicate.
+   */
+  const idempotencyKeyRef =
+    useRef<string | null>(null);
 
   /* ---------------------------------------------------------------------- */
   /* Address suggestions                                                    */
@@ -568,60 +697,102 @@ export default function NewRequest() {
   /* ---------------------------------------------------------------------- */
 
   useEffect(() => {
-  if (!user?.id) {
-    return;
-  }
-
-  const requesterId = user.id;
-
-  async function checkActiveRequest() {
-    try {
-      const response = await fetch(
-        `/api/requests?requesterId=${encodeURIComponent(
-          requesterId
-        )}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        }
-      );
-
-      if (!response.ok) {
-        return;
-      }
-
-      const data = await response.json();
-
-      const requests = data?.requests ?? [];
-
-      const active = requests.find(
-        (request: {
-          id: string;
-          current_status: string;
-        }) =>
-          [
-            "submitted",
-            "received",
-            "assigned",
-            "en_route",
-            "arrived",
-          ].includes(request.current_status)
-      );
-
-      if (active) {
-        setHasActiveRequest(true);
-        setActiveRequestId(active.id);
-      }
-    } catch (error) {
-      console.error(
-        "Failed to check active request:",
-        error
-      );
+    if (!user?.id) {
+      return;
     }
-  }
 
-  checkActiveRequest();
-}, [user?.id]);
+    let cancelled = false;
+
+    async function checkActiveRequest() {
+      try {
+        /*
+         * The middleware identifies the requester from the signed JWT.
+         * Do not send requesterId/phone as ownership selectors.
+         */
+        const response = await fetch(
+          "/api/requests?limit=50&offset=0",
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+          }
+        );
+
+        let payload:
+          | (MiddlewareErrorBody & {
+              data?: {
+                items?: RequestListItem[];
+              };
+              items?: RequestListItem[];
+              requests?: RequestListItem[];
+            })
+          | null = null;
+
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          console.error(
+            "Failed to check active request:",
+            getApiErrorMessage(
+              payload,
+              "Unable to load existing requests."
+            )
+          );
+          return;
+        }
+
+        const requests =
+          payload?.data?.items ??
+          payload?.items ??
+          payload?.requests ??
+          [];
+
+        const active = requests.find(
+          (request) => {
+            const status =
+              request.currentStatus ??
+              request.current_status ??
+              "";
+
+            return [
+              "submitted",
+              "received",
+              "assigned",
+              "en_route",
+              "arrived",
+            ].includes(status);
+          }
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        if (active) {
+          setHasActiveRequest(true);
+          setActiveRequestId(active.id);
+        } else {
+          setHasActiveRequest(false);
+          setActiveRequestId(null);
+        }
+      } catch (error) {
+        console.error(
+          "Failed to check active request:",
+          error
+        );
+      }
+    }
+
+    void checkActiveRequest();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   /* ---------------------------------------------------------------------- */
   /* Submit request                                                         */
@@ -657,76 +828,111 @@ export default function NewRequest() {
         return;
       }
 
+      if (!user.phone?.trim()) {
+        setError(
+          "Your account does not have a callback phone number. Add one to your profile before submitting."
+        );
+        return;
+      }
+
       autoSubmitRef.current = true;
       setSubmitting(true);
       setError("");
 
+      /*
+       * Keep the same key if a submission must be retried. The middleware
+       * request service uses this value to prevent duplicate emergencies.
+       */
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current =
+          crypto.randomUUID();
+      }
+
+      const capturedAt =
+        new Date().toISOString();
+
+      const isManual =
+        manualAddress.trim().length > 0;
+
       try {
-        const response =
-          await fetch(
-            "/api/requests",
-            {
-              method: "POST",
+        /*
+         * IMPORTANT:
+         *
+         * This payload matches the middleware createRequest contract.
+         * Location fields are FLAT; there is no nested `location` object.
+         * requesterId is intentionally omitted because ctx.user comes from JWT.
+         */
+        const response = await fetch(
+          "/api/requests",
+          {
+            method: "POST",
 
-              headers: {
-                "Content-Type":
-                  "application/json",
-              },
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
 
-              credentials: "include",
+            credentials: "include",
 
-              body: JSON.stringify({
-                requesterId:
-                  user.id,
-
+            body: JSON.stringify({
+              /*
+               * Keep the GUI labels unchanged, but convert them to the
+               * canonical middleware enum before sending to the API.
+               */
+              category: toApiCategory(
                 category,
+                selectedMainCategory
+              ),
 
-                severity,
+              /*
+               * The UI keeps Title Case for display, while the database/API
+               * status enums use lowercase values.
+               */
+              severity:
+                String(severity).toLowerCase(),
 
-                note:
-                  note ||
-                  "No additional note provided.",
+              note:
+                note.trim() ||
+                "No additional note provided.",
 
-                callbackNumber:
-                  user.phone || null,
+              callbackNumber:
+                user.phone.trim(),
 
-                location: {
-                  address:
-                    address ||
-                    "Current device location",
+              idempotencyKey:
+                idempotencyKeyRef.current,
 
-                  lat:
-                    coordinates.lat,
+              locationMethod:
+                isManual
+                  ? "manual"
+                  : "gps",
 
-                  lng:
-                    coordinates.lng,
+              latitude:
+                coordinates.lat,
 
-                  accuracy:
-                    accuracy ?? null,
+              longitude:
+                coordinates.lng,
 
-                  capturedAt:
-                    new Date().toISOString(),
+              accuracyMeters:
+                accuracy ?? null,
 
-                  method:
-                    manualAddress.trim()
-                      ? "Manual"
-                      : "GPS",
-                },
-              }),
-            }
-          );
+              addressText:
+                address ||
+                manualAddress.trim() ||
+                "Current device location",
 
-        let data: {
-          request?: {
-            id: string;
-            reference_code?: string;
-          };
-          error?: string;
-        } | null = null;
+              capturedAt,
+            }),
+          }
+        );
+
+        let data:
+          | CreateRequestResponse
+          | null = null;
 
         try {
           data =
-            await response.json();
+            (await response.json()) as
+              CreateRequestResponse;
         } catch {
           data = null;
         }
@@ -741,22 +947,39 @@ export default function NewRequest() {
           data
         );
 
-        if (
-          !response.ok ||
-          !data?.request
-        ) {
+        if (!response.ok) {
           throw new Error(
-            data?.error ||
+            getApiErrorMessage(
+              data,
               "Failed to create emergency request."
+            )
           );
         }
 
         /*
-         * Use the real Supabase UUID
-         * returned by the API.
+         * createHandler() wraps successful middleware responses as:
+         *
+         * {
+         *   ok: true,
+         *   data: { ...request },
+         *   requestId: "..."
+         * }
+         *
+         * The fallback to data.request keeps this page compatible with the
+         * older backend response while the rest of the project is migrated.
          */
+        const createdRequestId =
+          data?.data?.id ??
+          data?.request?.id;
+
+        if (!createdRequestId) {
+          throw new Error(
+            "The emergency request was created, but the server did not return its request ID."
+          );
+        }
+
         router.replace(
-          `/app/requester/track/${data.request.id}`
+          `/app/requester/track/${createdRequestId}`
         );
       } catch (error) {
         console.error(
@@ -766,8 +989,15 @@ export default function NewRequest() {
 
         setSubmitting(false);
 
+        /*
+         * Keep this true after a failed automatic submission.
+         * confirmCountdown is already 0, so setting this back to false would
+         * make the auto-submit effect immediately POST again in a loop.
+         *
+         * It is reset when the user leaves/re-enters the confirmation step.
+         */
         autoSubmitRef.current =
-          false;
+          true;
 
         setError(
           error instanceof Error
@@ -784,6 +1014,7 @@ export default function NewRequest() {
       manualAddress,
       note,
       router,
+      selectedMainCategory,
       severity,
       submitting,
       user,

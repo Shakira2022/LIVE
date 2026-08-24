@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-import { supabaseServer } from "@/lib/supabase-server";
-import { verifyAccessToken } from "@/lib/auth/jwt";
+export const runtime = "nodejs";
 
 const HISTORY_ASSIGNMENT_STATUSES = [
   "completed",
@@ -10,143 +10,65 @@ const HISTORY_ASSIGNMENT_STATUSES = [
   "rejected",
 ] as const;
 
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies();
-
-  const token = cookieStore.get("access_token")?.value;
-
-  if (!token) {
-    return null;
-  }
-
-  const payload = await verifyAccessToken(token);
-
-  if (!payload) {
-    return null;
-  }
-
-  return payload;
-}
-
-export async function GET() {
-  try {
-    const authUser = await getAuthenticatedUser();
-
-    if (!authUser) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication required.",
-        },
-        { status: 401 },
-      );
-    }
-
-    if (authUser.role !== "responder") {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "Only responders can access assignment history.",
-        },
-        { status: 403 },
-      );
-    }
-
-    console.log(
-      "==========================================",
-    );
-
-    console.log(
-      "LOADING RESPONDER ASSIGNMENT HISTORY",
-    );
-
-    console.log(
-      "RESPONDER:",
-      authUser.userId,
-    );
-
-    console.log(
-      "==========================================",
-    );
-
-    // ==========================================================
-    // LOAD ONLY FINISHED ASSIGNMENTS
-    //
-    // IMPORTANT:
-    // Active assignments do NOT belong in history.
-    //
-    // Active:
-    // assigned
-    // acknowledged
-    // en_route
-    // arrived
-    //
-    // History:
-    // completed
-    // cancelled
-    // rejected
-    // ==========================================================
+export const GET = createHandler(
+  {
+    name: "responder.history",
+    auth: "required",
+    roles: ["responder"],
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
+  },
+  async (ctx) => {
+    /*
+     * Authentication comes from createHandler().
+     * This uses the same configured JWT cookie as the rest of the application.
+     */
+    const responderUserId =
+      ctx.user.userId;
 
     const {
       data: assignments,
       error: assignmentError,
-    } = await supabaseServer
+    } = await db()
       .from("request_assignments")
       .select("*")
       .eq(
         "responder_user_id",
-        authUser.userId,
+        responderUserId,
       )
       .in(
         "status",
         HISTORY_ASSIGNMENT_STATUSES,
       )
-      .order("completed_at", {
-        ascending: false,
-        nullsFirst: false,
-      })
+      .order(
+        "completed_at",
+        {
+          ascending: false,
+          nullsFirst: false,
+        },
+      )
       .order("created_at", {
         ascending: false,
       });
 
     if (assignmentError) {
-      console.error(
-        "Responder history assignment lookup failed:",
-        assignmentError,
-      );
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "Unable to load assignment history.",
-        },
-        { status: 500 },
+      throw ApiError.internal(
+        "Unable to load assignment history.",
+        assignmentError.message,
       );
     }
-
-    console.log(
-      "HISTORY ASSIGNMENTS:",
-      assignments,
-    );
 
     if (
       !assignments ||
       assignments.length === 0
     ) {
-      return NextResponse.json(
-        {
-          ok: true,
-          assignments: [],
-        },
-        { status: 200 },
-      );
+      return {
+        assignments: [],
+      };
     }
-
-    // ==========================================================
-    // LOAD EMERGENCY REQUESTS
-    // ==========================================================
 
     const requestIds = [
       ...new Set(
@@ -157,102 +79,86 @@ export async function GET() {
       ),
     ];
 
-    const {
-      data: requests,
-      error: requestError,
-    } = await supabaseServer
-      .from("emergency_requests")
-      .select("*")
-      .in("id", requestIds);
+    const [
+      requestsResult,
+      locationsResult,
+    ] = await Promise.all([
+      db()
+        .from(
+          "emergency_requests",
+        )
+        .select("*")
+        .in(
+          "id",
+          requestIds,
+        ),
 
-    if (requestError) {
-      console.error(
-        "Responder history request lookup failed:",
-        requestError,
+      db()
+        .from(
+          "request_locations",
+        )
+        .select("*")
+        .in(
+          "request_id",
+          requestIds,
+        ),
+    ]);
+
+    if (
+      requestsResult.error
+    ) {
+      throw ApiError.internal(
+        "Unable to load emergency request history.",
+        requestsResult.error.message,
       );
+    }
 
-      return NextResponse.json(
+    if (
+      locationsResult.error
+    ) {
+      ctx.log.warn(
+        "responder_history_location_lookup_failed",
         {
-          ok: false,
-          message:
-            "Unable to load emergency request history.",
+          dbError:
+            locationsResult.error.message,
         },
-        { status: 500 },
       );
     }
 
-    // ==========================================================
-    // LOAD LOCATIONS
-    // ==========================================================
+    const requests =
+      requestsResult.data ??
+      [];
 
-    const {
-      data: locations,
-      error: locationError,
-    } = await supabaseServer
-      .from("request_locations")
-      .select("*")
-      .in("request_id", requestIds);
+    const locations =
+      locationsResult.data ??
+      [];
 
-    if (locationError) {
-      console.error(
-        "Responder history location lookup failed:",
-        locationError,
-      );
-    }
-
-    // ==========================================================
-    // COMBINE DATA
-    // ==========================================================
-
-    const history = assignments.map(
-      (assignment) => {
-        const request =
-          requests?.find(
-            (item) =>
-              item.id ===
-              assignment.request_id,
-          );
-
-        const location =
-          locations?.find(
-            (item) =>
-              item.request_id ===
-              assignment.request_id,
-          );
-
-        return {
+    const history =
+      assignments.map(
+        (assignment) => ({
           assignment,
-          request: request || null,
-          location: location || null,
-        };
-      },
-    );
 
-    console.log(
-      "FINAL RESPONDER HISTORY:",
-      history,
-    );
+          request:
+            requests.find(
+              (item) =>
+                item.id ===
+                assignment.request_id,
+            ) ??
+            null,
 
-    return NextResponse.json(
-      {
-        ok: true,
-        assignments: history,
-      },
-      { status: 200 },
-    );
-  } catch (error) {
-    console.error(
-      "Responder history GET error:",
-      error,
-    );
+          location:
+            locations.find(
+              (item) =>
+                item.request_id ===
+                assignment.request_id,
+            ) ??
+            null,
+        }),
+      );
 
-    return NextResponse.json(
-      {
-        ok: false,
-        message:
-          "Unable to load assignment history.",
-      },
-      { status: 500 },
-    );
-  }
-}
+    return {
+      assignments:
+        history,
+    };
+  },
+);

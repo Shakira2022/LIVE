@@ -35,55 +35,297 @@ interface Notification {
   expires_at: string | null;
 }
 
+type ApiErrorShape = {
+  code?: string;
+  message?: string;
+  details?: Record<string, string[]>;
+};
+
+type NotificationListResponse = {
+  ok?: boolean;
+  data?:
+    | Notification[]
+    | {
+        notifications?: Notification[];
+        items?: Notification[];
+      };
+  notifications?: Notification[];
+  items?: Notification[];
+  message?: string;
+  error?: string | ApiErrorShape;
+};
+
+type NotificationUpdateResponse = {
+  ok?: boolean;
+  data?:
+    | Notification
+    | {
+        notification?: Notification;
+      };
+  notification?: Notification;
+  message?: string;
+  error?: string | ApiErrorShape;
+};
+
+function getApiMessage(
+  payload:
+    | NotificationListResponse
+    | NotificationUpdateResponse
+    | null,
+  fallback: string,
+) {
+  if (!payload) {
+    return fallback;
+  }
+
+  if (typeof payload.error === "string") {
+    return payload.error;
+  }
+
+  if (
+    payload.error &&
+    typeof payload.error === "object"
+  ) {
+    const firstDetail =
+      payload.error.details
+        ? Object.values(
+            payload.error.details,
+          )
+            .flat()
+            .find(Boolean)
+        : undefined;
+
+    return (
+      firstDetail ||
+      payload.error.message ||
+      payload.message ||
+      fallback
+    );
+  }
+
+  return payload.message || fallback;
+}
+
+async function readJson<T>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * The authenticated middleware uses the httpOnly access-token cookie.
+ *
+ * If the access token has expired but the refresh cookie is still valid,
+ * refresh once and retry the original request. This prevents a page from
+ * showing "Authentication is required" while AuthProvider still has the
+ * previously authenticated user in memory.
+ */
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(
+    input,
+    requestInit,
+  );
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse =
+    await fetch(
+      "/api/auth/refresh",
+      {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      },
+    );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  response = await fetch(
+    input,
+    requestInit,
+  );
+
+  return response;
+}
+
+function extractNotifications(
+  result: NotificationListResponse | null,
+): Notification[] {
+  if (!result) {
+    return [];
+  }
+
+  if (Array.isArray(result.data)) {
+    return result.data;
+  }
+
+  if (
+    result.data &&
+    !Array.isArray(result.data)
+  ) {
+    const nested =
+      result.data.notifications ??
+      result.data.items;
+
+    if (Array.isArray(nested)) {
+      return nested;
+    }
+  }
+
+  if (Array.isArray(result.notifications)) {
+    return result.notifications;
+  }
+
+  if (Array.isArray(result.items)) {
+    return result.items;
+  }
+
+  return [];
+}
+
+function extractUpdatedNotification(
+  result: NotificationUpdateResponse | null,
+): Notification | null {
+  if (!result) {
+    return null;
+  }
+
+  if (
+    result.data &&
+    typeof result.data === "object" &&
+    "id" in result.data
+  ) {
+    return result.data as Notification;
+  }
+
+  if (
+    result.data &&
+    typeof result.data === "object" &&
+    "notification" in result.data
+  ) {
+    return (
+      result.data.notification ??
+      null
+    );
+  }
+
+  return result.notification ?? null;
+}
+
 export default function Notifications() {
-  const { user, loading: authLoading } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    refresh,
+  } = useAuth();
 
-  const [notifications, setNotifications] = useState<
-    Notification[]
-  >([]);
+  const [notifications, setNotifications] =
+    useState<Notification[]>([]);
 
-  const [loading, setLoading] = useState(true);
-  const [markingAll, setMarkingAll] = useState(false);
+  const [loading, setLoading] =
+    useState(true);
 
-  const fetchNotifications = useCallback(async () => {
-    if (!user?.id) return;
+  const [markingAll, setMarkingAll] =
+    useState(false);
 
-    try {
-      setLoading(true);
-
-      const response = await fetch(
-        "/api/notifications",
-        {
-          cache: "no-store",
-        },
-      );
-
-      const result = await response.json();
-
-      if (!response.ok || !result.ok) {
-        throw new Error(
-          result.message ||
-            "Unable to retrieve notifications.",
-        );
+  const fetchNotifications =
+    useCallback(async () => {
+      if (!user?.id) {
+        setNotifications([]);
+        setLoading(false);
+        return;
       }
 
-      setNotifications(
-        result.notifications ?? [],
-      );
-    } catch (error) {
-      console.error(
-        "Unable to load notifications:",
-        error,
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id]);
+      try {
+        setLoading(true);
+
+        const response =
+          await authenticatedFetch(
+            "/api/notifications",
+            {
+              method: "GET",
+              cache: "no-store",
+            },
+          );
+
+        const result =
+          await readJson<NotificationListResponse>(
+            response,
+          );
+
+        if (!response.ok) {
+          /*
+           * If refresh also failed, synchronise AuthProvider with the
+           * server instead of throwing an expected 401 into the Next.js
+           * development error overlay.
+           */
+          if (response.status === 401) {
+            await refresh();
+            setNotifications([]);
+            return;
+          }
+
+          throw new Error(
+            getApiMessage(
+              result,
+              "Unable to retrieve notifications.",
+            ),
+          );
+        }
+
+        setNotifications(
+          extractNotifications(result),
+        );
+      } catch (error) {
+        /*
+         * Do not use console.error here. In Next.js development mode a
+         * caught client error logged with console.error is surfaced as the
+         * large red development overlay even though the page recovered.
+         */
+        console.warn(
+          "Unable to load notifications:",
+          error instanceof Error
+            ? error.message
+            : String(error),
+        );
+
+        setNotifications([]);
+      } finally {
+        setLoading(false);
+      }
+    }, [
+      refresh,
+      user?.id,
+    ]);
 
   useEffect(() => {
-    if (!authLoading && user?.id) {
-      fetchNotifications();
+    if (authLoading) {
+      return;
     }
+
+    if (!user?.id) {
+      setNotifications([]);
+      setLoading(false);
+      return;
+    }
+
+    void fetchNotifications();
   }, [
     authLoading,
     user?.id,
@@ -94,44 +336,67 @@ export default function Notifications() {
     notificationId: string,
   ) {
     try {
-      const response = await fetch(
-        `/api/notifications/${notificationId}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
+      const response =
+        await authenticatedFetch(
+          `/api/notifications/${notificationId}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            cache: "no-store",
+            body: JSON.stringify({
+              read: true,
+            }),
           },
-          body: JSON.stringify({
-            read: true,
-          }),
-        },
-      );
+        );
 
-      const result = await response.json();
+      const result =
+        await readJson<NotificationUpdateResponse>(
+          response,
+        );
 
-      if (!response.ok || !result.ok) {
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refresh();
+          return;
+        }
+
         throw new Error(
-          result.message ||
+          getApiMessage(
+            result,
             "Unable to mark notification as read.",
+          ),
         );
       }
 
+      const updated =
+        extractUpdatedNotification(
+          result,
+        );
+
       setNotifications((current) =>
-        current.map((notification) =>
-          notification.id === notificationId
-            ? {
-                ...notification,
-                read_at:
-                  result.notification?.read_at ??
-                  new Date().toISOString(),
-              }
-            : notification,
+        current.map(
+          (notification) =>
+            notification.id ===
+            notificationId
+              ? {
+                  ...notification,
+                  ...(updated ?? {}),
+                  read_at:
+                    updated?.read_at ??
+                    new Date().toISOString(),
+                }
+              : notification,
         ),
       );
     } catch (error) {
-      console.error(
+      console.warn(
         "Unable to mark notification as read:",
-        error,
+        error instanceof Error
+          ? error.message
+          : String(error),
       );
     }
   }
@@ -143,7 +408,9 @@ export default function Notifications() {
           notification.read_at === null,
       );
 
-    if (!unreadNotifications.length) return;
+    if (!unreadNotifications.length) {
+      return;
+    }
 
     try {
       setMarkingAll(true);

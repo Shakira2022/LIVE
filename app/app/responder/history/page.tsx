@@ -55,10 +55,116 @@ type HistoryItem = {
   location: any;
 };
 
+type HistoryResponse = {
+  ok?: boolean;
+  data?: {
+    assignments?: HistoryItem[];
+  };
+  assignments?: HistoryItem[];
+  message?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+      };
+};
+
+function getApiMessage(
+  result: HistoryResponse | null,
+  fallback: string,
+) {
+  if (!result) {
+    return fallback;
+  }
+
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+
+  if (
+    result.error &&
+    typeof result.error === "object"
+  ) {
+    const firstDetail =
+      result.error.details
+        ? Object.values(
+            result.error.details,
+          )
+            .flat()
+            .find(Boolean)
+        : undefined;
+
+    return (
+      firstDetail ||
+      result.error.message ||
+      result.message ||
+      fallback
+    );
+  }
+
+  return (
+    result.message ||
+    fallback
+  );
+}
+
+async function readJson<T>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(
+    input,
+    requestInit,
+  );
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse =
+    await fetch(
+      "/api/auth/refresh",
+      {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      },
+    );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  response = await fetch(
+    input,
+    requestInit,
+  );
+
+  return response;
+}
+
 export default function ResponderHistory() {
   const {
     user,
     loading: authLoading,
+    refresh,
   } = useAuth();
 
   const [items, setItems] =
@@ -86,25 +192,8 @@ export default function ResponderHistory() {
         setLoading(true);
         setError(null);
 
-        console.log(
-          "==========================================",
-        );
-
-        console.log(
-          "LOADING RESPONDER HISTORY",
-        );
-
-        console.log(
-          "USER:",
-          user.id,
-        );
-
-        console.log(
-          "==========================================",
-        );
-
         const response =
-          await fetch(
+          await authenticatedFetch(
             "/api/responder/history",
             {
               method: "GET",
@@ -112,42 +201,50 @@ export default function ResponderHistory() {
             },
           );
 
-        let result: any = null;
-
-        try {
-          result =
-            await response.json();
-        } catch {
-          result = null;
-        }
-
-        console.log(
-          "RESPONDER HISTORY RESPONSE:",
-          result,
-        );
+        const result =
+          await readJson<HistoryResponse>(
+            response,
+          );
 
         if (!response.ok) {
+          if (response.status === 401) {
+            await refresh();
+          }
+
           setError(
-            result?.message ||
+            getApiMessage(
+              result,
               "Unable to load assignment history.",
+            ),
           );
 
           setItems([]);
-
           return;
         }
 
+        /*
+         * New middleware route:
+         * { ok: true, data: { assignments: [...] } }
+         *
+         * Old route fallback:
+         * { ok: true, assignments: [...] }
+         */
+        const nextItems =
+          result?.data?.assignments ??
+          result?.assignments ??
+          [];
+
         setItems(
-          Array.isArray(
-            result?.assignments,
-          )
-            ? result.assignments
+          Array.isArray(nextItems)
+            ? nextItems
             : [],
         );
       } catch (error) {
-        console.error(
+        console.warn(
           "Responder history error:",
-          error,
+          error instanceof Error
+            ? error.message
+            : String(error),
         );
 
         setError(
@@ -158,7 +255,10 @@ export default function ResponderHistory() {
       } finally {
         setLoading(false);
       }
-    }, [user?.id]);
+    }, [
+      refresh,
+      user?.id,
+    ]);
 
   // ==========================================================
   // LOAD WHEN AUTHENTICATION IS READY

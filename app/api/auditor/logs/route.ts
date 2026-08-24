@@ -1,181 +1,162 @@
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { verifyAccessToken } from "@/lib/auth/jwt";
+import { z } from "zod";
 
-const ALLOWED_LOG_TYPES = [
-  "audit",
-  "security",
-  "application",
-  "integration",
-] as const;
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-type LogType = (typeof ALLOWED_LOG_TYPES)[number];
+export const runtime = "nodejs";
 
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("access_token")?.value;
+const logQuerySchema = z.object({
+  type: z.enum([
+    "audit",
+    "security",
+    "application",
+    "integration",
+  ]),
+});
 
-  if (!token) {
-    return null;
+const LOG_TABLES = {
+  audit: "audit_logs",
+  security: "security_logs",
+  application: "application_logs",
+  integration: "integration_logs",
+} as const;
+
+
+function toIsoTimestamp(
+  value: unknown,
+): unknown {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return value;
   }
 
-  const payload = await verifyAccessToken(token);
+  const direct = new Date(value);
 
-  if (!payload) {
-    return null;
+  if (!Number.isNaN(direct.getTime())) {
+    return direct.toISOString();
   }
 
-  return payload;
+  /*
+   * PostgreSQL timestamptz example:
+   * 2026-08-19 21:05:11.193614+00
+   */
+  const match = value
+    .trim()
+    .match(
+      /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2}(?::?\d{2})?|Z)?$/,
+    );
+
+  if (!match) {
+    return value;
+  }
+
+  const [, datePart, timePart, fractionRaw, zoneRaw] =
+    match;
+
+  const fraction = fractionRaw
+    ? `.${fractionRaw.slice(0, 3).padEnd(3, "0")}`
+    : "";
+
+  let zone = zoneRaw || "Z";
+
+  if (/^[+-]\d{2}$/.test(zone)) {
+    zone = `${zone}:00`;
+  } else if (/^[+-]\d{4}$/.test(zone)) {
+    zone = `${zone.slice(0, 3)}:${zone.slice(3)}`;
+  }
+
+  const parsed = new Date(
+    `${datePart}T${timePart}${fraction}${zone}`,
+  );
+
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toISOString();
 }
 
-export async function GET(request: Request) {
-  try {
-    // ============================================================
-    // 1. AUTHENTICATION
-    // ============================================================
-
-    const authUser = await getAuthenticatedUser();
-
-    if (!authUser) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Authentication required.",
-        },
-        { status: 401 }
-      );
-    }
-
-    // ============================================================
-    // 2. AUTHORISATION
-    // ============================================================
-
+function normalizeLogTimestamps(
+  rows: unknown[],
+) {
+  return rows.map((row) => {
     if (
-      authUser.role !== "auditor" &&
-      authUser.role !== "admin"
+      !row ||
+      typeof row !== "object"
     ) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "You do not have permission to view system logs.",
-        },
-        { status: 403 }
-      );
+      return row;
     }
 
-    // ============================================================
-    // 3. LOG TYPE
-    // ============================================================
+    const record =
+      row as Record<string, unknown>;
 
-    const { searchParams } = new URL(request.url);
+    return {
+      ...record,
+      created_at:
+        toIsoTimestamp(
+          record.created_at,
+        ),
+      updated_at:
+        toIsoTimestamp(
+          record.updated_at,
+        ),
+    };
+  });
+}
 
-    const type = searchParams.get("type") as LogType | null;
+export const GET = createHandler(
+  {
+    name: "auditor.logs",
+    auth: "required",
+    roles: ["auditor", "admin"],
+    query: logQuerySchema,
+    rateLimit: {
+      limit: 120,
+      windowMs: 60_000,
+      by: "user",
+    },
+  },
+  async (ctx) => {
+    /*
+     * Authentication and role checks are handled by createHandler().
+     * Do not manually read an "access_token" cookie here.
+     *
+     * createHandler reads the configured COOKIE_ACCESS value and verifies
+     * the same JWT that /api/auth/login issued.
+     */
+    const table =
+      LOG_TABLES[ctx.query.type];
 
-    if (!type || !ALLOWED_LOG_TYPES.includes(type)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "type must be audit, security, application, or integration.",
-        },
-        { status: 400 }
-      );
-    }
-
-    // ============================================================
-    // 4. FETCH LOGS
-    // ============================================================
-
-    let data = null;
-    let error = null;
-
-    if (type === "audit") {
-      const result = await supabaseAdmin
-        .from("audit_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      data = result.data;
-      error = result.error;
-    }
-
-    if (type === "security") {
-      const result = await supabaseAdmin
-        .from("security_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      data = result.data;
-      error = result.error;
-    }
-
-    if (type === "application") {
-      const result = await supabaseAdmin
-        .from("application_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      data = result.data;
-      error = result.error;
-    }
-
-    if (type === "integration") {
-      const result = await supabaseAdmin
-        .from("integration_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      data = result.data;
-      error = result.error;
-    }
-
-    // ============================================================
-    // 5. DATABASE ERROR
-    // ============================================================
+    const {
+      data,
+      error,
+    } = await db()
+      .from(table)
+      .select("*")
+      .order("created_at", {
+        ascending: false,
+      })
+      .limit(100);
 
     if (error) {
-      console.error(
-        `Failed to retrieve ${type} logs:`,
-        error
-      );
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to retrieve logs.",
-        },
-        { status: 500 }
+      throw ApiError.internal(
+        "Unable to retrieve logs.",
+        error.message,
       );
     }
 
-    // ============================================================
-    // 6. SUCCESS
-    // ============================================================
+    const normalizedLogs =
+      normalizeLogTimestamps(
+        data ?? [],
+      );
 
-    return NextResponse.json(
-      {
-        ok: true,
-        type,
-        count: data?.length ?? 0,
-        logs: data ?? [],
-      },
-      { status: 200 }
-    );
-  } catch (error) {
-    console.error("Auditor logs API error:", error);
-
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to retrieve logs.",
-      },
-      { status: 500 }
-    );
-  }
-}
+    return {
+      type: ctx.query.type,
+      count:
+        normalizedLogs.length,
+      logs:
+        normalizedLogs,
+    };
+  },
+);

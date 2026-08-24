@@ -1,73 +1,26 @@
-import { NextRequest, NextResponse } from "next/server";
-import { verifyAccessToken } from "@/lib/auth/jwt";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { createHandler } from "@/lib/middleware/api/handler";
+import { ApiError } from "@/lib/middleware/errors";
+import { db } from "@/lib/middleware/server/db";
 
-export async function GET(request: NextRequest) {
-    try {
-        const token = request.cookies.get("access_token")?.value;
+export const runtime = "nodejs";
 
-        if (!token) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Authentication required.",
-                },
-                { status: 401 }
-            );
-        }
+export const GET = createHandler(
+  {
+    name: "admin.organisations",
+    auth: "required",
+    roles: ["admin"],
+    rateLimit: { limit: 120, windowMs: 60_000, by: "user" },
+  },
+  async () => {
+    const { data, error } = await db()
+      .from("organisations")
+      .select("*")
+      .order("name", { ascending: true });
 
-        const payload = await verifyAccessToken(token);
-
-        if (!payload) {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Invalid or expired authentication token.",
-                },
-                { status: 401 }
-            );
-        }
-
-        if (payload.role !== "admin") {
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Administrator access required.",
-                },
-                { status: 403 }
-            );
-        }
-
-        const { data, error } = await supabaseAdmin
-            .from("organisations")
-            .select("*")
-            .order("name", { ascending: true });
-
-        if (error) {
-            console.error("Admin organisations query failed:", error);
-
-            return NextResponse.json(
-                {
-                    ok: false,
-                    message: "Unable to retrieve organisations.",
-                },
-                { status: 500 }
-            );
-        }
-
-        return NextResponse.json({
-            ok: true,
-            organisations: data ?? [],
-        });
-    } catch (error) {
-        console.error("Admin organisations API error:", error);
-
-        return NextResponse.json(
-            {
-                ok: false,
-                message: "Internal server error.",
-            },
-            { status: 500 }
-        );
+    if (error) {
+      throw ApiError.internal("Unable to retrieve organisations.", error.message);
     }
-}
+
+    return { organisations: data ?? [] };
+  },
+);

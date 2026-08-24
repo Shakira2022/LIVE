@@ -35,40 +35,77 @@ type EmergencyStatus =
   | "rejected";
 
 type ApiLocation = {
-  latitude: number;
-  longitude: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  accuracyMeters?: number | null;
   accuracy_meters?: number | null;
+  addressText?: string | null;
   address_text?: string | null;
+  locationMethod?: string | null;
   location_method?: string | null;
+  capturedAt?: string | null;
   captured_at?: string | null;
 };
 
 type ApiRequest = {
   id: string;
-  reference_code: string;
-  requester_id: string;
+
+  // Middleware/canonical names
+  reference?: string;
+  requesterId?: string;
+  currentStatus?: EmergencyStatus;
+  callbackNumber?: string | null;
+  etaMinutes?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+  location?: ApiLocation | null;
+
+  // Old backend names kept as temporary fallbacks
+  reference_code?: string;
+  requester_id?: string;
+  current_status?: EmergencyStatus;
+  callback_number?: string | null;
+  eta_minutes?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  request_locations?: ApiLocation[] | ApiLocation | null;
+
   category: string;
   severity: string;
   note?: string | null;
-  callback_number?: string | null;
-  current_status: EmergencyStatus;
-  eta_minutes?: number | null;
-  created_at: string;
-  updated_at: string;
+};
 
-  request_locations?:
-    | ApiLocation[]
-    | ApiLocation
-    | null;
+type RequestListEnvelope = {
+  ok?: boolean;
+  data?: {
+    items?: ApiRequest[];
+    total?: number;
+    limit?: number;
+    offset?: number;
+  };
+  items?: ApiRequest[];
+  requests?: ApiRequest[];
+  message?: string;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: Record<string, string[]>;
+      };
 };
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function getLocation(
-  locations: ApiRequest["request_locations"],
-): ApiLocation | null {
+function getLocation(request: ApiRequest): ApiLocation | null {
+  if (request.location) {
+    return request.location;
+  }
+
+  const locations = request.request_locations;
+
   if (!locations) {
     return null;
   }
@@ -78,6 +115,36 @@ function getLocation(
   }
 
   return locations;
+}
+
+function getApiErrorMessage(
+  payload: RequestListEnvelope | null,
+  fallback: string,
+) {
+  if (!payload) return fallback;
+
+  if (typeof payload.error === "string") {
+    return payload.error;
+  }
+
+  if (
+    payload.error &&
+    typeof payload.error === "object"
+  ) {
+    const details = payload.error.details;
+    const firstDetail = details
+      ? Object.values(details).flat().find(Boolean)
+      : undefined;
+
+    return (
+      firstDetail ||
+      payload.error.message ||
+      payload.message ||
+      fallback
+    );
+  }
+
+  return payload.message || fallback;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -102,36 +169,24 @@ export default function RequestHistory() {
       return;
     }
 
-    if (!user.phone) {
-      setRequests([]);
-      setLoading(false);
-      setError(
-        "Your account does not have a phone number. Please update your account details.",
-      );
-      return;
-    }
-
     try {
       setLoading(true);
       setError("");
 
+      /*
+       * Ownership comes from the authenticated JWT.
+       * Do not send phone/requesterId filters from the browser.
+       */
       const response = await fetch(
-        `/api/requests?phone=${encodeURIComponent(user.phone)}`,
+        "/api/requests?limit=100&offset=0",
         {
           method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-          },
           credentials: "include",
           cache: "no-store",
         },
       );
 
-      let data: {
-        requests?: ApiRequest[];
-        error?: string;
-        message?: string;
-      } | null = null;
+      let data: RequestListEnvelope | null = null;
 
       try {
         data = await response.json();
@@ -151,15 +206,29 @@ export default function RequestHistory() {
 
       if (!response.ok) {
         throw new Error(
-          data?.error ||
-            data?.message ||
+          getApiErrorMessage(
+            data,
             `Failed to load request history. Server returned ${response.status}.`,
+          ),
         );
       }
 
+      /*
+       * Current middleware shape:
+       * { ok: true, data: { items: [...] } }
+       *
+       * The other two fallbacks make the page tolerant while the
+       * rest of the old backend UI is being migrated.
+       */
+      const nextRequests =
+        data?.data?.items ??
+        data?.items ??
+        data?.requests ??
+        [];
+
       setRequests(
-        Array.isArray(data?.requests)
-          ? data.requests
+        Array.isArray(nextRequests)
+          ? nextRequests
           : [],
       );
     } catch (error) {
@@ -248,28 +317,51 @@ export default function RequestHistory() {
   /* ---------------------------------------------------------------------- */
 
   const items = [...requests]
-    .sort(
-      (a, b) =>
-        new Date(
-          b.updated_at || b.created_at,
-        ).getTime() -
-        new Date(
-          a.updated_at || a.created_at,
-        ).getTime(),
-    )
-    .map((request) => {
-      const location = getLocation(
-        request.request_locations,
+    .sort((a, b) => {
+      const bDate =
+        b.updatedAt ??
+        b.updated_at ??
+        b.createdAt ??
+        b.created_at ??
+        "";
+
+      const aDate =
+        a.updatedAt ??
+        a.updated_at ??
+        a.createdAt ??
+        a.created_at ??
+        "";
+
+      return (
+        new Date(bDate).getTime() -
+        new Date(aDate).getTime()
       );
+    })
+    .map((request) => {
+      const location = getLocation(request);
+
+      const createdAt =
+        request.createdAt ??
+        request.created_at ??
+        new Date().toISOString();
+
+      const updatedAt =
+        request.updatedAt ??
+        request.updated_at ??
+        createdAt;
 
       return {
         id: request.id,
 
         referenceCode:
-          request.reference_code,
+          request.reference ??
+          request.reference_code ??
+          request.id,
 
         requesterId:
-          request.requester_id,
+          request.requesterId ??
+          request.requester_id ??
+          user.id,
 
         category:
           request.category,
@@ -281,36 +373,45 @@ export default function RequestHistory() {
           request.note || "",
 
         callbackNumber:
-          request.callback_number || "",
+          request.callbackNumber ??
+          request.callback_number ??
+          "",
 
         status:
-          request.current_status,
+          request.currentStatus ??
+          request.current_status ??
+          "submitted",
 
         etaMinutes:
-          request.eta_minutes ?? undefined,
+          request.etaMinutes ??
+          request.eta_minutes ??
+          undefined,
 
-        createdAt:
-          request.created_at,
+        createdAt,
 
-        updatedAt:
-          request.updated_at,
+        updatedAt,
 
         location: {
           address:
-            location?.address_text ||
+            location?.addressText ??
+            location?.address_text ??
             "Location confirmed",
 
           method:
-            location?.location_method ||
+            location?.locationMethod ??
+            location?.location_method ??
             "gps",
 
           lat:
-            location?.latitude,
+            location?.latitude ??
+            undefined,
 
           lng:
-            location?.longitude,
+            location?.longitude ??
+            undefined,
 
           accuracy:
+            location?.accuracyMeters ??
             location?.accuracy_meters ??
             undefined,
         },
