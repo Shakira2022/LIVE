@@ -24,7 +24,10 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { requestStatusTone } from "@/lib/utils";
-<<<<<<< HEAD
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
 
 type Mission = {
   assignment: {
@@ -61,6 +64,10 @@ type Mission = {
   } | null;
 };
 
+/* -------------------------------------------------------------------------- */
+/* Page                                                                       */
+/* -------------------------------------------------------------------------- */
+
 export default function ResponderMission() {
   const { user, loading: authLoading } = useAuth();
 
@@ -72,15 +79,17 @@ export default function ResponderMission() {
   const [updating, setUpdating] = useState(false);
 
   const [error, setError] = useState<string | null>(
-    null
+    null,
   );
 
-  // ============================================================
-  // LOAD CURRENT RESPONDER MISSION
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Load current responder mission                                           */
+  /* ------------------------------------------------------------------------ */
 
   const loadMission = useCallback(async () => {
     if (!user?.id) {
+      setMission(null);
+      setLoading(false);
       return;
     }
 
@@ -89,7 +98,7 @@ export default function ResponderMission() {
       setError(null);
 
       console.log(
-        "=========================================="
+        "==========================================",
       );
 
       console.log("RESPONDER MISSION");
@@ -97,7 +106,7 @@ export default function ResponderMission() {
       console.log("LOGGED IN USER:", user.id);
 
       console.log(
-        "=========================================="
+        "==========================================",
       );
 
       const response = await fetch(
@@ -105,20 +114,27 @@ export default function ResponderMission() {
         {
           method: "GET",
           cache: "no-store",
-        }
+        },
       );
 
-      const result = await response.json();
+      let result: any = null;
+
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
 
       console.log(
         "RESPONDER MISSION RESPONSE:",
-        result
+        result,
       );
 
       if (!response.ok) {
         setError(
           result?.message ||
-            "Unable to load responder mission."
+            result?.error ||
+            "Unable to load responder mission.",
         );
 
         setMission(null);
@@ -126,15 +142,15 @@ export default function ResponderMission() {
         return;
       }
 
-      setMission(result.mission || null);
+      setMission(result?.mission || null);
     } catch (err) {
       console.error(
         "Responder mission loading error:",
-        err
+        err,
       );
 
       setError(
-        "Could not connect to the responder service."
+        "Could not connect to the responder service.",
       );
 
       setMission(null);
@@ -143,26 +159,39 @@ export default function ResponderMission() {
     }
   }, [user?.id]);
 
+  /* ------------------------------------------------------------------------ */
+  /* Load mission when authentication is ready                                */
+  /* ------------------------------------------------------------------------ */
+
   useEffect(() => {
     if (!authLoading && user?.id) {
-      loadMission();
+      void loadMission();
     }
-  }, [authLoading, user?.id, loadMission]);
 
-  // ============================================================
-  // UPDATE RESPONDER MISSION
-  // ============================================================
+    if (!authLoading && !user) {
+      setMission(null);
+      setLoading(false);
+    }
+  }, [
+    authLoading,
+    user?.id,
+    loadMission,
+    user,
+  ]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Update responder mission status                                           */
+  /* ------------------------------------------------------------------------ */
 
   async function updateMissionStatus(
     status:
       | "acknowledged"
       | "en_route"
       | "arrived"
-      | "completed"
+      | "completed",
   ) {
     if (!mission?.assignment?.id) {
       alert("No active assignment was found.");
-
       return;
     }
 
@@ -170,63 +199,99 @@ export default function ResponderMission() {
       setUpdating(true);
 
       console.log(
-        "=========================================="
+        "==========================================",
       );
 
       console.log(
-        "RESPONDER STATUS UPDATE"
+        "RESPONDER STATUS UPDATE",
       );
 
       console.log(
         "ASSIGNMENT:",
-        mission.assignment.id
+        mission.assignment.id,
       );
 
       console.log(
         "NEW STATUS:",
-        status
+        status,
       );
 
       console.log(
-        "=========================================="
+        "==========================================",
       );
 
       const response = await fetch(
         "/api/responder/mission",
         {
           method: "PATCH",
-
           headers: {
             "Content-Type": "application/json",
           },
-
           body: JSON.stringify({
             assignment_id:
               mission.assignment.id,
-
             status,
           }),
-        }
+        },
       );
 
-      const result = await response.json();
+      let result: any = null;
+
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
 
       console.log(
         "RESPONDER STATUS RESPONSE:",
-        result
+        result,
       );
 
       if (!response.ok) {
         alert(
           result?.message ||
-            "Failed to update mission status."
+            result?.error ||
+            "Failed to update mission status.",
         );
 
         return;
       }
 
-      // Reload from Supabase so the responder page
-      // always displays the actual database state.
+      /* ------------------------------------------------------------------ */
+      /* IMPORTANT: Completed missions must disappear from the active page. */
+      /* ------------------------------------------------------------------ */
+
+      if (status === "completed") {
+        console.log(
+          "MISSION COMPLETED - REMOVING FROM ACTIVE MISSION SCREEN",
+        );
+
+        /*
+         * The mission is already completed in Supabase.
+         *
+         * We intentionally DO NOT call loadMission() here.
+         *
+         * This prevents the completed mission from briefly disappearing
+         * and then appearing again on the responder screen.
+         *
+         * The assignment remains in the database and can still be viewed
+         * in responder history.
+         */
+        setMission(null);
+        setError(null);
+
+        alert(
+          "Response completed. You are now available for a new assignment.",
+        );
+
+        return;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Reload for normal status changes.                                  */
+      /* ------------------------------------------------------------------ */
+
       await loadMission();
 
       alert(
@@ -234,27 +299,25 @@ export default function ResponderMission() {
           ? "Assignment acknowledged."
           : status === "en_route"
             ? "Route started."
-            : status === "arrived"
-              ? "Arrival recorded."
-              : "Response completed."
+            : "Arrival recorded.",
       );
     } catch (err) {
       console.error(
         "Responder status update error:",
-        err
+        err,
       );
 
       alert(
-        "Could not connect to the responder service."
+        "Could not connect to the responder service.",
       );
     } finally {
       setUpdating(false);
     }
   }
 
-  // ============================================================
-  // LOADING
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Loading                                                                   */
+  /* ------------------------------------------------------------------------ */
 
   if (
     authLoading ||
@@ -264,9 +327,9 @@ export default function ResponderMission() {
     return <PageSkeleton map />;
   }
 
-  // ============================================================
-  // ERROR
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Error                                                                     */
+  /* ------------------------------------------------------------------------ */
 
   if (error) {
     return (
@@ -283,7 +346,7 @@ export default function ResponderMission() {
 
             <Button
               className="mt-5"
-              onClick={loadMission}
+              onClick={() => void loadMission()}
             >
               <RefreshCw className="h-4 w-4" />
               Try again
@@ -294,9 +357,9 @@ export default function ResponderMission() {
     );
   }
 
-  // ============================================================
-  // NO ACTIVE MISSION
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* No active mission                                                         */
+  /* ------------------------------------------------------------------------ */
 
   if (!mission) {
     return (
@@ -320,10 +383,10 @@ export default function ResponderMission() {
             title="No active mission"
             description="When a dispatcher assigns an emergency request to you, it will appear here automatically."
             action={
-              <div className="flex gap-2">
+              <div className="flex flex-wrap justify-center gap-2">
                 <Button
                   variant="outline"
-                  onClick={loadMission}
+                  onClick={() => void loadMission()}
                 >
                   <RefreshCw className="h-4 w-4" />
                   Refresh
@@ -342,23 +405,27 @@ export default function ResponderMission() {
     );
   }
 
-  // ============================================================
-  // CURRENT MISSION
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Current mission                                                           */
+  /* ------------------------------------------------------------------------ */
 
-  const { assignment, request, location } =
-    mission;
+  const {
+    assignment,
+    request,
+    location,
+  } = mission;
 
   const currentStatus =
-    assignment.status;
+    assignment?.status;
 
   const requestStatus =
     request?.current_status ||
+    currentStatus ||
     "assigned";
 
-  // ============================================================
-  // ACTION BUTTON
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Action button                                                             */
+  /* ------------------------------------------------------------------------ */
 
   function action() {
     if (updating) {
@@ -381,42 +448,38 @@ export default function ResponderMission() {
           size="lg"
           className="w-full"
           onClick={() =>
-            updateMissionStatus(
-              "acknowledged"
+            void updateMissionStatus(
+              "acknowledged",
             )
           }
         >
           <CheckCircle2 className="h-5 w-5" />
-
           Acknowledge assignment
         </Button>
       );
     }
 
     if (
-      currentStatus ===
-      "acknowledged"
+      currentStatus === "acknowledged"
     ) {
       return (
         <Button
           size="lg"
           className="w-full"
           onClick={() =>
-            updateMissionStatus(
-              "en_route"
+            void updateMissionStatus(
+              "en_route",
             )
           }
         >
           <Navigation className="h-5 w-5" />
-
           Start route
         </Button>
       );
     }
 
     if (
-      currentStatus ===
-      "en_route"
+      currentStatus === "en_route"
     ) {
       return (
         <Button
@@ -424,13 +487,12 @@ export default function ResponderMission() {
           variant="warning"
           className="w-full"
           onClick={() =>
-            updateMissionStatus(
-              "arrived"
+            void updateMissionStatus(
+              "arrived",
             )
           }
         >
           <MapPin className="h-5 w-5" />
-
           Mark arrived
         </Button>
       );
@@ -445,13 +507,12 @@ export default function ResponderMission() {
           variant="success"
           className="w-full"
           onClick={() =>
-            updateMissionStatus(
-              "completed"
+            void updateMissionStatus(
+              "completed",
             )
           }
         >
           <CheckCircle2 className="h-5 w-5" />
-
           Complete response
         </Button>
       );
@@ -460,23 +521,37 @@ export default function ResponderMission() {
     return null;
   }
 
-  // ============================================================
-  // PAGE
-  // ============================================================
+  /* ------------------------------------------------------------------------ */
+  /* Location data                                                             */
+  /* ------------------------------------------------------------------------ */
+
+  const locationAddress =
+    location?.address_text ||
+    location?.landmark ||
+    "Location not available";
+
+  const locationLatitude =
+    location?.latitude ?? 0;
+
+  const locationLongitude =
+    location?.longitude ?? 0;
+
+  /* ------------------------------------------------------------------------ */
+  /* Page                                                                      */
+  /* ------------------------------------------------------------------------ */
 
   return (
     <div className="app-page grid gap-5">
-
       <PageHeading
         eyebrow="Responder"
         title="Active mission"
-        description={`${request?.reference_code || request?.id} · ${
+        description={`${request?.reference_code || request?.id || "Emergency"} · ${
           request?.category || "Emergency"
         }`}
         action={
           <Badge
             tone={requestStatusTone(
-              requestStatus
+              requestStatus,
             )}
             className="min-h-9 px-4"
           >
@@ -486,38 +561,30 @@ export default function ResponderMission() {
       />
 
       <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
-
-        {/* ======================================================
-            MAP
-        ====================================================== */}
+        {/* ---------------------------------------------------------------- */}
+        {/* Map                                                               */}
+        {/* ---------------------------------------------------------------- */}
 
         <LiveResponseMap
           request={{
             ...request,
-
             location: {
-              address:
-                location?.address_text ||
-                location?.landmark ||
-                "Location not available",
-
-              latitude:
-                location?.latitude ?? 0,
-
-              longitude:
-                location?.longitude ?? 0,
+              address: locationAddress,
+              lat: locationLatitude,
+              lng: locationLongitude,
+              latitude: locationLatitude,
+              longitude: locationLongitude,
             },
           }}
           immersive
           mobileAction={action()}
         />
 
-        {/* ======================================================
-            DESKTOP ACTIONS
-        ====================================================== */}
+        {/* ---------------------------------------------------------------- */}
+        {/* Desktop actions                                                   */}
+        {/* ---------------------------------------------------------------- */}
 
         <div className="hidden content-start gap-4 xl:grid">
-
           <Panel>
             <PanelHeader
               title="Mission action"
@@ -535,23 +602,27 @@ export default function ResponderMission() {
             />
 
             <div className="divide-y divide-[#e2e8ed]">
-
+              {/* Requester */}
               <div className="flex gap-3 p-4">
                 <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
 
                 <div>
                   <p className="font-semibold">
-                    {request?.requester_id ||
+                    {request?.requester_name ||
+                      request?.requesterName ||
+                      request?.requester_id ||
                       "Unknown requester"}
                   </p>
 
                   <p className="mt-1 text-sm text-[#627683]">
                     {request?.callback_number ||
+                      request?.callbackNumber ||
                       "No callback number"}
                   </p>
                 </div>
               </div>
 
+              {/* ETA */}
               <div className="flex gap-3 p-4">
                 <Clock3 className="h-5 w-5 text-[#0f5b67]" />
 
@@ -562,15 +633,16 @@ export default function ResponderMission() {
 
                   <p className="mt-1 text-sm text-[#627683]">
                     {assignment?.eta_minutes !==
-                    null &&
+                      null &&
                     assignment?.eta_minutes !==
-                    undefined
+                      undefined
                       ? `${assignment.eta_minutes} minutes`
                       : "Not available"}
                   </p>
                 </div>
               </div>
 
+              {/* Incident note */}
               <div className="p-4">
                 <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                   Incident note
@@ -583,25 +655,23 @@ export default function ResponderMission() {
                 </p>
               </div>
 
+              {/* Location */}
               <div className="p-4">
                 <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                   Location
                 </p>
 
                 <p className="mt-2 text-sm leading-6 text-[#526978]">
-                  {location?.address_text ||
-                    location?.landmark ||
-                    "Location not available"}
+                  {locationAddress}
                 </p>
               </div>
-
             </div>
           </Panel>
         </div>
 
-        {/* ======================================================
-            TIMELINE
-        ====================================================== */}
+        {/* ---------------------------------------------------------------- */}
+        {/* Mission timeline                                                  */}
+        {/* ---------------------------------------------------------------- */}
 
         <Panel className="xl:col-span-2">
           <PanelHeader
@@ -614,14 +684,7 @@ export default function ResponderMission() {
             }
           />
         </Panel>
-
       </div>
     </div>
   );
 }
-=======
-import { getResponderForUser } from "@/lib/responder/getResponderForUser";
-export default function ResponderMission(){const{user}=useAuth();const{db,loading,updateRequestStatus}=useMockStore();if(loading||!db||!user)return <PageSkeleton map/>;const actor=user;const responder=db.responders.find(r=>r.userId===user.id) ??(user.role==="responder" && user.email==="responder@live.co.za"
-    ? db.responders.find(r=>r.id==="rsp-001")
-    : undefined);const request=responder?db.requests.find(r=>r.assignedResponderId===responder.id&&!['Closed','Cancelled','Rejected'].includes(r.status)):undefined;if(!responder)return <div className="app-page"><Panel className="p-8 text-center">Responder profile not found.</Panel></div>;function action(){if(!request)return null;if(request.status==="Assigned")return <Button size="lg" className="w-full" onClick={()=>updateRequestStatus(request.id,"En route",actor,"Responder acknowledged the assignment and started the route.")}><Navigation className="h-5 w-5"/>Start route</Button>;if(request.status==="En route")return <Button size="lg" variant="warning" className="w-full" onClick={()=>updateRequestStatus(request.id,"Arrived",actor,"Response unit arrived at the confirmed incident location.")}><MapPin className="h-5 w-5"/>Mark arrived</Button>;if(request.status==="Arrived")return <Button size="lg" variant="success" className="w-full" onClick={()=>updateRequestStatus(request.id,"Closed",actor,"Operational response completed in the mock workflow.")}><CheckCircle2 className="h-5 w-5"/>Complete response</Button>;return null;}return <div className="app-page grid gap-5"><PageHeading eyebrow="Responder" title={request?"Active mission":"Ready for assignment"} description={request?`${request.id} · ${request.category}`:`Roster status: ${responder.availability}`} action={request?<Badge tone={requestStatusTone(request.status)} className="min-h-9 px-4">{request.status}</Badge>:<Badge tone={responder.availability==="Available"?"success":"slate"}>{responder.availability}</Badge>}/>{request?<div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]"><LiveResponseMap request={request} responder={responder} immersive mobileAction={action()}/><div className="hidden content-start gap-4 xl:grid"><Panel><PanelHeader title="Mission action" description="Update only after the operational step occurs."/><div className="p-4">{action()}</div></Panel><Panel><PanelHeader title="Requester and incident"/><div className="divide-y divide-[#e2e8ed]"><div className="flex gap-3 p-4"><PhoneCall className="h-5 w-5 text-[#0f5b67]"/><div><p className="font-semibold">{request.requesterName}</p><p className="mt-1 text-sm text-[#627683]">{request.callbackNumber}</p></div></div><div className="flex gap-3 p-4"><Clock3 className="h-5 w-5 text-[#0f5b67]"/><div><p className="font-semibold">Estimated arrival</p><p className="mt-1 text-sm text-[#627683]">{request.etaMinutes?`${request.etaMinutes} minutes`:"Not available"}</p></div></div><div className="p-4"><p className="text-xs font-bold uppercase tracking-wide text-[#748693]">Incident note</p><p className="mt-2 text-sm leading-6 text-[#526978]">{request.note}</p></div></div></Panel></div><Panel className="xl:col-span-2"><PanelHeader title="Mission timeline"/><StatusTimeline entries={request.statusHistory}/></Panel></div>:<Panel><EmptyState icon={<Navigation className="h-7 w-7"/>} title="No active mission" description="Your responder workspace will switch to a full-screen route and mission controls when a request is assigned." action={<Link href="/app/responder/history"><Button variant="outline">View assignment history</Button></Link>}/></Panel>}</div>}
->>>>>>> frontend

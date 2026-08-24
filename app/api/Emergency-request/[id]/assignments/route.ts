@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase-server";
 import { verifyAccessToken } from "@/lib/auth/jwt";
 
+
 type AssignmentBody = {
   organisation_id?: string;
   team_id?: string | null;
@@ -262,24 +263,26 @@ export async function POST(
     // ============================================================
 
     const {
-      data: emergencyRequest,
-      error: requestError,
-    } = await supabaseServer
-      .from("emergency_requests")
-      .select(
-        `
-        id,
-        reference_code,
-        requester_id,
-        routed_organisation_id,
-        current_status,
-        is_active,
-        is_cancelled,
-        eta_minutes
-        `
-      )
-      .eq("id", requestId)
-      .maybeSingle();
+  data: emergencyRequest,
+  error: requestError,
+} = await supabaseServer
+  .from("emergency_requests")
+  .select(
+    `
+    id,
+    reference_code,
+    requester_id,
+    routed_organisation_id,
+    current_status,
+    is_active,
+    is_cancelled,
+    eta_minutes
+    `
+  )
+  .or(
+    `id.eq.${requestId},reference_code.eq.${requestId}`
+  )
+  .maybeSingle();
 
     if (requestError) {
       console.error(

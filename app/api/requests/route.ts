@@ -18,12 +18,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
 
     /*
-     * OLD WORKING FLOW:
-     *
-     * /api/requests?phone=0712345678
-     *
-     * We keep this because the requester system
-     * was originally based on the callback phone number.
+     * Find requester using their phone number.
      */
     const phone = url.searchParams.get("phone");
 
@@ -37,7 +32,7 @@ export async function GET(request: Request) {
     }
 
     /*
-     * Find the requester using their phone number.
+     * Find the requester account.
      */
     const {
       data: requester,
@@ -52,8 +47,7 @@ export async function GET(request: Request) {
 
       return NextResponse.json(
         {
-          error:
-            "Could not identify the requester account.",
+          error: "Could not identify the requester account.",
         },
         { status: 404 }
       );
@@ -86,8 +80,7 @@ export async function GET(request: Request) {
 
       return NextResponse.json(
         {
-          error:
-            "Failed to fetch emergency requests.",
+          error: "Failed to fetch emergency requests.",
         },
         { status: 500 }
       );
@@ -124,7 +117,7 @@ export async function POST(request: Request) {
     } = body;
 
     /*
-     * Validate the emergency request.
+     * Validate emergency request.
      */
     if (
       !category ||
@@ -143,28 +136,19 @@ export async function POST(request: Request) {
     }
 
     /*
-     * Generate an idempotency key.
+     * Generate idempotency key.
      */
-    const idempotencyKey =
-      crypto.randomUUID();
+    const idempotencyKey = crypto.randomUUID();
 
     /*
-     * OLD WORKING BEHAVIOUR:
-     *
-     * The callback phone number identifies
-     * the requester account.
+     * Find requester using callback phone number.
      */
     const {
       data: requester,
       error: requesterError,
-    } = await findRequesterByPhone(
-      callbackNumber
-    );
+    } = await findRequesterByPhone(callbackNumber);
 
-    if (
-      requesterError ||
-      !requester
-    ) {
+    if (requesterError || !requester) {
       console.error(
         "Could not find requester:",
         requesterError
@@ -180,13 +164,12 @@ export async function POST(request: Request) {
     }
 
     /*
-     * Generate a human-readable reference.
+     * Generate human-readable request reference.
      */
-    const referenceCode =
-      `LIVE-${Date.now()}`;
+    const referenceCode = `LIVE-${Date.now()}`;
 
     /*
-     * Create the emergency request.
+     * Create emergency request.
      */
     const {
       data: emergencyRequest,
@@ -194,40 +177,20 @@ export async function POST(request: Request) {
     } = await supabaseServer
       .from("emergency_requests")
       .insert({
-        reference_code:
-          referenceCode,
-
-        requester_id:
-          requester.id,
-
+        reference_code: referenceCode,
+        requester_id: requester.id,
         category,
-
-        severity:
-          severity.toLowerCase(),
-
-        note:
-          note ||
-          "No additional note provided.",
-
-        callback_number:
-          callbackNumber,
-
-        current_status:
-          "submitted",
-
-        source:
-          "responsive_web",
-
-        idempotency_key:
-          idempotencyKey,
+        severity: severity.toLowerCase(),
+        note: note || "No additional note provided.",
+        callback_number: callbackNumber,
+        current_status: "submitted",
+        source: "responsive_web",
+        idempotency_key: idempotencyKey,
       })
       .select()
       .single();
 
-    if (
-      requestError ||
-      !emergencyRequest
-    ) {
+    if (requestError || !emergencyRequest) {
       console.error(
         "Failed to create emergency request:",
         requestError
@@ -235,45 +198,30 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error:
-            "Failed to create emergency request.",
+          error: "Failed to create emergency request.",
         },
         { status: 500 }
       );
     }
 
     /*
-     * Save the emergency location.
+     * Save emergency location.
      */
     const {
       error: locationError,
     } = await supabaseServer
       .from("request_locations")
       .insert({
-        request_id:
-          emergencyRequest.id,
-
-        latitude:
-          location.lat,
-
-        longitude:
-          location.lng,
-
-        accuracy_meters:
-          location.accuracy ?? null,
-
-        address_text:
-          location.address ?? null,
-
+        request_id: emergencyRequest.id,
+        latitude: location.lat,
+        longitude: location.lng,
+        accuracy_meters: location.accuracy ?? null,
+        address_text: location.address ?? null,
         captured_at:
           location.capturedAt ??
           new Date().toISOString(),
-
-        confirmed_at:
-          new Date().toISOString(),
-
-        location_method:
-          "gps",
+        confirmed_at: new Date().toISOString(),
+        location_method: "gps",
       });
 
     /*
@@ -289,10 +237,7 @@ export async function POST(request: Request) {
       await supabaseServer
         .from("emergency_requests")
         .delete()
-        .eq(
-          "id",
-          emergencyRequest.id
-        );
+        .eq("id", emergencyRequest.id);
 
       return NextResponse.json(
         {
@@ -309,27 +254,15 @@ export async function POST(request: Request) {
     const {
       error: historyError,
     } = await supabaseServer
-      .from(
-        "request_status_history"
-      )
+      .from("request_status_history")
       .insert({
-        request_id:
-          emergencyRequest.id,
-
-        previous_status:
-          null,
-
-        new_status:
-          "submitted",
-
-        changed_by_system:
-          true,
-
-        actor_role:
-          "requester",
-
-        note:
-          "Emergency request submitted.",
+        request_id: emergencyRequest.id,
+        previous_status: null,
+        new_status: "submitted",
+        changed_by_system: true,
+        actor_role: "requester",
+        changed_by_user_id: requester.id,
+        note: "Emergency request submitted.",
       });
 
     if (historyError) {
@@ -339,13 +272,62 @@ export async function POST(request: Request) {
       );
     }
 
+    /*
+     * ============================================================
+     * CREATE NOTIFICATION FOR REQUESTER
+     * ============================================================
+     *
+     * This creates a notification after the emergency request
+     * has successfully been created.
+     */
+    try {
+      const {
+        data: notification,
+        error: notificationError,
+      } = await supabaseServer
+        .from("notifications")
+        .insert({
+          recipient_user_id: requester.id,
+          request_id: emergencyRequest.id,
+          notification_type: "request_submitted",
+          title: "Emergency Request Submitted",
+          message: `Your emergency request ${referenceCode} has been submitted successfully.`,
+          sensitivity: "normal",
+        })
+        .select()
+        .single();
+
+      if (notificationError) {
+        console.error(
+          "Failed to create notification:",
+          notificationError
+        );
+      } else {
+        console.log(
+          "Notification created successfully:",
+          notification
+        );
+      }
+    } catch (notificationError) {
+      /*
+       * Notification failure should not cause the emergency
+       * request itself to fail.
+       */
+      console.error(
+        "Notification creation error:",
+        notificationError
+      );
+    }
+
+    /*
+     * Return successful emergency request response.
+     */
     return NextResponse.json(
       {
+        ok: true,
         message:
           "Emergency request created successfully.",
-
-        request:
-          emergencyRequest,
+        request: emergencyRequest,
       },
       { status: 201 }
     );
@@ -357,8 +339,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error:
-          "Internal server error",
+        error: "Internal server error",
       },
       { status: 500 }
     );
