@@ -1,255 +1,147 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import bcrypt from "bcryptjs";
-import { createAccessToken } from "@/lib/auth/jwt";
-import { logSecurityEvent } from "@/lib/security-logger";
+/**
+ * POST /api/auth/login   (Block 2, Person 6)
+ *
+ * Replaces the hand-written route that previously lived here. Differences:
+ *   - No console.log of identifiers, URLs or key presence (those lines leaked
+ *     PII and configuration into the hosting logs).
+ *   - Issues a real JWT pair instead of returning the user object for
+ *     localStorage. Tokens go into httpOnly cookies.
+ *   - Rate limited, audited, and returns the uniform { ok, data, requestId }
+ *     envelope like every other endpoint.
+ *
+ * The REQUEST shape is unchanged - { identifier, password } - so
+ * components/auth/auth-provider.tsx keeps working. The RESPONSE moves the user
+ * from `result.user` to `result.data.user`; see the notes in the integration
+ * plan for the one-line change on the client.
+ */
 
-console.log(
-  "Supabase URL:",
-  process.env.NEXT_PUBLIC_SUPABASE_URL
-);
+import { createHandler } from '@/lib/middleware/api/handler';
+import { setAuthCookies } from '@/lib/middleware/api/cookies';
+import { writeSecurityEvent } from '@/lib/middleware/api/audit';
+import { jsonOk } from '@/lib/middleware/api/response';
+import { ApiError } from '@/lib/middleware/errors';
+import { loginSchema } from '@/lib/middleware/validation';
+import { burnPasswordTime, verifyPassword } from '@/lib/middleware/password';
+import {
+  canSignIn,
+  findUserByIdentifier,
+  isLocked,
+  issueSession,
+  recordFailedLogin,
+  recordSuccessfulLogin,
+  toPublicUser,
+} from '@/lib/middleware/server/auth-service';
+import type { SessionResponse } from '@/types';
 
-console.log(
-  "Service role key exists:",
-  !!process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+export const runtime = 'nodejs';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(request: Request) {
-  try {
-    const forwardedFor = request.headers.get("x-forwarded-for");
-    const realIp = request.headers.get("x-real-ip");
-
-    const ipAddress =
-      forwardedFor?.split(",")[0]?.trim() ||
-      realIp ||
-      null;
-
-    const userAgent =
-      request.headers.get("user-agent") || null;
-
-    const { identifier, password } = await request.json();
-
-    if (!identifier || !password) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Email/phone and password are required.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const value = identifier.trim();
-
-    console.log("Login identifier:", value);
-    console.log(
-      "Identifier type:",
-      value.includes("@") ? "email" : "phone"
-    );
-
-    let user = null;
-    let error = null;
-
-    if (value.includes("@")) {
-      const result = await supabase
-        .from("users")
-        .select(
-          "id, email, phone, password_hash, role, status, first_name, last_name, display_name"
-        )
-        .eq("email", value)
-        .is("deleted_at", null)
-        .maybeSingle();
-
-      user = result.data;
-      error = result.error;
-    } else {
-      const result = await supabase
-        .from("users")
-        .select(
-          "id, email, phone, password_hash, role, status, first_name, last_name, display_name"
-        )
-        .eq("phone", value)
-        .is("deleted_at", null)
-        .maybeSingle();
-
-      user = result.data;
-      error = result.error;
-    }
-
-    if (error) {
-      console.error("LOGIN DATABASE ERROR");
-      console.error("Code:", error.code);
-      console.error("Message:", error.message);
-      console.error("Details:", error.details);
-      console.error("Hint:", error.hint);
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "Unable to sign in right now.",
-        },
-        { status: 500 }
-      );
-    }
-
-    console.log("User found:", !!user);
-
-    if (user) {
-      console.log("User ID:", user.id);
-      console.log("User email:", user.email);
-      console.log("User status:", user.status);
-      console.log("Password hash exists:", !!user.password_hash);
-    }
+export const POST = createHandler(
+  {
+    name: 'auth.login',
+    auth: 'none',
+    body: loginSchema,
+    // Brute-force protection: 10 attempts per IP per 5 minutes.
+    rateLimit: { limit: 10, windowMs: 5 * 60_000, by: 'ip' },
+  },
+  async (ctx) => {
+    const user = await findUserByIdentifier(ctx.body.identifier);
 
     if (!user) {
-      console.log("LOGIN FAILED: USER NOT FOUND");
-
-      await logSecurityEvent({
-        event_type: "auth.login.failed",
-        result: "denied",
-        ip_address: ipAddress,
-        user_agent: userAgent,
-        safe_metadata: {
-          reason: "user_not_found",
-          identifier_type: value.includes("@") ? "email" : "phone",
-        },
+      // Spend the same time as a real bcrypt compare so response timing does
+      // not reveal which identifiers are registered.
+      await burnPasswordTime();
+      await writeSecurityEvent({
+        action: 'auth.login.failed',
+        targetType: 'user',
+        result: 'denied',
+        correlationId: ctx.requestId,
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+        metadata: { reason: 'not_found' },
       });
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "The email/phone or password is incorrect.",
-        },
-        { status: 401 }
-      );
+      throw new ApiError('UNAUTHENTICATED', 'The email/phone or password is incorrect.');
     }
 
-    if (user.status !== "active") {
-      console.log("LOGIN FAILED: ACCOUNT NOT ACTIVE");
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "This account is not active.",
-        },
-        { status: 403 }
-      );
-    }
-
-    const passwordCorrect = await bcrypt.compare(
-      password,
-      user.password_hash
-    );
-
-    console.log("Password correct:", passwordCorrect);
-
-    if (!passwordCorrect) {
-      console.log("LOGIN FAILED: PASSWORD DOES NOT MATCH");
-
-      await logSecurityEvent({
-        user_id: user.id,
-        event_type: "auth.login.failed",
-        result: "denied",
-        ip_address: ipAddress,
-        user_agent: userAgent,
-        safe_metadata: {
-          reason: "invalid_password",
-          identifier_type: value.includes("@") ? "email" : "phone",
-        },
+    if (isLocked(user)) {
+      await writeSecurityEvent({
+        action: 'auth.login.locked',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        result: 'denied',
+        correlationId: ctx.requestId,
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
       });
-
-      return NextResponse.json(
-        {
-          ok: false,
-          message: "The email/phone or password is incorrect.",
-        },
-        { status: 401 }
+      throw new ApiError(
+        'FORBIDDEN',
+        'This account is temporarily locked after too many attempts. Try again in 15 minutes.',
       );
     }
 
-    // Create our application JWT
-    const accessToken = await createAccessToken(
-      user.id,
-      user.role
-    );
-
-    console.log("JWT CREATED SUCCESSFULLY");
-
-    // Update login information
-    const { error: updateError } = await supabase
-      .from("users")
-      .update({
-        last_login_at: new Date().toISOString(),
-        failed_login_attempts: 0,
-      })
-      .eq("id", user.id);
-
-    if (updateError) {
-      console.error(
-        "Failed to update last login information:",
-        updateError
-      );
+    if (!canSignIn(user)) {
+      await writeSecurityEvent({
+        action: 'auth.login.inactive',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        result: 'denied',
+        correlationId: ctx.requestId,
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+        metadata: { status: user.status },
+      });
+      throw new ApiError('FORBIDDEN', 'This account is not active.');
     }
 
-    const safeUser = {
-      id: user.id,
-      name:
-        user.display_name ||
-        `${user.first_name} ${user.last_name}`.trim(),
-      email: user.email,
-      phone: user.phone,
-      role: user.role,
-      status: user.status,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      display_name: user.display_name,
+    const correct = await verifyPassword(ctx.body.password, user.password_hash);
+    if (!correct) {
+      await recordFailedLogin(user);
+      await writeSecurityEvent({
+        action: 'auth.login.failed',
+        actorId: user.id,
+        actorRole: user.role,
+        targetType: 'user',
+        targetId: user.id,
+        result: 'denied',
+        correlationId: ctx.requestId,
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+        metadata: { reason: 'bad_password' },
+      });
+      throw new ApiError('UNAUTHENTICATED', 'The email/phone or password is incorrect.');
+    }
+
+    const session = await issueSession(user, {
+      userAgent: ctx.userAgent,
+      ipHash: ctx.ipHash,
+    });
+
+    await recordSuccessfulLogin(user);
+
+    await writeSecurityEvent({
+      action: 'auth.login.success',
+      actorId: user.id,
+      actorRole: user.role,
+      targetType: 'user',
+      targetId: user.id,
+      result: 'success',
+      correlationId: ctx.requestId,
+      ipHash: ctx.ipHash,
+      userAgent: ctx.userAgent,
+      metadata: { sessionId: session.sessionId },
+    });
+
+    const payload: SessionResponse = {
+      user: await toPublicUser(user),
+      accessExpiresAt: session.accessExpiresAt,
     };
 
-    // Store JWT in an HTTP-only cookie
-    const response = NextResponse.json({
-      ok: true,
-      message: "Login successful.",
-      user: safeUser,
+    return setAuthCookies(jsonOk(payload, ctx.requestId), {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
     });
-
-    response.cookies.set({
-      name: "access_token",
-      value: accessToken,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60,
-    });
-
-    await logSecurityEvent({
-      user_id: user.id,
-      event_type: "auth.login.success",
-      result: "success",
-      ip_address: ipAddress,
-      user_agent: userAgent,
-      safe_metadata: {
-        identifier_type: value.includes("@") ? "email" : "phone",
-      },
-    });
-
-    console.log("LOGIN SUCCESSFUL");
-
-    return response;
-  } catch (error) {
-    console.error("Login error:", error);
-
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Unable to sign in right now.",
-      },
-      { status: 500 }
-    );
-  }
-}
+  },
+);

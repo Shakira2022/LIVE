@@ -43,21 +43,34 @@ export default function LoginPage() {
 
     setBusy(false);
 
-    if (!result.ok) {
+    if (!result.ok || !result.user) {
       setError(
         result.message || "Unable to sign in."
       );
       return;
     }
 
-    const raw = localStorage.getItem(
-      "live-mock-session-v1"
-    );
+    // The session now lives in httpOnly cookies, so there is nothing to read
+    // back from localStorage. Redirect using the user the server just returned.
+    //
+    // If middleware.ts turned this visit away from a protected page it left
+    // ?next= behind, so send them where they were actually going. Only
+    // same-origin relative paths are accepted, otherwise ?next= would be an
+    // open redirect.
+    const requested = new URLSearchParams(
+      window.location.search
+    ).get("next");
 
-    if (raw) {
-      const session = JSON.parse(raw);
-      router.replace(roleHome(session.role));
-    }
+    const safeNext =
+      requested &&
+      requested.startsWith("/") &&
+      !requested.startsWith("//")
+        ? requested
+        : null;
+
+    router.replace(
+      safeNext ?? roleHome(result.user.role)
+    );
   }
 
   return (

@@ -10,7 +10,6 @@ import type {
   RequestStatus,
 } from "@/lib/types";
 import { generateReference } from "@/lib/utils";
-import { recordAuditEvent } from "@/lib/client-audit";
 
 const DATABASE_KEY = "live-mock-database-v1";
 
@@ -62,42 +61,6 @@ function logEntry(
     timestamp: new Date().toISOString(),
     correlationId: `corr-${Math.random().toString(16).slice(2, 8)}`,
     metadata,
-  });
-
-  let targetType = "system";
-
-  if (
-    action.includes("Request") ||
-    action.includes("request")
-  ) {
-    targetType = "request";
-  } else if (
-    action.includes("Responder") ||
-    action.includes("responder")
-  ) {
-    targetType = "responder";
-  } else if (
-    action.includes("User") ||
-    action.includes("user")
-  ) {
-    targetType = "user";
-  } else if (
-    action.includes("Organisation") ||
-    action.includes("organisation")
-  ) {
-    targetType = "organisation";
-  }
-
-  void recordAuditEvent({
-    actorUserId: actor.id,
-    actorRole: actor.role,
-    action,
-    targetType,
-    targetId: target,
-    result: "success",
-    safeMetadata: {
-      details: metadata,
-    },
   });
 }
 
