@@ -1,5 +1,6 @@
 "use client";
 
+<<<<<<< Updated upstream
 import {
   Ambulance,
   Ban,
@@ -18,6 +19,10 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+=======
+import Link from "next/link";
+import { Ambulance, ArrowRight, CircleAlert, Radio, Users } from "lucide-react";
+>>>>>>> Stashed changes
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +42,7 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { Sheet } from "@/components/ui/sheet";
 import { PageSkeleton } from "@/components/ui/skeleton";
+<<<<<<< Updated upstream
 
 import { supabase } from "@/lib/supabase";
 import { requestStatusTone } from "@/lib/utils";
@@ -1136,10 +1142,38 @@ export default function DispatchRequestDetail() {
             className="min-h-9 px-4"
           >
             {request.current_status}
+=======
+import { useMockStore } from "@/lib/mock-store";
+import { isActiveStatus } from "@/lib/utils";
+
+export default function DispatcherDashboard() {
+  const { db, loading } = useMockStore();
+
+  if (loading || !db) return <PageSkeleton map />;
+
+  const active = db.requests.filter((r) => isActiveStatus(r.status));
+  const unassigned = active.filter((r) => !r.assignedResponderId);
+  const available = db.responders.filter(
+    (r) => r.availability === "Available"
+  );
+  const critical = active.filter((r) => r.severity === "Critical");
+
+  return (
+    <div className="app-page grid gap-5">
+      <PageHeading
+        eyebrow="Dispatch operations"
+        title="Live response overview"
+        description="Monitor the request queue, locations and response resources."
+        action={
+          <Badge tone="success">
+            <span className="mr-1.5 h-2 w-2 rounded-full bg-[#1f845b]" />
+            Operations online
+>>>>>>> Stashed changes
           </Badge>
         }
       />
 
+<<<<<<< Updated upstream
       <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
 
         {/* =================================================
@@ -1693,6 +1727,69 @@ export default function DispatchRequestDetail() {
         </div>
       </Sheet>
 
+=======
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          label="Active requests"
+          value={active.length}
+          detail="Across all operational states"
+          tone="danger"
+          icon={<Radio className="h-5 w-5" />}
+        />
+
+        <Metric
+          label="Awaiting assignment"
+          value={unassigned.length}
+          detail="Requires dispatcher attention"
+          tone="warning"
+          icon={<CircleAlert className="h-5 w-5" />}
+        />
+
+        <Metric
+          label="Available responders"
+          value={available.length}
+          detail="Roster availability"
+          tone="success"
+          icon={<Users className="h-5 w-5" />}
+        />
+
+        <Metric
+          label="Critical priority"
+          value={critical.length}
+          detail="Highest priority cases"
+          tone="danger"
+          icon={<Ambulance className="h-5 w-5" />}
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+        <LiveResponseMap showAll requests={active} immersive />
+
+        <Panel>
+          <PanelHeader
+            title="Priority queue"
+            description="Newest active requests"
+            action={
+              <Link href="/app/dispatcher/requests">
+                <Button variant="ghost" size="sm">
+                  All requests
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
+            }
+          />
+
+          {active.slice(0, 5).map((r) => (
+            <RequestListItem
+              key={r.id}
+              request={r}
+              href={`/app/dispatcher/requests/${r.id}`}
+              compact
+            />
+          ))}
+        </Panel>
+      </div>
+>>>>>>> Stashed changes
     </div>
   );
 }

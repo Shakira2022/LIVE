@@ -8,12 +8,20 @@ import {
   MapPin,
   MessageSquareText,
   Navigation,
+<<<<<<< Updated upstream
   Send,
   Siren,
   Route,
   PhoneCall,
 } from "lucide-react";
 
+=======
+  PhoneCall,
+  Route,
+  Send,
+  Siren,
+} from "lucide-react";
+>>>>>>> Stashed changes
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -37,15 +45,21 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { Sheet } from "@/components/ui/sheet";
 import { PageSkeleton } from "@/components/ui/skeleton";
+<<<<<<< Updated upstream
 
 import { supabase } from "@/lib/supabase";
 import { requestStatusTone } from "@/lib/utils";
+=======
+import { useMockStore } from "@/lib/mock-store";
+import { nextStatus, requestStatusTone } from "@/lib/utils";
+>>>>>>> Stashed changes
 
 export default function DispatchRequestDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
 
+<<<<<<< Updated upstream
   const [request, setRequest] = useState<any>(null);
   const [location, setLocation] = useState<any>(null);
 
@@ -55,10 +69,22 @@ export default function DispatchRequestDetail() {
   const [loading, setLoading] = useState(true);
   const [assignmentLoading, setAssignmentLoading] =
     useState(false);
+=======
+  const {
+    db,
+    loading,
+    updateRequestStatus,
+    assignResponder,
+    addOperationalNote,
+    rerouteRequest,
+    rejectRequest,
+  } = useMockStore();
+>>>>>>> Stashed changes
 
   const [sheet, setSheet] = useState<
     null | "assign" | "reroute" | "reject" | "note"
   >(null);
+<<<<<<< Updated upstream
 
   const [responderId, setResponderId] = useState("");
   const [text, setText] = useState("");
@@ -952,11 +978,23 @@ export default function DispatchRequestDetail() {
   // =====================================================
   // REQUEST NOT FOUND
   // =====================================================
+=======
+  const [responderId, setResponderId] = useState("");
+  const [organisationId, setOrganisationId] = useState("");
+  const [text, setText] = useState("");
+
+  if (loading || !db || !user) return <PageSkeleton map />;
+
+  const request = db.requests.find(
+    (r) => r.id === decodeURIComponent(id)
+  );
+>>>>>>> Stashed changes
 
   if (!request) {
     return (
       <div className="app-page">
         <Panel className="p-8 text-center">
+<<<<<<< Updated upstream
           <h1 className="text-xl font-bold">
             Emergency request not found.
           </h1>
@@ -968,6 +1006,12 @@ export default function DispatchRequestDetail() {
                 "/app/dispatcher/requests"
               )
             }
+=======
+          <h1 className="text-xl font-bold">Request not found</h1>
+          <Button
+            className="mt-5"
+            onClick={() => router.replace("/app/dispatcher/requests")}
+>>>>>>> Stashed changes
           >
             Back to queue
           </Button>
@@ -976,6 +1020,7 @@ export default function DispatchRequestDetail() {
     );
   }
 
+<<<<<<< Updated upstream
   // =====================================================
   // FIND CURRENT RESPONDER
   // =====================================================
@@ -1011,11 +1056,63 @@ export default function DispatchRequestDetail() {
             className="min-h-9 px-4"
           >
             {request.current_status}
+=======
+  const actor = user;
+  const selectedRequest = request;
+  const responder = db.responders.find(
+    (r) => r.id === request.assignedResponderId
+  );
+  const organisation = db.organisations.find(
+    (o) => o.id === request.organisationId
+  );
+  const next = nextStatus(request.status);
+  const available = db.responders.filter(
+    (r) =>
+      r.availability === "Available" ||
+      r.id === request.assignedResponderId
+  );
+
+  function completeSheet() {
+    if (sheet === "assign" && responderId)
+      assignResponder(selectedRequest.id, responderId, actor);
+
+    if (sheet === "reroute" && organisationId && text.trim())
+      rerouteRequest(
+        selectedRequest.id,
+        organisationId,
+        actor,
+        text
+      );
+
+    if (sheet === "reject" && text.trim())
+      rejectRequest(selectedRequest.id, actor, text);
+
+    if (sheet === "note" && text.trim())
+      addOperationalNote(selectedRequest.id, text, actor);
+
+    setSheet(null);
+    setText("");
+  }
+
+  return (
+    <div className="app-page grid gap-5">
+      <PageHeading
+        eyebrow="Dispatch request"
+        title={request.id}
+        description={`${request.category} · ${request.severity} priority`}
+        action={
+          <Badge
+            tone={requestStatusTone(request.status)}
+            className="min-h-9 px-4"
+          >
+            {request.status}
+>>>>>>> Stashed changes
           </Badge>
         }
       />
 
       <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
+<<<<<<< Updated upstream
 
         {/* =================================================
             MAP
@@ -1040,10 +1137,16 @@ export default function DispatchRequestDetail() {
                 0,
             },
           }}
+=======
+        <LiveResponseMap
+          request={request}
+          responder={responder}
+>>>>>>> Stashed changes
           immersive
         />
 
         <div className="grid content-start gap-4">
+<<<<<<< Updated upstream
 
           {/* =================================================
               OPERATIONAL ACTIONS
@@ -1126,14 +1229,72 @@ export default function DispatchRequestDetail() {
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   Complete assignment
+=======
+          <Panel>
+            <PanelHeader
+              title="Operational actions"
+              description="Actions are written to the mock audit trail."
+            />
+
+            <div className="grid gap-2 p-4 sm:grid-cols-2">
+              {next &&
+              !["Cancelled", "Rejected", "Closed"].includes(
+                request.status
+              ) ? (
+                <Button
+                  className="sm:col-span-2"
+                  onClick={() =>
+                    updateRequestStatus(
+                      request.id,
+                      next,
+                      user,
+                      `Dispatcher advanced request to ${next}.`
+                    )
+                  }
+                >
+                  {next === "En route" ? (
+                    <Navigation className="h-4 w-4" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  Move to {next}
+>>>>>>> Stashed changes
                 </Button>
               ) : null}
 
               <Button
                 variant="outline"
+<<<<<<< Updated upstream
                 onClick={() =>
                   setSheet("reroute")
                 }
+=======
+                onClick={() => {
+                  setResponderId(
+                    request.assignedResponderId ||
+                      available[0]?.id ||
+                      ""
+                  );
+                  setSheet("assign");
+                }}
+              >
+                <Ambulance className="h-4 w-4" />
+                Assign
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setOrganisationId(
+                    db.organisations.find(
+                      (o) =>
+                        o.id !== request.organisationId &&
+                        o.status === "Active"
+                    )?.id || ""
+                  );
+                  setSheet("reroute");
+                }}
+>>>>>>> Stashed changes
               >
                 <Route className="h-4 w-4" />
                 Reroute
@@ -1141,9 +1302,13 @@ export default function DispatchRequestDetail() {
 
               <Button
                 variant="outline"
+<<<<<<< Updated upstream
                 onClick={() =>
                   setSheet("note")
                 }
+=======
+                onClick={() => setSheet("note")}
+>>>>>>> Stashed changes
               >
                 <MessageSquareText className="h-4 w-4" />
                 Add note
@@ -1151,6 +1316,7 @@ export default function DispatchRequestDetail() {
 
               <Button
                 variant="danger"
+<<<<<<< Updated upstream
                 onClick={() =>
                   setSheet("reject")
                 }
@@ -1160,11 +1326,17 @@ export default function DispatchRequestDetail() {
                   "rejected",
                 ].includes(
                   request.current_status
+=======
+                onClick={() => setSheet("reject")}
+                disabled={["Closed", "Cancelled", "Rejected"].includes(
+                  request.status
+>>>>>>> Stashed changes
                 )}
               >
                 <Ban className="h-4 w-4" />
                 Reject
               </Button>
+<<<<<<< Updated upstream
 
             </div>
           </Panel>
@@ -1173,13 +1345,21 @@ export default function DispatchRequestDetail() {
               REQUEST INFORMATION
           ================================================= */}
 
+=======
+            </div>
+          </Panel>
+
+>>>>>>> Stashed changes
           <Panel>
             <PanelHeader title="Request information" />
 
             <dl className="divide-y divide-[#e2e8ed] text-sm">
+<<<<<<< Updated upstream
 
               {/* REQUESTER */}
 
+=======
+>>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
 
@@ -1187,6 +1367,7 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Requester
                   </dt>
+<<<<<<< Updated upstream
 
                   <dd className="mt-1 font-semibold">
                     {request.requester_id ||
@@ -1196,12 +1377,22 @@ export default function DispatchRequestDetail() {
                   <dd className="mt-1 text-[#617582]">
                     {request.callback_number ||
                       "No callback number"}
+=======
+                  <dd className="mt-1 font-semibold">
+                    {request.requesterName}
+                  </dd>
+                  <dd className="mt-1 text-[#617582]">
+                    {request.callbackNumber}
+>>>>>>> Stashed changes
                   </dd>
                 </div>
               </div>
 
+<<<<<<< Updated upstream
               {/* LOCATION */}
 
+=======
+>>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <MapPin className="h-5 w-5 text-[#0f5b67]" />
 
@@ -1209,6 +1400,7 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Location
                   </dt>
+<<<<<<< Updated upstream
 
                   <dd className="mt-1 font-semibold">
                     {location?.address_text ||
@@ -1227,11 +1419,23 @@ export default function DispatchRequestDetail() {
 
               {/* RESPONDER */}
 
+=======
+                  <dd className="mt-1 font-semibold">
+                    {request.location.address}
+                  </dd>
+                  <dd className="mt-1 text-xs text-[#71828d]">
+                    {request.location.method}
+                  </dd>
+                </div>
+              </div>
+
+>>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <Building2 className="h-5 w-5 text-[#0f5b67]" />
 
                 <div>
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+<<<<<<< Updated upstream
                     Responder
                   </dt>
 
@@ -1258,12 +1462,26 @@ export default function DispatchRequestDetail() {
                     {assignment
                       ? `Assignment: ${assignment.status}`
                       : "Awaiting assignment"}
+=======
+                    Routing
+                  </dt>
+                  <dd className="mt-1 font-semibold">
+                    {organisation?.name || "Unassigned"}
+                  </dd>
+                  <dd className="mt-1 text-xs text-[#71828d]">
+                    {responder
+                      ? `${responder.team} · ${responder.vehicle}`
+                      : "No responder assigned"}
+>>>>>>> Stashed changes
                   </dd>
                 </div>
               </div>
 
+<<<<<<< Updated upstream
               {/* INCIDENT NOTE */}
 
+=======
+>>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <Siren className="h-5 w-5 text-[#d53f3d]" />
 
@@ -1271,6 +1489,7 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Incident note
                   </dt>
+<<<<<<< Updated upstream
 
                   <dd className="mt-1 leading-6">
                     {request.note ||
@@ -1318,6 +1537,46 @@ export default function DispatchRequestDetail() {
       {/* =====================================================
           ACTION SHEET
       ===================================================== */}
+=======
+                  <dd className="mt-1 leading-6">{request.note}</dd>
+                </div>
+              </div>
+            </dl>
+          </Panel>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel>
+          <PanelHeader title="Status history" />
+          <StatusTimeline entries={request.statusHistory} />
+        </Panel>
+
+        <Panel>
+          <PanelHeader
+            title="Operational notes"
+            description={`${request.operationalNotes.length} notes`}
+          />
+
+          {request.operationalNotes.length ? (
+            <div className="divide-y divide-[#e2e8ed]">
+              {request.operationalNotes.map((note, index) => (
+                <p
+                  key={index}
+                  className="p-4 text-sm leading-6 text-[#536b7b] sm:p-5"
+                >
+                  {note}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="p-8 text-center text-sm text-[#71828d]">
+              No operational notes yet.
+            </p>
+          )}
+        </Panel>
+      </div>
+>>>>>>> Stashed changes
 
       <Sheet
         open={sheet !== null}
@@ -1336,6 +1595,7 @@ export default function DispatchRequestDetail() {
                 ? "Reject request"
                 : "Add operational note"
         }
+<<<<<<< Updated upstream
         description={
           request.reference_code ||
           request.id
@@ -1493,10 +1753,64 @@ export default function DispatchRequestDetail() {
 
               <FieldLabel>
                 Rejection reason
+=======
+        description={request.id}
+      >
+        <div className="grid gap-4 p-5">
+          {sheet === "assign" ? (
+            <label>
+              <FieldLabel>Responder and vehicle</FieldLabel>
+
+              <Select
+                value={responderId}
+                onChange={(e) => setResponderId(e.target.value)}
+              >
+                {available.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} · {r.team} · {r.vehicle}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          ) : null}
+
+          {sheet === "reroute" ? (
+            <label>
+              <FieldLabel>Destination organisation</FieldLabel>
+
+              <Select
+                value={organisationId}
+                onChange={(e) => setOrganisationId(e.target.value)}
+              >
+                {db.organisations
+                  .filter(
+                    (o) =>
+                      o.status === "Active" &&
+                      o.id !== request.organisationId
+                  )
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+              </Select>
+            </label>
+          ) : null}
+
+          {sheet !== "assign" ? (
+            <label>
+              <FieldLabel>
+                {sheet === "reject"
+                  ? "Required rejection reason"
+                  : sheet === "reroute"
+                    ? "Required routing reason"
+                    : "Operational note"}
+>>>>>>> Stashed changes
               </FieldLabel>
 
               <Textarea
                 value={text}
+<<<<<<< Updated upstream
                 onChange={(e) =>
                   setText(
                     e.target.value
@@ -1571,6 +1885,25 @@ export default function DispatchRequestDetail() {
         </div>
       </Sheet>
 
+=======
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Enter clear operational information"
+              />
+            </label>
+          ) : null}
+
+          <Button
+            variant={sheet === "reject" ? "danger" : "primary"}
+            size="lg"
+            onClick={completeSheet}
+            disabled={sheet === "assign" ? !responderId : !text.trim()}
+          >
+            <Send className="h-4 w-4" />
+            Confirm action
+          </Button>
+        </div>
+      </Sheet>
+>>>>>>> Stashed changes
     </div>
   );
 }
