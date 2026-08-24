@@ -1,27 +1,13 @@
 "use client";
 
 import {
-  Ambulance,
-  Ban,
   Building2,
-  CheckCircle2,
   MapPin,
-  MessageSquareText,
-  Navigation,
-<<<<<<< Updated upstream
+  PhoneCall,
   Send,
   Siren,
-  Route,
-  PhoneCall,
 } from "lucide-react";
 
-=======
-  PhoneCall,
-  Route,
-  Send,
-  Siren,
-} from "lucide-react";
->>>>>>> Stashed changes
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -30,7 +16,6 @@ import { LiveResponseMap } from "@/components/maps/live-response-map";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
 import {
   FieldLabel,
   Select,
@@ -43,175 +28,178 @@ import {
 } from "@/components/ui/panel";
 
 import { PageHeading } from "@/components/ui/page-heading";
-import { Sheet } from "@/components/ui/sheet";
 import { PageSkeleton } from "@/components/ui/skeleton";
-<<<<<<< Updated upstream
+import { Sheet } from "@/components/ui/sheet";
 
 import { supabase } from "@/lib/supabase";
 import { requestStatusTone } from "@/lib/utils";
-=======
-import { useMockStore } from "@/lib/mock-store";
-import { nextStatus, requestStatusTone } from "@/lib/utils";
->>>>>>> Stashed changes
 
 export default function DispatchRequestDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
 
-<<<<<<< Updated upstream
-  const [request, setRequest] = useState<any>(null);
-  const [location, setLocation] = useState<any>(null);
-
-  const [responders, setResponders] = useState<any[]>([]);
-  const [assignment, setAssignment] = useState<any>(null);
-
-  const [loading, setLoading] = useState(true);
-  const [assignmentLoading, setAssignmentLoading] =
-    useState(false);
-=======
-  const {
-    db,
-    loading,
-    updateRequestStatus,
-    assignResponder,
-    addOperationalNote,
-    rerouteRequest,
-    rejectRequest,
-  } = useMockStore();
->>>>>>> Stashed changes
-
   const [sheet, setSheet] = useState<
     null | "assign" | "reroute" | "reject" | "note"
   >(null);
-<<<<<<< Updated upstream
+
+  // ==================================================
+  // ASSIGNMENT SELECTION
+  // ==================================================
+
+  const [assignmentType, setAssignmentType] = useState<
+    "team" | "responder"
+  >("responder");
 
   const [responderId, setResponderId] = useState("");
+  const [teamId, setTeamId] = useState("");
+  const [organisationId, setOrganisationId] = useState("");
   const [text, setText] = useState("");
 
-  // =====================================================
-  // LOAD DATA
-  // =====================================================
+  const [assignmentLoading, setAssignmentLoading] =
+    useState(false);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        setLoading(true);
+  // ==================================================
+  // DATA
+  // ==================================================
 
-        const requestId = decodeURIComponent(id);
+  const [operationalNotes, setOperationalNotes] =
+    useState<any[]>([]);
 
-        console.log(
-          "=========================================="
+  const [request, setRequest] = useState<any>(null);
+
+  const [requestLoading, setRequestLoading] =
+    useState(true);
+
+  const [responders, setResponders] =
+    useState<any[]>([]);
+
+  const [teams, setTeams] =
+    useState<any[]>([]);
+
+  const [organisations, setOrganisations] =
+    useState<any[]>([]);
+
+  const [assignment, setAssignment] =
+    useState<any>(null);
+
+  const [etaMinutes, setEtaMinutes] =
+    useState("");
+
+  // ==================================================
+  // LOAD ALL REQUEST DATA
+  // ==================================================
+
+  async function loadRequestData() {
+    try {
+      setRequestLoading(true);
+
+      const requestId = decodeURIComponent(id);
+
+      console.log(
+        "========== LOADING DISPATCH REQUEST =========="
+      );
+
+      console.log(
+        "Loading emergency request:",
+        requestId
+      );
+
+      // ==================================================
+      // SUPABASE AUTH CHECK
+      // ==================================================
+
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      console.log(
+        "========== SUPABASE AUTH CHECK =========="
+      );
+
+      console.log(
+        "SUPABASE SESSION:",
+        session
+      );
+
+      console.log(
+        "SUPABASE USER:",
+        session?.user
+      );
+
+      console.log(
+        "SUPABASE USER ID:",
+        session?.user?.id
+      );
+
+      console.log(
+        "SUPABASE SESSION ERROR:",
+        sessionError
+      );
+
+      console.log(
+        "SUPABASE ACCESS TOKEN EXISTS:",
+        !!session?.access_token
+      );
+
+      // ==================================================
+      // LOAD EMERGENCY REQUEST
+      // ==================================================
+
+      const {
+        data: requestData,
+        error: requestError,
+      } = await supabase
+        .from("emergency_requests")
+        .select("*")
+        .eq("id", requestId)
+        .single();
+
+      if (requestError) {
+        console.error(
+          "Failed to load emergency request:",
+          requestError
         );
-        console.log("DISPATCHER REQUEST DETAIL");
-        console.log("REQUEST ID:", requestId);
-        console.log(
-          "=========================================="
+
+        setRequest(null);
+        setAssignment(null);
+
+        return;
+      }
+
+      console.log(
+        "EMERGENCY REQUEST:",
+        requestData
+      );
+
+      setRequest(requestData);
+
+      // ==================================================
+      // LOAD MOST RECENT ASSIGNMENT
+      // ==================================================
+
+      const {
+        data: assignmentData,
+        error: assignmentError,
+      } = await supabase
+        .from("request_assignments")
+        .select("*")
+        .eq("request_id", requestId)
+        .order("created_at", {
+          ascending: false,
+        })
+        .limit(1)
+        .maybeSingle();
+
+      if (assignmentError) {
+        console.error(
+          "Failed to load request assignment:",
+          assignmentError
         );
 
-        // =================================================
-        // LOAD EMERGENCY REQUEST
-        // =================================================
-
-        let requestData: any = null;
-        let requestError: any = null;
-
-        const uuidResult = await supabase
-          .from("emergency_requests")
-          .select("*")
-          .eq("id", requestId)
-          .maybeSingle();
-
-        requestData = uuidResult.data;
-        requestError = uuidResult.error;
-
-        // Try reference code if UUID was not found
-        if (!requestData && !requestError) {
-          const referenceResult = await supabase
-            .from("emergency_requests")
-            .select("*")
-            .eq("reference_code", requestId)
-            .maybeSingle();
-
-          requestData = referenceResult.data;
-          requestError = referenceResult.error;
-        }
-
-        if (requestError) {
-          console.error(
-            "Failed to load emergency request:",
-            requestError
-          );
-
-          setRequest(null);
-          return;
-        }
-
-        if (!requestData) {
-          console.error(
-            "Emergency request not found:",
-            requestId
-          );
-
-          setRequest(null);
-          return;
-        }
-
-        console.log(
-          "EMERGENCY REQUEST:",
-          requestData
-        );
-
-        setRequest(requestData);
-
-        const realRequestId = requestData.id;
-
-        // =================================================
-        // LOAD LOCATION
-        // =================================================
-
-        const {
-          data: locationData,
-          error: locationError,
-        } = await supabase
-          .from("request_locations")
-          .select("*")
-          .eq("request_id", realRequestId)
-          .maybeSingle();
-
-        if (locationError) {
-          console.error(
-            "Failed to load request location:",
-            locationError
-          );
-        }
-
-        setLocation(locationData);
-
-        // =================================================
-        // LOAD CURRENT ASSIGNMENT
-        // =================================================
-
-        const {
-          data: assignmentData,
-          error: assignmentError,
-        } = await supabase
-          .from("request_assignments")
-          .select("*")
-          .eq("request_id", realRequestId)
-          .order("created_at", {
-            ascending: false,
-          })
-          .limit(1)
-          .maybeSingle();
-
-        if (assignmentError) {
-          console.error(
-            "Failed to load assignment:",
-            assignmentError
-          );
-        }
-
+        setAssignment(null);
+      } else {
         console.log(
           "CURRENT ASSIGNMENT:",
           assignmentData
@@ -219,445 +207,190 @@ export default function DispatchRequestDetail() {
 
         setAssignment(assignmentData);
 
-        // =================================================
-        // LOAD ALL RESPONDER USERS
-        // =================================================
-
-        const {
-          data: responderUsers,
-          error: responderUsersError,
-        } = await supabase
-          .from("users")
-          .select(`
-            id,
-            first_name,
-            last_name,
-            display_name,
-            email,
-            role,
-            status
-          `)
-          .eq("role", "responder");
-
-        if (responderUsersError) {
-          console.error(
-            "Failed to load responder users:",
-            responderUsersError
-          );
-
-          setResponders([]);
-          return;
-        }
-
-        console.log(
-          "RESPONDER USERS:",
-          responderUsers
-        );
-
         if (
-          !responderUsers ||
-          responderUsers.length === 0
+          assignmentData?.eta_minutes !== null &&
+          assignmentData?.eta_minutes !== undefined
         ) {
-          console.warn(
-            "No responder users found."
-          );
-
-          setResponders([]);
-          return;
-        }
-
-        // =================================================
-        // GET RESPONDER USER IDS
-        // =================================================
-
-        const responderUserIds =
-          responderUsers
-            .map(
-              (responder) =>
-                responder.id
+          setEtaMinutes(
+            String(
+              assignmentData.eta_minutes
             )
-            .filter(Boolean);
-
-        // =================================================
-        // LOAD RESPONDER PROFILES
-        // =================================================
-
-        const {
-          data: responderProfiles,
-          error: responderProfilesError,
-        } = await supabase
-          .from("responder_profiles")
-          .select(`
-            user_id,
-            organisation_id,
-            employee_number,
-            qualification,
-            license_number,
-            availability
-          `)
-          .in(
-            "user_id",
-            responderUserIds
           );
-
-        if (responderProfilesError) {
-          console.error(
-            "Failed to load responder profiles:",
-            responderProfilesError
-          );
-
-          setResponders([]);
-          return;
         }
+      }
 
-        console.log(
-          "RESPONDER PROFILES:",
-          responderProfiles
+      // ==================================================
+      // LOAD AVAILABLE RESPONDERS
+      // ==================================================
+
+      const {
+        data: responderData,
+        error: responderError,
+      } = await supabase
+        .from("responder_profiles")
+        .select("*")
+        .eq("availability", "available");
+
+      if (responderError) {
+        console.error(
+          "Failed to load available responders:",
+          responderError
         );
 
-        // =================================================
-        // COMBINE USERS + PROFILES
-        //
-        // IMPORTANT:
-        // We do NOT filter availability.
-        //
-        // Everyone stays in the list:
-        // available
-        // assigned
-        // en_route
-        // on_scene
-        // unavailable
-        // =================================================
-
-        const combinedResponders =
-          (responderUsers || [])
-            .map((responderUser) => {
-              const profile =
-                (responderProfiles || []).find(
-                  (p) =>
-                    p.user_id ===
-                    responderUser.id
-                );
-
-              const displayName =
-                responderUser.display_name ||
-                `${responderUser.first_name || ""} ${
-                  responderUser.last_name || ""
-                }`.trim();
-
-              return {
-                id: responderUser.id,
-
-                user_id:
-                  responderUser.id,
-
-                first_name:
-                  responderUser.first_name ||
-                  "",
-
-                last_name:
-                  responderUser.last_name ||
-                  "",
-
-                display_name:
-                  displayName ||
-                  "Responder",
-
-                email:
-                  responderUser.email ||
-                  "",
-
-                role:
-                  responderUser.role,
-
-                user_status:
-                  responderUser.status ||
-                  "unknown",
-
-                organisation_id:
-                  profile?.organisation_id ||
-                  null,
-
-                employee_number:
-                  profile?.employee_number ||
-                  "",
-
-                qualification:
-                  profile?.qualification ||
-                  "",
-
-                license_number:
-                  profile?.license_number ||
-                  "",
-
-                availability:
-                  profile?.availability ||
-                  "unknown",
-              };
-            });
-
+        setResponders([]);
+      } else {
         console.log(
-          "ALL COMBINED RESPONDERS:",
-          combinedResponders
+          "AVAILABLE RESPONDERS:",
+          responderData
         );
-
-        // =================================================
-        // IMPORTANT:
-        //
-        // DO NOT FILTER THIS LIST.
-        //
-        // Assigned responders stay visible.
-        // En-route responders stay visible.
-        // On-scene responders stay visible.
-        // Available responders stay visible.
-        // =================================================
 
         setResponders(
-          combinedResponders
+          responderData || []
         );
-      } catch (error) {
+      }
+
+      // ==================================================
+      // LOAD OPERATIONAL NOTES
+      // ==================================================
+
+      const {
+        data: notesData,
+        error: notesError,
+      } = await supabase
+        .from("operational_notes")
+        .select("*")
+        .eq("request_id", requestId)
+        .is("deleted_at", null)
+        .order("created_at", {
+          ascending: false,
+        });
+
+      if (notesError) {
         console.error(
-          "Unexpected dispatcher loading error:",
-          error
+          "Failed to load operational notes:",
+          notesError
         );
 
-        setRequest(null);
-      } finally {
-        setLoading(false);
+        setOperationalNotes([]);
+      } else {
+        console.log(
+          "OPERATIONAL NOTES:",
+          notesData
+        );
+
+        setOperationalNotes(
+          notesData || []
+        );
       }
-    }
 
-    if (id) {
-      loadData();
-    }
-  }, [id]);
+      // ==================================================
+      // LOAD AVAILABLE TEAMS
+      // ==================================================
 
-  // =====================================================
-  // ASSIGN RESPONDER
-  // =====================================================
+      const {
+        data: teamData,
+        error: teamError,
+      } = await supabase
+        .from("responder_teams")
+        .select(`
+          id,
+          organisation_id,
+          name,
+          code,
+          description,
+          status
+        `)
+        .eq("status", "available")
+        .order("name", {
+          ascending: true,
+        });
 
-  async function assignResponder() {
-    if (!responderId) {
-      alert(
-        "Please select a responder."
-      );
-      return;
-    }
-
-    if (!user?.id) {
-      alert(
-        "Dispatcher authentication is missing."
-      );
-      return;
-    }
-
-    if (!request?.id) {
-      alert(
-        "Emergency request ID is missing."
-      );
-      return;
-    }
-
-    const selectedResponder =
-      responders.find(
-        (responder) =>
-          responder.user_id ===
-          responderId
-      );
-
-    if (!selectedResponder) {
-      alert(
-        "Selected responder could not be found."
-      );
-      return;
-    }
-
-    if (
-      !selectedResponder.organisation_id
-    ) {
-      alert(
-        "Selected responder is not linked to an organisation."
-      );
-      return;
-    }
-
-    // =================================================
-    // ONLY AVAILABLE RESPONDERS CAN BE ASSIGNED
-    // =================================================
-
-    const availability =
-      String(
-        selectedResponder.availability ||
-          ""
-      ).toLowerCase();
-
-    if (availability !== "available") {
-      alert(
-        `This responder is currently ${availability || "unavailable"}. Please select an available responder.`
-      );
-
-      return;
-    }
-
-    try {
-      setAssignmentLoading(true);
-
-      console.log(
-        "=========================================="
-      );
-
-      console.log(
-        "ASSIGNING RESPONDER"
-      );
-
-      console.log(
-        "RESPONDER:",
-        selectedResponder
-      );
-
-      console.log(
-        "REQUEST:",
-        request.id
-      );
-
-      console.log(
-        "DISPATCHER:",
-        user.id
-      );
-
-      console.log(
-        "=========================================="
-      );
-
-      // =================================================
-      // CREATE ASSIGNMENT THROUGH API
-      // =================================================
-
-      const response = await fetch(
-        `/api/emergency-requests/${encodeURIComponent(
-          request.reference_code ||
-            request.id
-        )}/assignments`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            organisation_id:
-              selectedResponder.organisation_id,
-
-            responder_user_id:
-              selectedResponder.user_id,
-
-            assigned_by_user_id:
-              user.id,
-          }),
-        }
-      );
-
-      const result =
-        await response.json();
-
-      console.log(
-        "ASSIGNMENT API RESPONSE:",
-        result
-      );
-
-      if (!response.ok) {
-        alert(
-          result?.message ||
-            "Failed to assign responder."
+      if (teamError) {
+        console.error(
+          "Failed to load teams:",
+          teamError
         );
 
-        return;
+        setTeams([]);
+      } else {
+        console.log(
+          "ALL AVAILABLE TEAMS FROM SUPABASE:",
+          teamData
+        );
+
+        setTeams(
+          teamData || []
+        );
+      }
+
+      // ==================================================
+      // LOAD ORGANISATIONS
+      // ==================================================
+
+      const {
+        data: organisationData,
+        error: organisationError,
+      } = await supabase
+        .from("organisations")
+        .select(`
+          id,
+          name,
+          organisation_type,
+          status
+        `)
+        .eq("status", "active")
+        .order("name", {
+          ascending: true,
+        });
+
+      if (organisationError) {
+        console.error(
+          "Failed to load organisations:",
+          organisationError
+        );
+
+        setOrganisations([]);
+      } else {
+        console.log(
+          "ALL ORGANISATIONS FROM SUPABASE:",
+          organisationData
+        );
+
+        setOrganisations(
+          organisationData || []
+        );
       }
 
       console.log(
-        "ASSIGNMENT CREATED:",
-        result.assignment
-      );
-
-      // =================================================
-      // SAVE ASSIGNMENT LOCALLY
-      // =================================================
-
-      setAssignment(
-        result.assignment
-      );
-
-      // =================================================
-      // UPDATE REQUEST STATUS LOCALLY
-      // =================================================
-
-      setRequest(
-        (current: any) =>
-          current
-            ? {
-                ...current,
-
-                current_status:
-                  "assigned",
-
-                assigned_at:
-                  new Date().toISOString(),
-              }
-            : current
-      );
-
-      // =================================================
-      // KEEP RESPONDER IN DROPDOWN
-      //
-      // Just change their availability locally.
-      // =================================================
-
-      setResponders(
-        (current) =>
-          current.map(
-            (responder) =>
-              responder.user_id ===
-              selectedResponder.user_id
-                ? {
-                    ...responder,
-                    availability:
-                      "assigned",
-                  }
-                : responder
-          )
-      );
-
-      setSheet(null);
-      setResponderId("");
-
-      alert(
-        `${
-          selectedResponder.display_name ||
-          "Responder"
-        } assigned successfully.`
+        "========== DISPATCH DATA LOADED =========="
       );
     } catch (error) {
       console.error(
-        "Unexpected assignment error:",
+        "Failed to load request data:",
         error
       );
-
-      alert(
-        "Could not connect to the assignment API."
-      );
     } finally {
-      setAssignmentLoading(false);
+      setRequestLoading(false);
     }
   }
 
-  // =====================================================
+  // ==================================================
+  // LOAD DATA WHEN PAGE OPENS
+  // ==================================================
+
+  useEffect(() => {
+    if (user && id) {
+      loadRequestData();
+    }
+  }, [user, id]);
+
+  // ==================================================
   // UPDATE ASSIGNMENT STATUS
-  // =====================================================
+  // ==================================================
 
   async function updateAssignmentStatus(
     newStatus:
+      | "assigned"
       | "acknowledged"
       | "en_route"
       | "arrived"
@@ -667,334 +400,1318 @@ export default function DispatchRequestDetail() {
   ) {
     if (!assignment?.id) {
       alert(
-        "No responder assignment exists."
-      );
-      return;
-    }
-
-    if (!request?.id) {
-      alert(
-        "Emergency request ID is missing."
-      );
-      return;
-    }
-
-    const now =
-      new Date().toISOString();
-
-    const updates: any = {
-      status: newStatus,
-      updated_at: now,
-    };
-
-    if (
-      newStatus ===
-      "acknowledged"
-    ) {
-      updates.acknowledged_at =
-        now;
-    }
-
-    if (
-      newStatus === "en_route"
-    ) {
-      updates.route_started_at =
-        now;
-    }
-
-    if (
-      newStatus === "arrived"
-    ) {
-      updates.arrived_at =
-        now;
-    }
-
-    if (
-      newStatus === "completed"
-    ) {
-      updates.completed_at =
-        now;
-    }
-
-    if (
-      newStatus === "cancelled"
-    ) {
-      updates.cancelled_at =
-        now;
-    }
-
-    if (
-      newStatus === "rejected"
-    ) {
-      updates.rejected_at =
-        now;
-    }
-
-    // =================================================
-    // UPDATE ASSIGNMENT
-    // =================================================
-
-    const {
-      error: assignmentError,
-    } = await supabase
-      .from("request_assignments")
-      .update(updates)
-      .eq(
-        "id",
-        assignment.id
-      );
-
-    if (assignmentError) {
-      console.error(
-        "Failed to update assignment:",
-        assignmentError
-      );
-
-      alert(
-        assignmentError.message ||
-          "Failed to update assignment."
+        "No assignment exists for this request."
       );
 
       return;
     }
 
-    // =================================================
-    // DETERMINE REQUEST STATUS
-    // =================================================
+    setAssignmentLoading(true);
 
-    let requestStatus =
-      request.current_status;
+    try {
+      const now =
+        new Date().toISOString();
 
-    if (
-      newStatus ===
-      "acknowledged"
-    ) {
-      requestStatus =
-        "assigned";
-    }
-
-    if (
-      newStatus === "en_route"
-    ) {
-      requestStatus =
-        "en_route";
-    }
-
-    if (
-      newStatus === "arrived"
-    ) {
-      requestStatus =
-        "arrived";
-    }
-
-    if (
-      newStatus === "completed"
-    ) {
-      requestStatus =
-        "closed";
-    }
-
-    if (
-      newStatus === "cancelled"
-    ) {
-      requestStatus =
-        "cancelled";
-    }
-
-    if (
-      newStatus === "rejected"
-    ) {
-      requestStatus =
-        "rejected";
-    }
-
-    // =================================================
-    // UPDATE EMERGENCY REQUEST
-    // =================================================
-
-    const {
-      error: requestError,
-    } = await supabase
-      .from("emergency_requests")
-      .update({
-        current_status:
-          requestStatus,
+      const updates: any = {
+        status: newStatus,
         updated_at: now,
-      })
-      .eq(
-        "id",
-        request.id
-      );
+      };
 
-    if (requestError) {
-      console.error(
-        "Failed to update request status:",
-        requestError
-      );
+      if (
+        newStatus === "acknowledged"
+      ) {
+        updates.acknowledged_at = now;
+      }
 
-      alert(
-        "Assignment updated, but emergency request status could not be updated."
-      );
+      if (
+        newStatus === "en_route"
+      ) {
+        updates.route_started_at = now;
+      }
 
-      return;
-    }
+      if (
+        newStatus === "arrived"
+      ) {
+        updates.arrived_at = now;
+      }
 
-    // =================================================
-    // DETERMINE RESPONDER AVAILABILITY
-    // =================================================
+      if (
+        newStatus === "completed"
+      ) {
+        updates.completed_at = now;
+      }
 
-    let availability =
-      "assigned";
+      if (
+        newStatus === "cancelled"
+      ) {
+        updates.cancelled_at = now;
+      }
 
-    if (
-      newStatus === "en_route"
-    ) {
-      availability =
-        "en_route";
-    }
+      if (
+        newStatus === "rejected"
+      ) {
+        updates.rejected_at = now;
+      }
 
-    if (
-      newStatus === "arrived"
-    ) {
-      availability =
-        "on_scene";
-    }
+      // ==================================================
+      // UPDATE ASSIGNMENT
+      // ==================================================
 
-    // When the assignment is finished,
-    // the responder becomes available again.
-
-    if (
-      newStatus ===
-        "completed" ||
-      newStatus ===
-        "cancelled" ||
-      newStatus ===
-        "rejected"
-    ) {
-      availability =
-        "available";
-    }
-
-    // =================================================
-    // UPDATE RESPONDER PROFILE
-    // =================================================
-
-    if (
-      assignment.responder_user_id
-    ) {
       const {
-        error: responderError,
+        error: assignmentError,
       } = await supabase
-        .from("responder_profiles")
-        .update({
-          availability:
-            availability,
+        .from("request_assignments")
+        .update(updates)
+        .eq("id", assignment.id);
 
-          updated_at:
-            now,
-        })
-        .eq(
-          "user_id",
-          assignment.responder_user_id
-        );
-
-      if (responderError) {
+      if (assignmentError) {
         console.error(
-          "Failed to update responder availability:",
-          responderError
+          "Failed to update assignment:",
+          assignmentError
         );
 
         alert(
-          "Assignment status updated, but responder availability could not be updated."
+          `Failed to update assignment status: ${assignmentError.message}`
         );
+
+        return;
       }
-    }
 
-    // =================================================
-    // UPDATE LOCAL ASSIGNMENT
-    // =================================================
+      const updatedAssignment = {
+        ...assignment,
+        ...updates,
+      };
 
-    setAssignment(
-      (current: any) =>
-        current
-          ? {
-              ...current,
-              ...updates,
-            }
-          : current
-    );
+      setAssignment(
+        updatedAssignment
+      );
 
-    // =================================================
-    // UPDATE LOCAL REQUEST
-    // =================================================
+      // ==================================================
+      // MAP ASSIGNMENT STATUS TO REQUEST STATUS
+      // ==================================================
 
-    setRequest(
-      (current: any) =>
-        current
-          ? {
-              ...current,
+      let emergencyRequestStatus:
+        | "submitted"
+        | "assigned"
+        | "en_route"
+        | "arrived"
+        | "closed"
+        | "cancelled"
+        | "rejected"
+        | null = null;
 
-              current_status:
-                requestStatus,
-            }
-          : current
-    );
+      if (
+        newStatus === "assigned" ||
+        newStatus === "acknowledged"
+      ) {
+        emergencyRequestStatus =
+          "assigned";
+      }
 
-    // =================================================
-    // KEEP RESPONDER IN DROPDOWN
-    // =================================================
+      if (
+        newStatus === "en_route"
+      ) {
+        emergencyRequestStatus =
+          "en_route";
+      }
 
-    setResponders(
-      (current) =>
-        current.map(
-          (responder) =>
-            responder.user_id ===
+      if (
+        newStatus === "arrived"
+      ) {
+        emergencyRequestStatus =
+          "arrived";
+      }
+
+      if (
+        newStatus === "completed"
+      ) {
+        emergencyRequestStatus =
+          "closed";
+      }
+
+      if (
+        newStatus === "cancelled"
+      ) {
+        emergencyRequestStatus =
+          "cancelled";
+      }
+
+      if (
+        newStatus === "rejected"
+      ) {
+        emergencyRequestStatus =
+          "rejected";
+      }
+
+      // ==================================================
+      // UPDATE EMERGENCY REQUEST
+      // ==================================================
+
+      if (
+        emergencyRequestStatus
+      ) {
+        const {
+          error: requestError,
+        } = await supabase
+          .from("emergency_requests")
+          .update({
+            current_status:
+              emergencyRequestStatus,
+            updated_at: now,
+          })
+          .eq("id", request.id);
+
+        if (requestError) {
+          console.error(
+            "Failed to update emergency request status:",
+            requestError
+          );
+
+          alert(
+            `Assignment was updated, but the emergency request status could not be updated: ${requestError.message}`
+          );
+
+          return;
+        }
+      }
+
+      // ==================================================
+      // LOCAL REQUEST STATE
+      // ==================================================
+
+      setRequest(
+        (current: any) =>
+          current
+            ? {
+                ...current,
+                current_status:
+                  emergencyRequestStatus ??
+                  current.current_status,
+                updated_at: now,
+              }
+            : current
+      );
+
+      // ==================================================
+      // RESPONDER AVAILABILITY
+      // ==================================================
+
+      let responderAvailability:
+        | "available"
+        | "assigned"
+        | "en_route"
+        | "on_scene"
+        | null = null;
+
+      if (
+        newStatus === "assigned" ||
+        newStatus === "acknowledged"
+      ) {
+        responderAvailability =
+          "assigned";
+      }
+
+      if (
+        newStatus === "en_route"
+      ) {
+        responderAvailability =
+          "en_route";
+      }
+
+      if (
+        newStatus === "arrived"
+      ) {
+        responderAvailability =
+          "on_scene";
+      }
+
+      if (
+        newStatus === "completed" ||
+        newStatus === "cancelled" ||
+        newStatus === "rejected"
+      ) {
+        responderAvailability =
+          "available";
+      }
+
+      if (
+        responderAvailability &&
+        assignment.responder_user_id
+      ) {
+        const {
+          error: availabilityError,
+        } = await supabase
+          .from("responder_profiles")
+          .update({
+            availability:
+              responderAvailability,
+            updated_at: now,
+          })
+          .eq(
+            "user_id",
             assignment.responder_user_id
-              ? {
-                  ...responder,
+          );
 
-                  availability:
-                    availability,
-                }
-              : responder
-        )
-    );
+        if (availabilityError) {
+          console.error(
+            "Failed to update responder availability:",
+            availabilityError
+          );
+        }
+      }
 
-    alert(
-      `Assignment updated to ${newStatus}.`
-    );
+      // ==================================================
+      // TEAM STATUS
+      // ==================================================
+
+      if (assignment.team_id) {
+        let teamStatus:
+          | "available"
+          | "assigned"
+          | "en_route"
+          | "on_scene"
+          | null = null;
+
+        if (
+          newStatus === "assigned" ||
+          newStatus === "acknowledged"
+        ) {
+          teamStatus = "assigned";
+        }
+
+        if (
+          newStatus === "en_route"
+        ) {
+          teamStatus = "en_route";
+        }
+
+        if (
+          newStatus === "arrived"
+        ) {
+          teamStatus = "on_scene";
+        }
+
+        if (
+          newStatus === "completed" ||
+          newStatus === "cancelled" ||
+          newStatus === "rejected"
+        ) {
+          teamStatus = "available";
+        }
+
+        if (teamStatus) {
+          const {
+            error: teamError,
+          } = await supabase
+            .from("responder_teams")
+            .update({
+              status: teamStatus,
+              updated_at: now,
+            })
+            .eq(
+              "id",
+              assignment.team_id
+            );
+
+          if (teamError) {
+            console.error(
+              "Failed to update team availability:",
+              teamError
+            );
+          }
+        }
+      }
+
+      // ==================================================
+      // REFRESH
+      // ==================================================
+
+      if (
+        newStatus === "completed" ||
+        newStatus === "cancelled" ||
+        newStatus === "rejected"
+      ) {
+        await loadRequestData();
+      }
+
+      console.log(
+        "REQUEST + ASSIGNMENT SYNCHRONIZED:",
+        {
+          assignmentStatus:
+            newStatus,
+          emergencyRequestStatus,
+        }
+      );
+
+      alert(
+        `Assignment status updated to ${newStatus}.`
+      );
+    } catch (error) {
+      console.error(
+        "Unexpected assignment status error:",
+        error
+      );
+
+      alert(
+        "An unexpected error occurred while updating the assignment."
+      );
+    } finally {
+      setAssignmentLoading(false);
+    }
   }
 
-  // =====================================================
-  // LOADING
-  // =====================================================
+  // ==================================================
+  // UPDATE ETA
+  // ==================================================
 
-  if (loading || !user) {
+  async function updateAssignmentEta() {
+    if (!assignment?.id) {
+      alert(
+        "No assignment exists for this request."
+      );
+
+      return;
+    }
+
+    const minutes =
+      Number(etaMinutes);
+
+    if (
+      !Number.isFinite(minutes) ||
+      minutes < 0
+    ) {
+      alert(
+        "Enter a valid ETA in minutes."
+      );
+
+      return;
+    }
+
+    setAssignmentLoading(true);
+
+    try {
+      const now =
+        new Date().toISOString();
+
+      const estimatedArrival =
+        new Date(
+          Date.now() +
+            minutes * 60 * 1000
+        ).toISOString();
+
+      // ==================================================
+      // UPDATE ASSIGNMENT ETA
+      // ==================================================
+
+      const {
+        data: updatedAssignment,
+        error: assignmentError,
+      } = await supabase
+        .from("request_assignments")
+        .update({
+          eta_minutes: minutes,
+          updated_at: now,
+        })
+        .eq("id", assignment.id)
+        .select("*")
+        .single();
+
+      if (assignmentError) {
+        console.error(
+          "Failed to update assignment ETA:",
+          assignmentError
+        );
+
+        alert(
+          `Failed to update assignment ETA: ${assignmentError.message}`
+        );
+
+        return;
+      }
+
+      console.log(
+        "REQUEST ASSIGNMENT ETA UPDATED:",
+        updatedAssignment
+      );
+
+      // ==================================================
+      // UPDATE REQUEST ETA
+      // ==================================================
+
+      const {
+        data: updatedRequestRows,
+        error: requestError,
+      } = await supabase
+        .from("emergency_requests")
+        .update({
+          eta_minutes: minutes,
+          estimated_arrival_at:
+            estimatedArrival,
+          updated_at: now,
+        })
+        .eq("id", request.id)
+        .select(
+          "id, eta_minutes, estimated_arrival_at, updated_at"
+        );
+
+      if (requestError) {
+        console.error(
+          "Failed to update emergency request ETA:",
+          requestError
+        );
+
+        alert(
+          `Assignment ETA was updated, but emergency request ETA could not be updated: ${requestError.message}`
+        );
+
+        return;
+      }
+
+      if (
+        !updatedRequestRows ||
+        updatedRequestRows.length === 0
+      ) {
+        alert(
+          "Assignment ETA was updated, but the emergency request was not updated. Check the emergency_requests RLS UPDATE policy."
+        );
+
+        return;
+      }
+
+      const updatedRequest =
+        updatedRequestRows[0];
+
+      console.log(
+        "EMERGENCY REQUEST ETA UPDATED:",
+        updatedRequest
+      );
+
+      // ==================================================
+      // LOCAL ASSIGNMENT
+      // ==================================================
+
+      setAssignment(
+        (current: any) =>
+          current
+            ? {
+                ...current,
+                eta_minutes: minutes,
+                updated_at: now,
+              }
+            : current
+      );
+
+      // ==================================================
+      // LOCAL REQUEST
+      // ==================================================
+
+      setRequest(
+        (current: any) =>
+          current
+            ? {
+                ...current,
+                eta_minutes: minutes,
+                estimated_arrival_at:
+                  estimatedArrival,
+                updated_at: now,
+              }
+            : current
+      );
+
+      alert(
+        `ETA updated to ${minutes} minutes.`
+      );
+    } catch (error) {
+      console.error(
+        "Unexpected ETA update error:",
+        error
+      );
+
+      alert(
+        "An unexpected error occurred while updating the ETA."
+      );
+    } finally {
+      setAssignmentLoading(false);
+    }
+  }
+
+  // ==================================================
+  // ASSIGN TEAM OR RESPONDER
+  // ==================================================
+
+  async function assignResource() {
+    if (
+      assignmentType === "responder" &&
+      !responderId
+    ) {
+      alert(
+        "Please select a responder."
+      );
+
+      return;
+    }
+
+    if (
+      assignmentType === "team" &&
+      !teamId
+    ) {
+      alert(
+        "Please select a team."
+      );
+
+      return;
+    }
+
+    if (!user) {
+      alert(
+        "You must be logged in to assign a resource."
+      );
+
+      return;
+    }
+
+    if (assignment?.id) {
+      alert(
+        "This request already has an assignment."
+      );
+
+      return;
+    }
+
+    setAssignmentLoading(true);
+
+    try {
+      const now =
+        new Date().toISOString();
+
+      console.log(
+        "STARTING RESOURCE ASSIGNMENT:",
+        {
+          requestId: request.id,
+          assignmentType,
+          teamId:
+            assignmentType === "team"
+              ? teamId
+              : null,
+          responderId:
+            assignmentType === "responder"
+              ? responderId
+              : null,
+          dispatcherId: user.id,
+        }
+      );
+
+      let selectedTeam: any = null;
+      let selectedResponder: any = null;
+      let selectedOrganisationId = "";
+
+      // ==================================================
+      // TEAM
+      // ==================================================
+
+      if (
+        assignmentType === "team"
+      ) {
+        selectedTeam =
+          teams.find(
+            (team) =>
+              team.id === teamId
+          );
+
+        if (!selectedTeam) {
+          alert(
+            "Selected team could not be found."
+          );
+
+          return;
+        }
+
+        if (
+          !selectedTeam.organisation_id
+        ) {
+          alert(
+            "The selected team is not linked to an organisation."
+          );
+
+          return;
+        }
+
+        selectedOrganisationId =
+          selectedTeam.organisation_id;
+      }
+
+      // ==================================================
+      // RESPONDER
+      // ==================================================
+
+      if (
+        assignmentType === "responder"
+      ) {
+        selectedResponder =
+          responders.find(
+            (responder) =>
+              responder.user_id ===
+              responderId
+          );
+
+        if (!selectedResponder) {
+          alert(
+            "Selected responder could not be found."
+          );
+
+          return;
+        }
+
+        if (
+          !selectedResponder.organisation_id
+        ) {
+          alert(
+            "The selected responder is not linked to an organisation."
+          );
+
+          return;
+        }
+
+        selectedOrganisationId =
+          selectedResponder.organisation_id;
+      }
+
+      // ==================================================
+      // CREATE ASSIGNMENT
+      // ==================================================
+
+      const {
+        data: assignmentData,
+        error: assignmentError,
+      } = await supabase
+        .from("request_assignments")
+        .insert({
+          request_id: request.id,
+          organisation_id:
+            selectedOrganisationId,
+          team_id:
+            assignmentType === "team"
+              ? teamId
+              : null,
+          responder_user_id:
+            assignmentType === "responder"
+              ? responderId
+              : null,
+          assigned_by_user_id:
+            user.id,
+          status: "assigned",
+          assigned_at: now,
+        } as any)
+        .select("*")
+        .maybeSingle();
+
+      if (assignmentError) {
+        console.error(
+          "Assignment insert failed:",
+          assignmentError
+        );
+
+        alert(
+          `Failed to create assignment: ${assignmentError.message}`
+        );
+
+        return;
+      }
+
+      if (!assignmentData) {
+        alert(
+          "The assignment could not be confirmed after being created."
+        );
+
+        return;
+      }
+
+      console.log(
+        "ASSIGNMENT CREATED:",
+        assignmentData
+      );
+
+      // ==================================================
+      // UPDATE EMERGENCY REQUEST
+      // ==================================================
+
+      const {
+        error: requestUpdateError,
+      } = await supabase
+        .from("emergency_requests")
+        .update({
+          current_status: "assigned",
+          routed_organisation_id:
+            selectedOrganisationId,
+          assigned_at: now,
+          updated_at: now,
+        })
+        .eq("id", request.id);
+
+      if (requestUpdateError) {
+        console.error(
+          "Emergency request update failed:",
+          requestUpdateError
+        );
+
+        alert(
+          `Assignment was created, but the emergency request could not be updated: ${requestUpdateError.message}`
+        );
+
+        setAssignment(
+          assignmentData
+        );
+
+        setSheet(null);
+        setResponderId("");
+        setTeamId("");
+
+        return;
+      }
+
+      // ==================================================
+      // UPDATE RESPONDER AVAILABILITY
+      // ==================================================
+
+      if (
+        assignmentType === "responder"
+      ) {
+        const {
+          error: responderAvailabilityError,
+        } = await supabase
+          .from("responder_profiles")
+          .update({
+            availability: "assigned",
+            updated_at: now,
+          })
+          .eq(
+            "user_id",
+            responderId
+          );
+
+        if (
+          responderAvailabilityError
+        ) {
+          console.error(
+            "Failed to update responder availability:",
+            responderAvailabilityError
+          );
+        }
+      }
+
+      // ==================================================
+      // UPDATE TEAM STATUS
+      // ==================================================
+
+      if (
+        assignmentType === "team"
+      ) {
+        const {
+          error: teamStatusError,
+        } = await supabase
+          .from("responder_teams")
+          .update({
+            status: "assigned",
+            updated_at: now,
+          })
+          .eq("id", teamId);
+
+        if (teamStatusError) {
+          console.error(
+            "Failed to update team status:",
+            teamStatusError
+          );
+        }
+      }
+
+      // ==================================================
+      // LOCAL REQUEST
+      // ==================================================
+
+      setRequest(
+        (current: any) =>
+          current
+            ? {
+                ...current,
+                current_status:
+                  "assigned",
+                routed_organisation_id:
+                  selectedOrganisationId,
+                assigned_at: now,
+                updated_at: now,
+              }
+            : current
+      );
+
+      // ==================================================
+      // LOCAL ASSIGNMENT
+      // ==================================================
+
+      setAssignment(
+        assignmentData
+      );
+
+      // ==================================================
+      // REMOVE RESOURCE FROM DROPDOWN
+      // ==================================================
+
+      if (
+        assignmentType === "responder"
+      ) {
+        setResponders(
+          (current) =>
+            current.filter(
+              (responder) =>
+                responder.user_id !==
+                responderId
+            )
+        );
+      }
+
+      if (
+        assignmentType === "team"
+      ) {
+        setTeams(
+          (current) =>
+            current.filter(
+              (team) =>
+                team.id !== teamId
+            )
+        );
+      }
+
+      setSheet(null);
+      setResponderId("");
+      setTeamId("");
+
+      alert(
+        assignmentType === "team"
+          ? "Team assigned successfully."
+          : "Responder assigned successfully."
+      );
+    } catch (error) {
+      console.error(
+        "Unexpected assignment error:",
+        error
+      );
+
+      alert(
+        "An unexpected error occurred while assigning the resource."
+      );
+    } finally {
+      setAssignmentLoading(false);
+    }
+  }
+
+  // ==================================================
+  // SHEET ACTIONS
+  // ==================================================
+
+  async function completeSheet() {
+    // ==================================================
+    // ASSIGN
+    // ==================================================
+
+    if (sheet === "assign") {
+      await assignResource();
+      return;
+    }
+
+    // ==================================================
+    // REROUTE
+    // ==================================================
+
+    if (sheet === "reroute") {
+      if (
+        !organisationId ||
+        !text.trim()
+      ) {
+        alert(
+          "Please select an organisation and provide a reason."
+        );
+
+        return;
+      }
+
+      if (!user) {
+        alert(
+          "You must be logged in to reroute a request."
+        );
+
+        return;
+      }
+
+      if (!request?.id) {
+        alert(
+          "The emergency request could not be found."
+        );
+
+        return;
+      }
+
+      setAssignmentLoading(true);
+
+      try {
+        const now =
+          new Date().toISOString();
+
+        const reason =
+          text.trim();
+
+        const correlationId =
+          crypto.randomUUID();
+
+        console.log(
+          "STARTING REROUTE:",
+          {
+            requestId: request.id,
+            fromOrganisation:
+              request.routed_organisation_id,
+            toOrganisation:
+              organisationId,
+            reason,
+            dispatcherId:
+              user.id,
+            correlationId,
+          }
+        );
+
+        // ==================================================
+        // UPDATE REQUEST
+        // ==================================================
+
+        const {
+          data: updatedRequest,
+          error: requestUpdateError,
+        } = await supabase
+          .from("emergency_requests")
+          .update({
+            routed_organisation_id:
+              organisationId,
+            updated_at: now,
+          })
+          .eq("id", request.id)
+          .select("*")
+          .single();
+
+        if (requestUpdateError) {
+          console.error(
+            "FAILED TO REROUTE EMERGENCY REQUEST:",
+            requestUpdateError
+          );
+
+          alert(
+            `Failed to reroute request: ${requestUpdateError.message}`
+          );
+
+          return;
+        }
+
+        console.log(
+          "EMERGENCY REQUEST REROUTED:",
+          updatedRequest
+        );
+
+        // ==================================================
+        // UPDATE CURRENT ASSIGNMENT
+        // ==================================================
+
+        if (assignment?.id) {
+          const {
+            data: updatedAssignment,
+            error:
+              assignmentUpdateError,
+          } = await supabase
+            .from("request_assignments")
+            .update({
+              organisation_id:
+                organisationId,
+              assignment_note:
+                reason,
+              updated_at: now,
+            })
+            .eq(
+              "id",
+              assignment.id
+            )
+            .select("*")
+            .single();
+
+          if (
+            assignmentUpdateError
+          ) {
+            console.error(
+              "FAILED TO UPDATE ASSIGNMENT ORGANISATION:",
+              assignmentUpdateError
+            );
+
+            alert(
+              `Request was rerouted, but the assignment could not be updated: ${assignmentUpdateError.message}`
+            );
+
+            return;
+          }
+
+          setAssignment(
+            updatedAssignment
+          );
+        }
+
+        // ==================================================
+        // CREATE REROUTE HISTORY
+        // ==================================================
+
+        const {
+          data: historyEntry,
+          error: historyError,
+        } = await supabase
+          .from("request_status_history")
+          .insert({
+            request_id: request.id,
+            previous_status:
+              request.current_status,
+            new_status:
+              request.current_status,
+            changed_by_user_id:
+              user.id,
+            actor_role: "dispatcher",
+            changed_by_system: false,
+            reason: "reroute",
+            note:
+              `Request rerouted to organisation. Reason: ${reason}`,
+            correlation_id:
+              correlationId,
+          })
+          .select("*")
+          .single();
+
+        if (historyError) {
+          console.error(
+            "REROUTE HISTORY INSERT FAILED:",
+            historyError
+          );
+
+          alert(
+            `Reroute completed, but history could not be recorded: ${historyError.message}`
+          );
+
+          return;
+        }
+
+        console.log(
+          "REROUTE HISTORY CREATED:",
+          historyEntry
+        );
+
+        // ==================================================
+        // LOCAL REQUEST
+        // ==================================================
+
+        setRequest(
+          (current: any) =>
+            current
+              ? {
+                  ...current,
+                  routed_organisation_id:
+                    organisationId,
+                  updated_at: now,
+                }
+              : current
+        );
+
+        setSheet(null);
+        setOrganisationId("");
+        setText("");
+
+        await loadRequestData();
+
+        alert(
+          "Request rerouted successfully and the status history was recorded."
+        );
+      } catch (error) {
+        console.error(
+          "UNEXPECTED REROUTE ERROR:",
+          error
+        );
+
+        alert(
+          "An unexpected error occurred while rerouting the request."
+        );
+      } finally {
+        setAssignmentLoading(false);
+      }
+
+      return;
+    }
+
+    // ==================================================
+    // REJECT
+    // ==================================================
+
+    if (sheet === "reject") {
+      if (!text.trim()) {
+        alert(
+          "Please provide a rejection reason."
+        );
+
+        return;
+      }
+
+      console.log(
+        "REJECT REQUEST",
+        {
+          requestId:
+            request.id,
+          reason: text,
+          dispatcherId:
+            user?.id,
+        }
+      );
+
+      alert(
+        "Rejection will be connected to Supabase next."
+      );
+
+      setSheet(null);
+      setText("");
+
+      return;
+    }
+
+    // ==================================================
+    // OPERATIONAL NOTE
+    // ==================================================
+
+    if (sheet === "note") {
+      if (!text.trim()) {
+        alert(
+          "Please enter an operational note."
+        );
+
+        return;
+      }
+
+      try {
+        const accessToken =
+          localStorage.getItem(
+            "live-mock-access-token"
+          );
+
+        if (!accessToken) {
+          alert(
+            "Your session has expired. Please log in again."
+          );
+
+          return;
+        }
+
+        console.log(
+          "OPERATIONAL NOTE",
+          {
+            requestId:
+              request.id,
+            note: text,
+            dispatcherId:
+              user?.id,
+          }
+        );
+
+        const response =
+          await fetch(
+            "/api/operational-notes",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+
+                Authorization:
+                  `Bearer ${accessToken}`,
+              },
+
+              body: JSON.stringify({
+                request_id:
+                  request.id,
+
+                note:
+                  text.trim(),
+
+                requester_visible:
+                  false,
+              }),
+            }
+          );
+
+        const result =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !result?.ok
+        ) {
+          console.error(
+            "Failed to save operational note:",
+            result
+          );
+
+          alert(
+            result?.message ||
+              "Failed to save operational note."
+          );
+
+          return;
+        }
+
+        console.log(
+          "OPERATIONAL NOTE SAVED:",
+          result.note
+        );
+
+        alert(
+          "Operational note saved successfully."
+        );
+
+        setSheet(null);
+        setText("");
+
+        await loadRequestData();
+      } catch (error) {
+        console.error(
+          "Operational note request failed:",
+          error
+        );
+
+        alert(
+          "Unable to save operational note."
+        );
+      }
+
+      return;
+    }
+  }
+
+  // ==================================================
+  // LOADING
+  // ==================================================
+
+  if (
+    !user ||
+    requestLoading
+  ) {
     return (
       <PageSkeleton map />
     );
   }
 
-  // =====================================================
+  // ==================================================
   // REQUEST NOT FOUND
-  // =====================================================
-=======
-  const [responderId, setResponderId] = useState("");
-  const [organisationId, setOrganisationId] = useState("");
-  const [text, setText] = useState("");
-
-  if (loading || !db || !user) return <PageSkeleton map />;
-
-  const request = db.requests.find(
-    (r) => r.id === decodeURIComponent(id)
-  );
->>>>>>> Stashed changes
+  // ==================================================
 
   if (!request) {
     return (
       <div className="app-page">
         <Panel className="p-8 text-center">
-<<<<<<< Updated upstream
           <h1 className="text-xl font-bold">
             Emergency request not found.
           </h1>
@@ -1006,12 +1723,6 @@ export default function DispatchRequestDetail() {
                 "/app/dispatcher/requests"
               )
             }
-=======
-          <h1 className="text-xl font-bold">Request not found</h1>
-          <Button
-            className="mt-5"
-            onClick={() => router.replace("/app/dispatcher/requests")}
->>>>>>> Stashed changes
           >
             Back to queue
           </Button>
@@ -1020,137 +1731,68 @@ export default function DispatchRequestDetail() {
     );
   }
 
-<<<<<<< Updated upstream
-  // =====================================================
-  // FIND CURRENT RESPONDER
-  // =====================================================
+  // ==================================================
+  // DISPLAYED STATUS
+  // ==================================================
 
-  const currentResponder =
-    assignment?.responder_user_id
-      ? responders.find(
-          (responder) =>
-            responder.user_id ===
-            assignment.responder_user_id
-        )
-      : null;
+  const displayedStatus =
+    assignment?.status ??
+    request.current_status;
 
-  // =====================================================
+  const terminalAssignment =
+    [
+      "completed",
+      "cancelled",
+      "rejected",
+    ].includes(
+      assignment?.status
+    );
+
+  // ==================================================
   // PAGE
-  // =====================================================
+  // ==================================================
 
   return (
     <div className="app-page grid gap-5">
 
+      {/* ==================================================
+          PAGE HEADING
+          ================================================== */}
+
       <PageHeading
         eyebrow="Dispatch request"
         title={
-          request.reference_code ||
-          request.id
+          request.reference_code
         }
         description={`${request.category} · ${request.severity} priority`}
         action={
           <Badge
             tone={requestStatusTone(
-              request.current_status
+              displayedStatus
             )}
             className="min-h-9 px-4"
           >
-            {request.current_status}
-=======
-  const actor = user;
-  const selectedRequest = request;
-  const responder = db.responders.find(
-    (r) => r.id === request.assignedResponderId
-  );
-  const organisation = db.organisations.find(
-    (o) => o.id === request.organisationId
-  );
-  const next = nextStatus(request.status);
-  const available = db.responders.filter(
-    (r) =>
-      r.availability === "Available" ||
-      r.id === request.assignedResponderId
-  );
-
-  function completeSheet() {
-    if (sheet === "assign" && responderId)
-      assignResponder(selectedRequest.id, responderId, actor);
-
-    if (sheet === "reroute" && organisationId && text.trim())
-      rerouteRequest(
-        selectedRequest.id,
-        organisationId,
-        actor,
-        text
-      );
-
-    if (sheet === "reject" && text.trim())
-      rejectRequest(selectedRequest.id, actor, text);
-
-    if (sheet === "note" && text.trim())
-      addOperationalNote(selectedRequest.id, text, actor);
-
-    setSheet(null);
-    setText("");
-  }
-
-  return (
-    <div className="app-page grid gap-5">
-      <PageHeading
-        eyebrow="Dispatch request"
-        title={request.id}
-        description={`${request.category} · ${request.severity} priority`}
-        action={
-          <Badge
-            tone={requestStatusTone(request.status)}
-            className="min-h-9 px-4"
-          >
-            {request.status}
->>>>>>> Stashed changes
+            {displayedStatus}
           </Badge>
         }
       />
 
+      {/* ==================================================
+          MAP + REQUEST INFORMATION
+          ================================================== */}
+
       <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
-<<<<<<< Updated upstream
 
-        {/* =================================================
-            MAP
-        ================================================= */}
-
-        <LiveResponseMap
-          request={{
-            ...request,
-
-            location: {
-              address:
-                location?.address_text ||
-                location?.landmark ||
-                "Location not available",
-
-              latitude:
-                location?.latitude ??
-                0,
-
-              longitude:
-                location?.longitude ??
-                0,
-            },
-          }}
-=======
         <LiveResponseMap
           request={request}
-          responder={responder}
->>>>>>> Stashed changes
           immersive
         />
 
         <div className="grid content-start gap-4">
-<<<<<<< Updated upstream
 
-          {/* =================================================
+          {/* ==================================================
               OPERATIONAL ACTIONS
-          ================================================= */}
+              ================================================== */}
 
           <Panel>
             <PanelHeader
@@ -1162,27 +1804,32 @@ export default function DispatchRequestDetail() {
 
               {!assignment ? (
                 <Button
-                  className="sm:col-span-2"
+                  variant="outline"
                   onClick={() =>
-                    setSheet("assign")
+                    setSheet(
+                      "assign"
+                    )
+                  }
+                  disabled={
+                    assignmentLoading
                   }
                 >
-                  <Ambulance className="h-4 w-4" />
-                  Assign responder
+                  Assign response resource
                 </Button>
               ) : null}
 
               {assignment?.status ===
               "assigned" ? (
                 <Button
-                  className="sm:col-span-2"
                   onClick={() =>
                     updateAssignmentStatus(
                       "acknowledged"
                     )
                   }
+                  disabled={
+                    assignmentLoading
+                  }
                 >
-                  <CheckCircle2 className="h-4 w-4" />
                   Acknowledge assignment
                 </Button>
               ) : null}
@@ -1190,14 +1837,15 @@ export default function DispatchRequestDetail() {
               {assignment?.status ===
               "acknowledged" ? (
                 <Button
-                  className="sm:col-span-2"
                   onClick={() =>
                     updateAssignmentStatus(
                       "en_route"
                     )
                   }
+                  disabled={
+                    assignmentLoading
+                  }
                 >
-                  <Navigation className="h-4 w-4" />
                   Start route
                 </Button>
               ) : null}
@@ -1205,14 +1853,15 @@ export default function DispatchRequestDetail() {
               {assignment?.status ===
               "en_route" ? (
                 <Button
-                  className="sm:col-span-2"
                   onClick={() =>
                     updateAssignmentStatus(
                       "arrived"
                     )
                   }
+                  disabled={
+                    assignmentLoading
+                  }
                 >
-                  <MapPin className="h-4 w-4" />
                   Mark arrived
                 </Button>
               ) : null}
@@ -1220,146 +1869,115 @@ export default function DispatchRequestDetail() {
               {assignment?.status ===
               "arrived" ? (
                 <Button
-                  className="sm:col-span-2"
                   onClick={() =>
                     updateAssignmentStatus(
                       "completed"
                     )
                   }
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  Complete assignment
-=======
-          <Panel>
-            <PanelHeader
-              title="Operational actions"
-              description="Actions are written to the mock audit trail."
-            />
-
-            <div className="grid gap-2 p-4 sm:grid-cols-2">
-              {next &&
-              !["Cancelled", "Rejected", "Closed"].includes(
-                request.status
-              ) ? (
-                <Button
-                  className="sm:col-span-2"
-                  onClick={() =>
-                    updateRequestStatus(
-                      request.id,
-                      next,
-                      user,
-                      `Dispatcher advanced request to ${next}.`
-                    )
+                  disabled={
+                    assignmentLoading
                   }
                 >
-                  {next === "En route" ? (
-                    <Navigation className="h-4 w-4" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4" />
-                  )}
-                  Move to {next}
->>>>>>> Stashed changes
+                  Complete assignment
+                </Button>
+              ) : null}
+
+              {assignment &&
+              !terminalAssignment ? (
+                <div className="sm:col-span-2">
+                  <FieldLabel>
+                    ETA (minutes)
+                  </FieldLabel>
+
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      value={
+                        etaMinutes
+                      }
+                      onChange={(
+                        e
+                      ) =>
+                        setEtaMinutes(
+                          e.target.value
+                        )
+                      }
+                      placeholder="e.g. 15"
+                      className="w-full rounded-lg border border-[#d7e0e7] px-3 py-2"
+                    />
+
+                    <Button
+                      type="button"
+                      onClick={
+                        updateAssignmentEta
+                      }
+                      disabled={
+                        assignmentLoading
+                      }
+                    >
+                      Update ETA
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {!terminalAssignment ? (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    setSheet(
+                      "reroute"
+                    )
+                  }
+                  disabled={
+                    assignmentLoading
+                  }
+                >
+                  Reroute
                 </Button>
               ) : null}
 
               <Button
                 variant="outline"
-<<<<<<< Updated upstream
-                onClick={() =>
-                  setSheet("reroute")
-                }
-=======
-                onClick={() => {
-                  setResponderId(
-                    request.assignedResponderId ||
-                      available[0]?.id ||
-                      ""
-                  );
-                  setSheet("assign");
-                }}
-              >
-                <Ambulance className="h-4 w-4" />
-                Assign
-              </Button>
-
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setOrganisationId(
-                    db.organisations.find(
-                      (o) =>
-                        o.id !== request.organisationId &&
-                        o.status === "Active"
-                    )?.id || ""
-                  );
-                  setSheet("reroute");
-                }}
->>>>>>> Stashed changes
-              >
-                <Route className="h-4 w-4" />
-                Reroute
-              </Button>
-
-              <Button
-                variant="outline"
-<<<<<<< Updated upstream
                 onClick={() =>
                   setSheet("note")
                 }
-=======
-                onClick={() => setSheet("note")}
->>>>>>> Stashed changes
+                disabled={
+                  assignmentLoading
+                }
               >
-                <MessageSquareText className="h-4 w-4" />
                 Add note
               </Button>
 
-              <Button
-                variant="danger"
-<<<<<<< Updated upstream
-                onClick={() =>
-                  setSheet("reject")
-                }
-                disabled={[
-                  "closed",
-                  "cancelled",
-                  "rejected",
-                ].includes(
-                  request.current_status
-=======
-                onClick={() => setSheet("reject")}
-                disabled={["Closed", "Cancelled", "Rejected"].includes(
-                  request.status
->>>>>>> Stashed changes
-                )}
-              >
-                <Ban className="h-4 w-4" />
-                Reject
-              </Button>
-<<<<<<< Updated upstream
+              {!terminalAssignment ? (
+                <Button
+                  variant="danger"
+                  onClick={() =>
+                    setSheet(
+                      "reject"
+                    )
+                  }
+                  disabled={
+                    assignmentLoading
+                  }
+                >
+                  Reject
+                </Button>
+              ) : null}
 
             </div>
           </Panel>
 
-          {/* =================================================
+          {/* ==================================================
               REQUEST INFORMATION
-          ================================================= */}
+              ================================================== */}
 
-=======
-            </div>
-          </Panel>
-
->>>>>>> Stashed changes
           <Panel>
             <PanelHeader title="Request information" />
 
             <dl className="divide-y divide-[#e2e8ed] text-sm">
-<<<<<<< Updated upstream
 
-              {/* REQUESTER */}
-
-=======
->>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
 
@@ -1367,32 +1985,21 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Requester
                   </dt>
-<<<<<<< Updated upstream
 
                   <dd className="mt-1 font-semibold">
-                    {request.requester_id ||
-                      "Unknown requester"}
+                    {
+                      request.requester_id
+                    }
                   </dd>
 
                   <dd className="mt-1 text-[#617582]">
-                    {request.callback_number ||
-                      "No callback number"}
-=======
-                  <dd className="mt-1 font-semibold">
-                    {request.requesterName}
-                  </dd>
-                  <dd className="mt-1 text-[#617582]">
-                    {request.callbackNumber}
->>>>>>> Stashed changes
+                    {
+                      request.callback_number
+                    }
                   </dd>
                 </div>
               </div>
 
-<<<<<<< Updated upstream
-              {/* LOCATION */}
-
-=======
->>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <MapPin className="h-5 w-5 text-[#0f5b67]" />
 
@@ -1400,88 +2007,38 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Location
                   </dt>
-<<<<<<< Updated upstream
 
-                  <dd className="mt-1 font-semibold">
-                    {location?.address_text ||
-                      location?.landmark ||
-                      "Location not available"}
-                  </dd>
-
-                  {location ? (
-                    <dd className="mt-1 text-xs text-[#71828d]">
-                      {location.latitude},{" "}
-                      {location.longitude}
-                    </dd>
-                  ) : null}
-                </div>
-              </div>
-
-              {/* RESPONDER */}
-
-=======
-                  <dd className="mt-1 font-semibold">
-                    {request.location.address}
-                  </dd>
-                  <dd className="mt-1 text-xs text-[#71828d]">
-                    {request.location.method}
+                  <dd className="mt-1 text-[#71828d]">
+                    Location data not available on this request.
                   </dd>
                 </div>
               </div>
 
->>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <Building2 className="h-5 w-5 text-[#0f5b67]" />
 
                 <div>
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
-<<<<<<< Updated upstream
-                    Responder
-                  </dt>
-
-                  <dd className="mt-1 font-semibold">
-                    {currentResponder?.display_name ||
-                      assignment?.responder_user_id ||
-                      "No responder assigned"}
-                  </dd>
-
-                  {currentResponder ? (
-                    <dd className="mt-1 text-xs text-[#71828d]">
-                      {currentResponder.employee_number
-                        ? `Employee: ${currentResponder.employee_number}`
-                        : "Responder"}
-                      {" · "}
-                      {String(
-                        currentResponder.availability ||
-                          "unknown"
-                      ).toUpperCase()}
-                    </dd>
-                  ) : null}
-
-                  <dd className="mt-1 text-xs text-[#71828d]">
-                    {assignment
-                      ? `Assignment: ${assignment.status}`
-                      : "Awaiting assignment"}
-=======
                     Routing
                   </dt>
+
                   <dd className="mt-1 font-semibold">
-                    {organisation?.name || "Unassigned"}
+                    {assignment
+                      ? assignment.organisation_id
+                      : request.routed_organisation_id ||
+                        "Unassigned"}
                   </dd>
+
                   <dd className="mt-1 text-xs text-[#71828d]">
-                    {responder
-                      ? `${responder.team} · ${responder.vehicle}`
-                      : "No responder assigned"}
->>>>>>> Stashed changes
+                    {assignment?.team_id
+                      ? `Team: ${assignment.team_id}`
+                      : assignment?.responder_user_id
+                      ? `Responder: ${assignment.responder_user_id}`
+                      : "No resource assigned"}
                   </dd>
                 </div>
               </div>
 
-<<<<<<< Updated upstream
-              {/* INCIDENT NOTE */}
-
-=======
->>>>>>> Stashed changes
               <div className="flex gap-3 p-4">
                 <Siren className="h-5 w-5 text-[#d53f3d]" />
 
@@ -1489,7 +2046,6 @@ export default function DispatchRequestDetail() {
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Incident note
                   </dt>
-<<<<<<< Updated upstream
 
                   <dd className="mt-1 leading-6">
                     {request.note ||
@@ -1500,125 +2056,542 @@ export default function DispatchRequestDetail() {
 
             </dl>
           </Panel>
-
         </div>
       </div>
 
-      {/* =====================================================
-          CURRENT ASSIGNMENT STATUS
-      ===================================================== */}
-
-      <Panel>
-        <PanelHeader title="Current assignment status" />
-
-        <div className="p-5 text-sm text-[#71828d]">
-
-          Emergency status:{" "}
-
-          <span className="font-semibold text-[#102b3f]">
-            {request.current_status}
-          </span>
-
-          {assignment ? (
-            <>
-              {" · "}
-
-              Assignment:{" "}
-
-              <span className="font-semibold text-[#102b3f]">
-                {assignment.status}
-              </span>
-            </>
-          ) : null}
-
-        </div>
-      </Panel>
-
-      {/* =====================================================
-          ACTION SHEET
-      ===================================================== */}
-=======
-                  <dd className="mt-1 leading-6">{request.note}</dd>
-                </div>
-              </div>
-            </dl>
-          </Panel>
-        </div>
-      </div>
+      {/* ==================================================
+          STATUS + NOTES
+          ================================================== */}
 
       <div className="grid gap-4 lg:grid-cols-2">
+
         <Panel>
-          <PanelHeader title="Status history" />
-          <StatusTimeline entries={request.statusHistory} />
+          <PanelHeader
+            title="Status history"
+          />
+
+          <div className="p-5">
+
+            {!assignment ? (
+              <div className="text-sm text-[#71828d]">
+
+                <p>
+                  No responder or team assignment has been created yet.
+                </p>
+
+                <p className="mt-2">
+                  Request status:{" "}
+                  <span className="font-semibold text-[#102b3f]">
+                    {
+                      request.current_status
+                    }
+                  </span>
+                </p>
+
+              </div>
+            ) : (
+              <div className="space-y-4 text-sm">
+
+                <div className="flex gap-3">
+                  <div className="mt-1 h-3 w-3 rounded-full bg-[#0f5b67]" />
+
+                  <div>
+                    <p className="font-semibold text-[#102b3f]">
+                      Assigned
+                    </p>
+
+                    <p className="text-[#71828d]">
+                      {assignment.team_id
+                        ? "Response team assigned to this emergency."
+                        : "Responder assigned to this emergency."}
+                    </p>
+
+                    {assignment.assigned_at ? (
+                      <p className="mt-1 text-xs text-[#8a9aa5]">
+                        {new Date(
+                          assignment.assigned_at
+                        ).toLocaleString()}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                {[
+                  "acknowledged",
+                  "en_route",
+                  "arrived",
+                  "completed",
+                ].includes(
+                  assignment.status
+                ) ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#0f5b67]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        Acknowledged
+                      </p>
+
+                      {assignment.acknowledged_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.acknowledged_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {[
+                  "en_route",
+                  "arrived",
+                  "completed",
+                ].includes(
+                  assignment.status
+                ) ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#0f5b67]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        En route
+                      </p>
+
+                      {assignment.route_started_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.route_started_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {[
+                  "arrived",
+                  "completed",
+                ].includes(
+                  assignment.status
+                ) ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#0f5b67]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        Arrived at scene
+                      </p>
+
+                      {assignment.arrived_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.arrived_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {assignment.status ===
+                "completed" ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#0f5b67]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        Completed
+                      </p>
+
+                      {assignment.completed_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.completed_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {assignment.status ===
+                "cancelled" ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#d53f3d]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        Cancelled
+                      </p>
+
+                      {assignment.cancelled_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.cancelled_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {assignment.status ===
+                "rejected" ? (
+                  <div className="flex gap-3">
+                    <div className="mt-1 h-3 w-3 rounded-full bg-[#d53f3d]" />
+
+                    <div>
+                      <p className="font-semibold text-[#102b3f]">
+                        Rejected
+                      </p>
+
+                      {assignment.rejected_at ? (
+                        <p className="text-xs text-[#8a9aa5]">
+                          {new Date(
+                            assignment.rejected_at
+                          ).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-5 rounded-lg bg-[#f5f8fa] p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+                    Current assignment status
+                  </p>
+
+                  <p className="mt-1 font-bold capitalize text-[#102b3f]">
+                    {assignment.status.replace(
+                      "_",
+                      " "
+                    )}
+                  </p>
+                </div>
+
+                <div className="rounded-lg bg-[#f5f8fa] p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+                    Assigned resource
+                  </p>
+
+                  <p className="mt-1 font-bold text-[#102b3f]">
+                    {assignment.team_id
+                      ? "Response Team"
+                      : "Individual Responder"}
+                  </p>
+
+                  <p className="mt-1 text-xs text-[#71828d]">
+                    {assignment.team_id
+                      ? assignment.team_id
+                      : assignment.responder_user_id}
+                  </p>
+                </div>
+
+                <div className="rounded-lg bg-[#f5f8fa] p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+                    Emergency request status
+                  </p>
+
+                  <p className="mt-1 font-bold capitalize text-[#102b3f]">
+                    {request.current_status.replace(
+                      "_",
+                      " "
+                    )}
+                  </p>
+                </div>
+
+              </div>
+            )}
+
+          </div>
         </Panel>
+
+        {/* ==================================================
+            OPERATIONAL NOTES
+            ================================================== */}
 
         <Panel>
           <PanelHeader
             title="Operational notes"
-            description={`${request.operationalNotes.length} notes`}
           />
 
-          {request.operationalNotes.length ? (
-            <div className="divide-y divide-[#e2e8ed]">
-              {request.operationalNotes.map((note, index) => (
-                <p
-                  key={index}
-                  className="p-4 text-sm leading-6 text-[#536b7b] sm:p-5"
-                >
-                  {note}
-                </p>
-              ))}
-            </div>
-          ) : (
+          {operationalNotes.length === 0 ? (
             <p className="p-8 text-center text-sm text-[#71828d]">
-              No operational notes yet.
+              No operational notes available.
             </p>
+          ) : (
+            <div className="space-y-3 p-4">
+              {operationalNotes.map(
+                (note) => (
+                  <div
+                    key={note.id}
+                    className="rounded-lg border p-3"
+                  >
+                    <p className="text-sm">
+                      {note.note}
+                    </p>
+
+                    <p className="mt-2 text-xs text-[#71828d]">
+                      {new Date(
+                        note.created_at
+                      ).toLocaleString()}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
           )}
         </Panel>
+
       </div>
->>>>>>> Stashed changes
+
+      {/* ==================================================
+          ACTION SHEET
+          ================================================== */}
 
       <Sheet
-        open={sheet !== null}
-        onOpenChange={(open) => {
+        open={
+          sheet !== null
+        }
+        onOpenChange={(
+          open
+        ) => {
           if (!open) {
             setSheet(null);
             setText("");
+            setResponderId("");
+            setTeamId("");
+            setOrganisationId("");
           }
         }}
         title={
           sheet === "assign"
-            ? "Assign a response unit"
+            ? "Assign a response resource"
             : sheet === "reroute"
-              ? "Reroute request"
-              : sheet === "reject"
-                ? "Reject request"
-                : "Add operational note"
+            ? "Reroute request"
+            : sheet === "reject"
+            ? "Reject request"
+            : "Add operational note"
         }
-<<<<<<< Updated upstream
         description={
-          request.reference_code ||
-          request.id
+          request.reference_code
         }
       >
 
         <div className="grid gap-4 p-5">
 
-          {/* =================================================
-              ASSIGN RESPONDER
-          ================================================= */}
+          {/* ==================================================
+              ASSIGNMENT TYPE
+              ================================================== */}
 
           {sheet === "assign" ? (
-            <label>
+            <>
+              <div>
+                <FieldLabel>
+                  Assignment type
+                </FieldLabel>
 
+                <div className="mt-2 grid grid-cols-2 gap-2">
+
+                  <Button
+                    type="button"
+                    variant={
+                      assignmentType ===
+                      "team"
+                        ? "primary"
+                        : "outline"
+                    }
+                    onClick={() => {
+                      setAssignmentType(
+                        "team"
+                      );
+
+                      setResponderId("");
+                    }}
+                    disabled={
+                      assignmentLoading
+                    }
+                  >
+                    Assign team
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant={
+                      assignmentType ===
+                      "responder"
+                        ? "primary"
+                        : "outline"
+                    }
+                    onClick={() => {
+                      setAssignmentType(
+                        "responder"
+                      );
+
+                      setTeamId("");
+                    }}
+                    disabled={
+                      assignmentLoading
+                    }
+                  >
+                    Assign responder
+                  </Button>
+
+                </div>
+              </div>
+
+              {/* ==================================================
+                  TEAM SELECTION
+                  ================================================== */}
+
+              {assignmentType ===
+              "team" ? (
+                <label>
+                  <FieldLabel>
+                    Response team
+                  </FieldLabel>
+
+                  <Select
+                    value={teamId}
+                    onChange={(e) =>
+                      setTeamId(
+                        e.target.value
+                      )
+                    }
+                    disabled={
+                      assignmentLoading
+                    }
+                  >
+                    <option value="">
+                      Select an available team
+                    </option>
+
+                    {teams.length === 0 ? (
+                      <option
+                        value=""
+                        disabled
+                      >
+                        No available teams found
+                      </option>
+                    ) : null}
+
+                    {teams.map(
+                      (team) => (
+                        <option
+                          key={
+                            team.id
+                          }
+                          value={
+                            team.id
+                          }
+                        >
+                          {team.name}
+
+                          {team.code
+                            ? ` · ${team.code}`
+                            : ""}
+                        </option>
+                      )
+                    )}
+                  </Select>
+                </label>
+              ) : null}
+
+              {/* ==================================================
+                  RESPONDER SELECTION
+                  ================================================== */}
+
+              {assignmentType ===
+              "responder" ? (
+                <label>
+                  <FieldLabel>
+                    Responder
+                  </FieldLabel>
+
+                  <Select
+                    value={
+                      responderId
+                    }
+                    onChange={(e) =>
+                      setResponderId(
+                        e.target.value
+                      )
+                    }
+                    disabled={
+                      assignmentLoading
+                    }
+                  >
+                    <option value="">
+                      Select an available responder
+                    </option>
+
+                    {responders.length === 0 ? (
+                      <option
+                        value=""
+                        disabled
+                      >
+                        No available responders found
+                      </option>
+                    ) : null}
+
+                    {responders.map(
+                      (
+                        responder
+                      ) => (
+                        <option
+                          key={
+                            responder.user_id
+                          }
+                          value={
+                            responder.user_id
+                          }
+                        >
+                          {
+                            responder.employee_number
+                          }
+
+                          {" · "}
+
+                          {
+                            responder.qualification
+                          }
+
+                          {responder.license_number
+                            ? ` · ${responder.license_number}`
+                            : ""}
+                        </option>
+                      )
+                    )}
+                  </Select>
+                </label>
+              ) : null}
+
+              <div className="rounded-lg bg-[#f5f8fa] p-3 text-xs text-[#71828d]">
+                {assignmentType ===
+                "team"
+                  ? "The entire response team will be assigned to this emergency. No individual responder will be assigned."
+                  : "Only the selected responder will be assigned to this emergency. No team will be assigned."}
+              </div>
+            </>
+          ) : null}
+
+          {/* ==================================================
+              REROUTE
+              ================================================== */}
+
+          {sheet === "reroute" ? (
+            <label>
               <FieldLabel>
-                Responder
+                Destination organisation
               </FieldLabel>
 
               <Select
-                value={responderId}
+                value={
+                  organisationId
+                }
                 onChange={(e) =>
-                  setResponderId(
+                  setOrganisationId(
                     e.target.value
                   )
                 }
@@ -1626,211 +2599,47 @@ export default function DispatchRequestDetail() {
                   assignmentLoading
                 }
               >
-
                 <option value="">
-                  Select a responder
+                  Select an organisation
                 </option>
 
-                {responders.map(
-                  (responder) => {
-
-                    const availability =
-                      String(
-                        responder.availability ||
-                          "unknown"
-                      ).toLowerCase();
-
-                    const isAvailable =
-                      availability ===
-                      "available";
-
-                    const isActive =
-                      responder.user_status ===
-                      "active";
-
-                    const canAssign =
-                      isAvailable &&
-                      isActive &&
-                      !!responder.organisation_id;
-
-                    return (
-                      <option
-                        key={
-                          responder.user_id
-                        }
-                        value={
-                          responder.user_id
-                        }
-                        disabled={
-                          !canAssign
-                        }
-                      >
-
-                        {responder.display_name ||
-                          "Responder"}
-
-                        {" · "}
-
-                        {responder.employee_number ||
-                          "No employee number"}
-
-                        {" · "}
-
-                        {responder.qualification ||
-                          "Responder"}
-
-                        {" · "}
-
-                        {availability.toUpperCase()}
-
-                        {!responder.organisation_id
-                          ? " · NO ORGANISATION"
-                          : ""}
-
-                        {!isActive
-                          ? " · INACTIVE"
-                          : ""}
-
-                      </option>
-                    );
-                  }
-                )}
-
-              </Select>
-
-              {responders.length ===
-              0 ? (
-                <p className="mt-2 text-sm text-red-500">
-                  No responder users were found.
-                  .
-                </p>
-              ) : (
-                <p className="mt-2 text-xs text-[#71828d]">
-                  {responders.length} responder
-                  {responders.length !== 1
-                    ? "s"
-                    : ""}{" "}
-                  found. Available responders
-                  can be assigned. Busy responders
-                  remain visible but cannot be
-                  selected.
-                </p>
-              )}
-
-            </label>
-          ) : null}
-
-          {/* =================================================
-              REROUTE
-          ================================================= */}
-
-          {sheet === "reroute" ? (
-            <label>
-
-              <FieldLabel>
-                Routing reason'
-              </FieldLabel>
-
-              <Textarea
-                value={text}
-                onChange={(e) =>
-                  setText(
-                    e.target.value
-                  )
-                }
-                placeholder="Enter routing reason"
-              />
-
-            </label>
-          ) : null}
-
-          {/* =================================================
-              REJECT
-          ================================================= */}
-
-          {sheet === "reject" ? (
-            <label>
-
-              <FieldLabel>
-                Rejection reason
-=======
-        description={request.id}
-      >
-        <div className="grid gap-4 p-5">
-          {sheet === "assign" ? (
-            <label>
-              <FieldLabel>Responder and vehicle</FieldLabel>
-
-              <Select
-                value={responderId}
-                onChange={(e) => setResponderId(e.target.value)}
-              >
-                {available.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} · {r.team} · {r.vehicle}
-                  </option>
-                ))}
-              </Select>
-            </label>
-          ) : null}
-
-          {sheet === "reroute" ? (
-            <label>
-              <FieldLabel>Destination organisation</FieldLabel>
-
-              <Select
-                value={organisationId}
-                onChange={(e) => setOrganisationId(e.target.value)}
-              >
-                {db.organisations
-                  .filter(
-                    (o) =>
-                      o.status === "Active" &&
-                      o.id !== request.organisationId
-                  )
-                  .map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.name}
+                {organisations.map(
+                  (
+                    organisation
+                  ) => (
+                    <option
+                      key={
+                        organisation.id
+                      }
+                      value={
+                        organisation.id
+                      }
+                    >
+                      {
+                        organisation.name ||
+                        organisation.id
+                      }
                     </option>
-                  ))}
+                  )
+                )}
               </Select>
             </label>
           ) : null}
+
+          {/* ==================================================
+              TEXT
+              ================================================== */}
 
           {sheet !== "assign" ? (
             <label>
               <FieldLabel>
-                {sheet === "reject"
-                  ? "Required rejection reason"
-                  : sheet === "reroute"
-                    ? "Required routing reason"
-                    : "Operational note"}
->>>>>>> Stashed changes
-              </FieldLabel>
-
-              <Textarea
-                value={text}
-<<<<<<< Updated upstream
-                onChange={(e) =>
-                  setText(
-                    e.target.value
-                  )
-                }
-                placeholder="Enter rejection reason"
-              />
-
-            </label>
-          ) : null}
-
-          {/* =================================================
-              NOTE
-          ================================================= */}
-
-          {sheet === "note" ? (
-            <label>
-
-              <FieldLabel>
-                Operational note
+                {sheet ===
+                "reject"
+                  ? "Rejection reason"
+                  : sheet ===
+                    "reroute"
+                  ? "Routing reason"
+                  : "Operational note"}
               </FieldLabel>
 
               <Textarea
@@ -1840,15 +2649,14 @@ export default function DispatchRequestDetail() {
                     e.target.value
                   )
                 }
-                placeholder="Enter operational information"
+                placeholder="Enter clear operational information"
               />
-
             </label>
           ) : null}
 
-          {/* =================================================
-              CONFIRM BUTTON
-          ================================================= */}
+          {/* ==================================================
+              CONFIRM
+              ================================================== */}
 
           <Button
             variant={
@@ -1858,52 +2666,38 @@ export default function DispatchRequestDetail() {
             }
             size="lg"
             onClick={
-              sheet === "assign"
-                ? assignResponder
-                : () => {
-                    alert(
-                      "This action will be connected next."
-                    );
-                  }
+              completeSheet
             }
             disabled={
               assignmentLoading ||
               (sheet === "assign"
-                ? !responderId
+                ? assignmentType ===
+                  "team"
+                  ? !teamId
+                  : !responderId
+                : sheet ===
+                  "reroute"
+                ? !organisationId ||
+                  !text.trim()
                 : !text.trim())
             }
           >
-
             <Send className="h-4 w-4" />
 
             {assignmentLoading
-              ? "Assigning..."
+              ? sheet === "assign"
+                ? "Assigning..."
+                : "Saving..."
+              : sheet === "assign"
+              ? assignmentType ===
+                "team"
+                ? "Assign team"
+                : "Assign responder"
               : "Confirm action"}
-
           </Button>
 
         </div>
       </Sheet>
-
-=======
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Enter clear operational information"
-              />
-            </label>
-          ) : null}
-
-          <Button
-            variant={sheet === "reject" ? "danger" : "primary"}
-            size="lg"
-            onClick={completeSheet}
-            disabled={sheet === "assign" ? !responderId : !text.trim()}
-          >
-            <Send className="h-4 w-4" />
-            Confirm action
-          </Button>
-        </div>
-      </Sheet>
->>>>>>> Stashed changes
     </div>
   );
 }

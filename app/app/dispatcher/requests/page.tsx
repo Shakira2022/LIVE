@@ -1,86 +1,186 @@
 "use client";
 
-import { Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import { RequestListItem } from "@/components/requests/request-list-item";
-import { Input, Select } from "@/components/ui/field";
-import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 
 import { supabase } from "@/lib/supabase";
 
-interface EmergencyRequestRow {
-  id: string;
-  reference_code: string | null;
-  requester_id: string | null;
-  category: string | null;
-  severity: string | null;
-  note: string | null;
-  callback_number: string | null;
-  current_status: string | null;
-  created_at: string;
-  updated_at?: string | null;
-  is_active?: boolean | null;
-}
-
-export default function DispatchRequests() {
-  const [requests, setRequests] = useState<EmergencyRequestRow[]>([]);
+export default function DispatcherRequestsPage() {
+  const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("All");
-  const [severity, setSeverity] = useState("All");
 
   useEffect(() => {
     async function loadRequests() {
+      console.log("========== REQUEST QUEUE ==========");
+      console.log("Loading emergency requests...");
+
       try {
         setLoading(true);
 
-        const { data, error } = await supabase
-          .from("emergency_requests")
-          .select(`
-            id,
-            reference_code,
-            requester_id,
-            category,
-            severity,
-            note,
-            callback_number,
-            current_status,
-            created_at,
-            updated_at,
-            is_active
-          `)
-          .order("created_at", { ascending: false });
+        // ==================================================
+        // LOAD EMERGENCY REQUESTS
+        // ==================================================
 
-        if (error) {
+        const {
+          data: requestData,
+          error: requestError,
+        } = await supabase
+          .from("emergency_requests")
+          .select("*")
+          .order("created_at", {
+            ascending: false,
+          });
+
+        console.log(
+          "EMERGENCY REQUESTS:",
+          requestData
+        );
+
+        console.log(
+          "EMERGENCY REQUEST ERROR:",
+          requestError
+        );
+
+        if (requestError) {
           console.error(
             "Failed to load emergency requests:",
-            error
+            requestError
           );
 
           setRequests([]);
           return;
         }
 
-        console.log(
-          "SUPABASE EMERGENCY REQUESTS:",
-          data
+        if (!requestData || requestData.length === 0) {
+          setRequests([]);
+          return;
+        }
+
+        // ==================================================
+        // LOAD LATEST ASSIGNMENT FOR EACH REQUEST
+        // ==================================================
+
+        const requestIds = requestData.map(
+          (request) => request.id
         );
 
-        setRequests(
-          (data || []) as EmergencyRequestRow[]
+        const {
+          data: assignmentData,
+          error: assignmentError,
+        } = await supabase
+          .from("request_assignments")
+          .select("*")
+          .in("request_id", requestIds)
+          .order("created_at", {
+            ascending: false,
+          });
+
+        console.log(
+          "REQUEST ASSIGNMENTS:",
+          assignmentData
         );
+
+        console.log(
+          "REQUEST ASSIGNMENT ERROR:",
+          assignmentError
+        );
+
+        if (assignmentError) {
+          console.error(
+            "Failed to load request assignments:",
+            assignmentError
+          );
+
+          // We can still display the emergency requests
+          setRequests(requestData);
+          return;
+        }
+
+        // ==================================================
+        // COMBINE REQUEST + LATEST ASSIGNMENT
+        // ==================================================
+
+        const latestAssignmentByRequest =
+          new Map<string, any>();
+
+        (assignmentData ?? []).forEach(
+          (assignment) => {
+            if (
+              !latestAssignmentByRequest.has(
+                assignment.request_id
+              )
+            ) {
+              latestAssignmentByRequest.set(
+                assignment.request_id,
+                assignment
+              );
+            }
+          }
+        );
+
+        const enrichedRequests = requestData.map(
+          (request) => {
+            const assignment =
+              latestAssignmentByRequest.get(
+                request.id
+              );
+
+            return {
+              ...request,
+
+              // Keep the original emergency request status
+              emergency_request_status:
+                request.current_status,
+
+              // Assignment information
+              assignment_status:
+                assignment?.status ?? null,
+
+              assignment_id:
+                assignment?.id ?? null,
+
+              responder_user_id:
+                assignment?.responder_user_id ?? null,
+
+              assigned_at:
+                assignment?.assigned_at ?? null,
+
+              assigned_by_user_id:
+                assignment?.assigned_by_user_id ?? null,
+
+              // The status shown by the dispatcher queue.
+              //
+              // If there is an assignment, use its status.
+              // Otherwise use the emergency request status.
+              current_status:
+                assignment?.status ??
+                request.current_status,
+            };
+          }
+        );
+
+        console.log(
+          "ENRICHED REQUEST QUEUE:",
+          enrichedRequests
+        );
+
+        setRequests(enrichedRequests);
       } catch (error) {
         console.error(
-          "Unexpected emergency request loading error:",
+          "Unexpected request queue error:",
           error
         );
 
         setRequests([]);
       } finally {
+        console.log(
+          "Request queue loading finished."
+        );
+
         setLoading(false);
       }
     }
@@ -88,112 +188,57 @@ export default function DispatchRequests() {
     loadRequests();
   }, []);
 
-  const items = useMemo(() => {
-    return requests.filter((r) => {
-      const matchesStatus =
-        status === "All" ||
-        r.current_status === status;
-
-      const matchesSeverity =
-        severity === "All" ||
-        r.severity === severity;
-
-      const searchText = `
-        ${r.id || ""}
-        ${r.reference_code || ""}
-        ${r.requester_id || ""}
-        ${r.category || ""}
-        ${r.note || ""}
-        ${r.callback_number || ""}
-      `.toLowerCase();
-
-      const matchesSearch =
-        searchText.includes(search.toLowerCase());
-
-      return (
-        matchesStatus &&
-        matchesSeverity &&
-        matchesSearch
-      );
-    });
-  }, [requests, search, status, severity]);
+  // ==================================================
+  // LOADING
+  // ==================================================
 
   if (loading) {
-    return <PageSkeleton />;
+    return <PageSkeleton map />;
   }
+
+  // ==================================================
+  // PAGE
+  // ==================================================
 
   return (
     <div className="app-page grid gap-5">
+
       <PageHeading
-        eyebrow="Dispatch"
+        eyebrow="Dispatch operations"
         title="Request queue"
-        description="Search and filter emergency requests."
+        description="View and manage incoming emergency requests."
       />
 
-      <Panel>
-        <div className="grid gap-3 border-b border-[#e2e8ed] p-4 sm:grid-cols-[1fr_190px_170px] sm:p-5">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3.5 top-3.5 h-5 w-5 text-[#8b9aa4]" />
+      <div className="grid gap-3">
 
-            <Input
-              className="pl-11"
-              value={search}
-              onChange={(e) =>
-                setSearch(e.target.value)
-              }
-              placeholder="Reference, requester or location"
-            />
-          </div>
+        {requests.length === 0 ? (
+          <div className="rounded-xl border p-8 text-center">
 
-          <Select
-            value={status}
-            onChange={(e) =>
-              setStatus(e.target.value)
-            }
-          >
-            <option>All</option>
-            <option>Submitted</option>
-            <option>Received</option>
-            <option>Assigned</option>
-            <option>En route</option>
-            <option>Arrived</option>
-            <option>Closed</option>
-            <option>Cancelled</option>
-            <option>Rejected</option>
-          </Select>
+            <p className="font-semibold">
+              No emergency requests found.
+            </p>
 
-          <Select
-            value={severity}
-            onChange={(e) =>
-              setSeverity(e.target.value)
-            }
-          >
-            <option>All</option>
-            <option>Critical</option>
-            <option>High</option>
-            <option>Moderate</option>
-          </Select>
-        </div>
+            <p className="mt-1 text-sm text-gray-500">
+              There are currently no requests in the system.
+            </p>
 
-        <PanelHeader
-          title={`${items.length} matching requests`}
-          description="Select a request to open operational controls."
-        />
-
-        {items.length === 0 ? (
-          <div className="p-8 text-center text-sm text-[#71828d]">
-            No emergency requests found.
           </div>
         ) : (
-          items.map((request) => (
-            <RequestListItem
+
+          requests.map((request) => (
+            <Link
               key={request.id}
-              request={request}
               href={`/app/dispatcher/requests/${request.id}`}
-            />
+            >
+              <RequestListItem
+                request={request}
+              />
+            </Link>
           ))
+
         )}
-      </Panel>
+
+      </div>
     </div>
   );
 }
