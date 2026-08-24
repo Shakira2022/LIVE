@@ -27,7 +27,7 @@ export async function PATCH(
     }
 ) {
     try {
-        // 1.get authentication cookie
+
         const token = request.cookies.get("access_token")?.value;
 
         if (!token) {
@@ -40,7 +40,7 @@ export async function PATCH(
             );
         }
 
-        // 2.verify JWT
+
         const payload = await verifyAccessToken(token);
 
         if (!payload) {
@@ -53,7 +53,7 @@ export async function PATCH(
             );
         }
 
-        // 3.admin only
+
         if (payload.role !== "admin") {
             return NextResponse.json(
                 {
@@ -64,7 +64,7 @@ export async function PATCH(
             );
         }
 
-        // 4.get user ID from URL
+
         const { id } = await context.params;
 
         if (payload.userId === id) {
@@ -77,7 +77,7 @@ export async function PATCH(
             );
         }
 
-        // 5.read requested changes
+
         const body = await request.json();
 
         const updates: {
@@ -126,7 +126,7 @@ export async function PATCH(
 
         updates.updated_at = new Date().toISOString();
 
-        // 6.update user in Supabase
+
         const { data, error } = await supabaseAdmin
             .from("users")
             .update(updates)
@@ -157,7 +157,6 @@ export async function PATCH(
             );
         }
 
-        // 7.record the admin action in audit_logs
         await logAuditEvent({
             actor_user_id: payload.userId,
             actor_role: payload.role,
@@ -171,7 +170,6 @@ export async function PATCH(
             },
         });
 
-        // 8.return updated user
         return NextResponse.json({
             ok: true,
             user: data,
