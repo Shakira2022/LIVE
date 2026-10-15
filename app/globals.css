@@ -90,3 +90,28 @@ button, a { -webkit-tap-highlight-color: transparent; }
     transition-duration: .01ms !important;
   }
 }
+
+/* ---- Live map (Leaflet) ---------------------------------------------- */
+.live-map .leaflet-container { font-family: inherit; background: #e9eff3; }
+.live-map .leaflet-top.leaflet-left { top: 3.25rem; }
+.live-map .leaflet-control-attribution {
+  margin: 0 0 0 .75rem !important;
+  border-radius: 6px;
+  background: rgba(255,255,255,.8) !important;
+  font-size: 9px;
+  line-height: 1.5;
+  padding: 0 6px;
+}
+.live-map .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 10px 25px rgba(16,43,63,.18); }
+.live-map .leaflet-popup-content { margin: 10px 14px; }
+.live-map .live-map-callout {
+  width: 12rem;
+  white-space: normal;
+  border: 0;
+  border-left: 2px solid #d53f3d;
+  border-radius: 0;
+  background: rgba(255,255,255,.95);
+  padding: .6rem .75rem;
+  box-shadow: 0 10px 25px rgba(16,43,63,.15);
+}
+.live-map .live-map-callout::before { display: none; }
