@@ -59,6 +59,17 @@ export const MOCK_CREDENTIALS: MockCredential[] = [
     password: "LiveRespond123!",
   },
   {
+    id: "usr-responder-005",
+    name: "Samson Ndlovu",
+    email: "responder2@live.co.za",
+    phone: "+27 76 555 0195",
+    role: "responder",
+    organisationId: "org-charlotte",
+    status: "Active",
+    initials: "SN",
+    password: "LiveRespondTwo123!",
+  },
+  {
     id: "usr-admin-001",
     name: "Ayesha Patel",
     email: "admin@live.co.za",
@@ -156,6 +167,17 @@ const responders: Responder[] = [
     organisationId: "org-charlotte",
     availability: "Offline",
     location: { lat: -26.2011, lng: 28.0456 },
+  },
+  {
+    id: "rsp-005",
+    userId: "usr-responder-005",
+    name: "Samson Ndlovu",
+    team: "Rapid Response Echo",
+    vehicle: "Ambulance LIVE-41",
+    phone: "+27 76 555 0195",
+    organisationId: "org-charlotte",
+    availability: "Available",
+    location: { lat: -26.1932, lng: 28.0511 },
   },
 ];
 

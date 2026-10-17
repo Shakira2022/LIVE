@@ -45,6 +45,8 @@ import {
 import {
   requestStatusTone,
 } from "@/lib/utils";
+import { readCached } from "@/lib/client-cache";
+import type { Responder } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* API types                                                                  */
@@ -97,6 +99,23 @@ type StatusHistoryItem = {
   created_at?: string;
 };
 
+type ApiAssignment = {
+  id?: string;
+  status?: string | null;
+  responderUserId?: string | null;
+  responder_user_id?: string | null;
+  responderName?: string | null;
+  responder_name?: string | null;
+  responderLatitude?: number | null;
+  responder_latitude?: number | null;
+  responderLongitude?: number | null;
+  responder_longitude?: number | null;
+  teamName?: string | null;
+  team_name?: string | null;
+  vehicleCallSign?: string | null;
+  vehicle_call_sign?: string | null;
+};
+
 type ApiRequest = {
   id: string;
 
@@ -106,11 +125,14 @@ type ApiRequest = {
   currentStatus?: EmergencyStatus;
   callbackNumber?: string | null;
   etaMinutes?: number | null;
+  assignedResponderId?: string | null;
+  assigned_responder_id?: string | null;
   createdAt?: string;
   updatedAt?: string;
   location?: ApiLocation | null;
   statusHistory?: StatusHistoryItem[];
   history?: StatusHistoryItem[];
+  assignments?: ApiAssignment[];
 
   /* Old backend fields kept as compatibility fallbacks */
   reference_code?: string;
@@ -173,6 +195,7 @@ type UiRequest = {
   callbackNumber: string;
   status: EmergencyStatus;
   etaMinutes?: number;
+  assignedResponderId?: string;
   createdAt: string;
   updatedAt: string;
 
@@ -191,6 +214,32 @@ type UiRequest = {
     createdAt: string;
   }>;
 };
+
+type ResponderSnapshot = {
+  assigned: boolean;
+  name?: string | null;
+  responder: Responder | null;
+};
+
+function assignmentToResponder(assignments?: ApiAssignment[]): Responder | undefined {
+  const assignment = assignments?.at(-1);
+  const responderUserId = assignment?.responderUserId ?? assignment?.responder_user_id;
+  const latitude = Number(assignment?.responderLatitude ?? assignment?.responder_latitude);
+  const longitude = Number(assignment?.responderLongitude ?? assignment?.responder_longitude);
+  if (!assignment || !responderUserId || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return undefined;
+
+  return {
+    id: responderUserId,
+    userId: responderUserId,
+    name: assignment.responderName ?? assignment.responder_name ?? "Responder",
+    team: assignment.teamName ?? assignment.team_name ?? "Response team",
+    vehicle: assignment.vehicleCallSign ?? assignment.vehicle_call_sign ?? "Emergency vehicle",
+    phone: "",
+    organisationId: "",
+    availability: "Assigned",
+    location: { lat: latitude, lng: longitude },
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -235,6 +284,38 @@ function getErrorMessage(
     payload.message ||
     fallback
   );
+}
+
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(input, requestInit);
+
+  if (response.status !== 401) {
+    return response;
+  }
+
+  const refreshResponse = await fetch(
+    "/api/auth/refresh",
+    {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    },
+  );
+
+  if (!refreshResponse.ok) {
+    return response;
+  }
+
+  response = await fetch(input, requestInit);
+  return response;
 }
 
 function getLocation(
@@ -319,6 +400,13 @@ function normalizeRequest(
     etaMinutes:
       request.etaMinutes ??
       request.eta_minutes ??
+      undefined,
+
+    assignedResponderId:
+      request.assignedResponderId ??
+      request.assigned_responder_id ??
+      request.assignments?.at(-1)?.responderUserId ??
+      request.assignments?.at(-1)?.responder_user_id ??
       undefined,
 
     createdAt,
@@ -419,6 +507,27 @@ function formatDateTime(
   );
 }
 
+function distanceMetresBetween(
+  firstLatitude: number,
+  firstLongitude: number,
+  secondLatitude: number,
+  secondLongitude: number,
+) {
+  const earthRadiusMetres = 6_371_000;
+  const toRadians = (value: number) => value * (Math.PI / 180);
+  const latitudeDelta = toRadians(secondLatitude - firstLatitude);
+  const longitudeDelta = toRadians(secondLongitude - firstLongitude);
+  const firstLatitudeRadians = toRadians(firstLatitude);
+  const secondLatitudeRadians = toRadians(secondLatitude);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitudeRadians) *
+      Math.cos(secondLatitudeRadians) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 2 * earthRadiusMetres * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 /* -------------------------------------------------------------------------- */
 /* Page                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -442,19 +551,35 @@ export default function RequestTrackingPage() {
       ? params.id
       : "";
 
+  const cachedRequests = user?.id
+    ? readCached<ApiRequest[]>(
+        `requester-history:${user.id}`,
+      )
+    : null;
+
+  const cachedRequest = cachedRequests?.find(
+    (cached) => cached.id === id,
+  );
+  const cachedResponder = user?.id
+    ? readCached<ResponderSnapshot>(`requester-responder:${id}`)
+    : null;
+
   const [
     request,
     setRequest,
   ] =
     useState<UiRequest | null>(
-      null,
+      () =>
+        cachedRequest
+          ? normalizeRequest(cachedRequest)
+          : null,
     );
 
   const [
     loading,
     setLoading,
   ] =
-    useState(true);
+    useState(() => !cachedRequest);
 
   const [
     notFound,
@@ -467,6 +592,17 @@ export default function RequestTrackingPage() {
     setError,
   ] =
     useState("");
+
+  const [activeResponder, setActiveResponder] = useState<Responder | undefined>(
+    () => cachedResponder?.responder ?? undefined,
+  );
+  const [activeResponderName, setActiveResponderName] = useState<string | undefined>(
+    () => cachedResponder?.name ?? cachedResponder?.responder?.name ?? undefined,
+  );
+  const [responderAssigned, setResponderAssigned] = useState(
+    () => cachedResponder?.assigned ?? false,
+  );
+  const [activeResponderStatus, setActiveResponderStatus] = useState<string | undefined>();
 
   /* ---------------------------------------------------------------------- */
   /* Load request                                                           */
@@ -498,7 +634,7 @@ export default function RequestTrackingPage() {
 
         try {
           const response =
-            await fetch(
+            await authenticatedFetch(
               `/api/requests/${encodeURIComponent(
                 id,
               )}`,
@@ -600,6 +736,17 @@ export default function RequestTrackingPage() {
               apiRequest,
             ),
           );
+          const nextResponder = assignmentToResponder(apiRequest.assignments);
+          const latestAssignment = apiRequest.assignments?.at(-1);
+          const nextResponderName = latestAssignment?.responderName ?? latestAssignment?.responder_name ?? undefined;
+          setActiveResponderStatus(latestAssignment?.status ?? undefined);
+          const nextAssigned = Boolean(
+            latestAssignment?.responderUserId ??
+            latestAssignment?.responder_user_id,
+          );
+          setActiveResponder(nextResponder);
+          setActiveResponderName(nextResponderName);
+          setResponderAssigned(nextAssigned);
 
           setNotFound(false);
         } catch (loadError) {
@@ -684,7 +831,7 @@ export default function RequestTrackingPage() {
         () => {
           void loadRequest(true);
         },
-        15_000,
+        3_000,
       );
 
     return () => {
@@ -743,6 +890,9 @@ export default function RequestTrackingPage() {
         etaMinutes:
           request.etaMinutes,
 
+        assignedResponderId:
+          request.assignedResponderId,
+
         createdAt:
           request.createdAt,
 
@@ -760,7 +910,7 @@ export default function RequestTrackingPage() {
 
   if (
     authLoading ||
-    loading
+    (!request && loading)
   ) {
     return (
       <PageSkeleton map />
@@ -887,7 +1037,8 @@ export default function RequestTrackingPage() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    <div className="app-page grid gap-5">
+    <div className="flex h-[calc(100dvh-4rem)] flex-col gap-0 overflow-hidden p-0 md:grid md:h-auto md:gap-5 md:p-8">
+      <div className="hidden md:block">
       <PageHeading
         eyebrow="Emergency request"
         title={request.referenceCode}
@@ -903,15 +1054,50 @@ export default function RequestTrackingPage() {
           </Badge>
         }
       />
+      </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
+      <div className="grid min-h-0 gap-0 md:gap-4 xl:grid-cols-[1.3fr_.7fr]">
         <LiveResponseMap
           request={mapRequest}
+          responder={activeResponder}
+          responderAssigned={responderAssigned}
+          responderName={activeResponderName}
+          responderStatus={activeResponderStatus}
+          responderDistanceMetres={
+            activeResponder?.location && request.location.lat != null && request.location.lng != null
+              ? distanceMetresBetween(
+                  activeResponder.location.lat,
+                  activeResponder.location.lng,
+                  request.location.lat,
+                  request.location.lng,
+                )
+              : null
+          }
           immersive
-          className="h-[48dvh] min-h-[360px] md:h-[62dvh] md:min-h-[480px]"
+          compactRequestDetails
+          className="h-[calc(100dvh-15rem)] min-h-[320px] w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
         />
 
-        <div className="grid content-start gap-4">
+        <div className="grid grid-cols-2 gap-3 bg-[#f6f8fb] p-4 pb-5 md:hidden">
+          <div className="rounded-xl bg-[#34434f] p-3">
+            <div className="flex items-center gap-2">
+              <Clock3 className="h-4 w-4 text-[#b8e0e4]" />
+              <p className="text-xs font-semibold text-[#dbe7eb]">Estimated arrival</p>
+            </div>
+            <p className="mt-1 font-semibold text-white">
+              {request.etaMinutes ? `${request.etaMinutes} min` : "Pending"}
+            </p>
+          </div>
+          <div className="rounded-xl bg-[#34434f] p-3">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-4 w-4 text-[#b8e0e4]" />
+              <p className="text-xs font-semibold text-[#dbe7eb]">Location</p>
+            </div>
+            <p className="mt-1 truncate font-semibold text-white">{request.location.method}</p>
+          </div>
+        </div>
+
+        <div className="hidden content-start gap-4 md:grid">
           <Panel>
             <PanelHeader
               title="Request status"

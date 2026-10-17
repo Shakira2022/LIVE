@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PublicHeader } from "@/components/layout/public-header";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/field";
+import { FieldLabel, Input } from "@/components/ui/field";
 
 export default function ResetPasswordPage() {
   const [token, setToken] = useState("");
@@ -15,6 +15,11 @@ export default function ResetPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const queryToken = new URLSearchParams(window.location.search).get("token");
+    if (queryToken) setToken(queryToken);
+  }, []);
 
   async function handleSubmit(
     event: React.FormEvent<HTMLFormElement>
@@ -81,8 +86,8 @@ export default function ResetPasswordPage() {
     <div className="min-h-dvh bg-[#f6f8fb]">
       <PublicHeader />
 
-      <main className="grid min-h-dvh place-items-center px-4 pb-10 pt-24">
-        <div className="w-full max-w-md p-6 sm:p-8">
+      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+        <div className="w-full max-w-md">
 
           {success ? (
             <div className="text-center">
@@ -110,23 +115,19 @@ export default function ResetPasswordPage() {
             </div>
           ) : (
             <>
-              <h1 className="text-2xl font-bold">
-                Reset your password
-              </h1>
+              <div className="relative top-2 mb-7 text-center">
+                <h1 className="text-3xl font-bold tracking-[-0.025em] text-[#102b3f]">
+                  Reset your password
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-[#667b89]">
+                  Choose a new password for your secure LIVE account.
+                </p>
+              </div>
 
-              <p className="mt-2 text-sm leading-6 text-[#667b89]">
-                Enter your reset token and choose a
-                new password.
-              </p>
-
-              <form
-                onSubmit={handleSubmit}
-                className="mt-6"
-              >
+              <form onSubmit={handleSubmit} className="w-full border-b border-[#dce5ea] py-5 sm:py-6">
+                <div className="mx-auto mb-5 h-px w-1/2 bg-[#dce5ea] sm:mb-6" aria-hidden="true" />
                 <label className="block">
-                  <span className="text-sm font-medium">
-                    Reset token
-                  </span>
+                  <FieldLabel>Reset token</FieldLabel>
 
                   <Input
                     type="text"
@@ -140,9 +141,7 @@ export default function ResetPasswordPage() {
                 </label>
 
                 <label className="mt-4 block">
-                  <span className="text-sm font-medium">
-                    New password
-                  </span>
+                  <FieldLabel>New password</FieldLabel>
 
                   <Input
                     type="password"
@@ -158,9 +157,7 @@ export default function ResetPasswordPage() {
                 </label>
 
                 <label className="mt-4 block">
-                  <span className="text-sm font-medium">
-                    Confirm new password
-                  </span>
+                  <FieldLabel>Confirm new password</FieldLabel>
 
                   <Input
                     type="password"
@@ -176,7 +173,7 @@ export default function ResetPasswordPage() {
                 </label>
 
                 {error && (
-                  <div className="mt-4 rounded-lg bg-red-50 p-4 text-sm text-red-700">
+                  <div className="mt-4 border border-[#efc9c7] bg-[#ffefee] px-3 py-2.5 text-sm font-medium text-[#a93331]">
                     {error}
                   </div>
                 )}
@@ -195,7 +192,7 @@ export default function ResetPasswordPage() {
 
               <Link
                 href="/login"
-                className="mt-5 block text-center text-sm text-[#0f6872]"
+                className="mt-5 block text-center text-sm font-semibold text-[#0f6872]"
               >
                 Back to sign in
               </Link>

@@ -21,6 +21,8 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { requestStatusTone } from "@/lib/utils";
+import { readFreshCache, writeFreshCache } from "@/lib/client-cache";
+import { RequestDetailsSheet } from "@/components/requests/request-details-sheet";
 
 import {
   useCallback,
@@ -168,10 +170,13 @@ export default function ResponderHistory() {
   } = useAuth();
 
   const [items, setItems] =
-    useState<HistoryItem[]>([]);
+    useState<HistoryItem[]>(() => user?.id ? readFreshCache<HistoryItem[]>(`responder-history:${user.id}`) ?? [] : []);
 
   const [loading, setLoading] =
-    useState(true);
+    useState(() => !(user?.id && readFreshCache<HistoryItem[]>(`responder-history:${user.id}`)));
+
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const [error, setError] =
     useState<string | null>(null);
@@ -181,15 +186,24 @@ export default function ResponderHistory() {
   // ==========================================================
 
   const loadHistory =
-    useCallback(async () => {
+    useCallback(async (force = false) => {
       if (!user?.id) {
         setItems([]);
         setLoading(false);
         return;
       }
 
-      try {
-        setLoading(true);
+    const cacheKey = `responder-history:${user.id}`;
+    if (!force) {
+      const cached = readFreshCache<HistoryItem[]>(cacheKey);
+      if (cached) {
+        setItems(cached);
+        setLoading(false);
+      }
+    }
+
+    try {
+        if (!items.length) setLoading(true);
         setError(null);
 
         const response =
@@ -218,7 +232,6 @@ export default function ResponderHistory() {
             ),
           );
 
-          setItems([]);
           return;
         }
 
@@ -235,10 +248,9 @@ export default function ResponderHistory() {
           [];
 
         setItems(
-          Array.isArray(nextItems)
-            ? nextItems
-            : [],
+          Array.isArray(nextItems) ? nextItems : [],
         );
+        writeFreshCache(cacheKey, Array.isArray(nextItems) ? nextItems : [], 5 * 60_000);
       } catch (error) {
         console.warn(
           "Responder history error:",
@@ -251,7 +263,6 @@ export default function ResponderHistory() {
           "Could not connect to the responder service.",
         );
 
-        setItems([]);
       } finally {
         setLoading(false);
       }
@@ -270,6 +281,12 @@ export default function ResponderHistory() {
       user?.id
     ) {
       void loadHistory();
+
+      const refreshTimer = window.setInterval(() => {
+        void loadHistory(true);
+      }, 3_000);
+
+      return () => window.clearInterval(refreshTimer);
     }
 
     if (
@@ -279,6 +296,7 @@ export default function ResponderHistory() {
       setItems([]);
       setLoading(false);
     }
+    return undefined;
   }, [
     authLoading,
     user?.id,
@@ -290,9 +308,13 @@ export default function ResponderHistory() {
   // LOADING
   // ==========================================================
 
+  const cachedHistory = user?.id
+    ? readFreshCache<HistoryItem[]>(`responder-history:${user.id}`)
+    : null;
+
   if (
     authLoading ||
-    loading ||
+    (loading && !cachedHistory) ||
     !user
   ) {
     return <PageSkeleton />;
@@ -302,7 +324,7 @@ export default function ResponderHistory() {
   // ERROR
   // ==========================================================
 
-  if (error) {
+  if (error && items.length === 0) {
     return (
       <div className="app-page">
         <Panel className="p-8">
@@ -344,7 +366,7 @@ export default function ResponderHistory() {
           <Button
             variant="outline"
             onClick={() =>
-              void loadHistory()
+              void loadHistory(true)
             }
           >
             <RefreshCw className="h-4 w-4" />
@@ -404,7 +426,11 @@ export default function ResponderHistory() {
                     key={
                       assignment.id
                     }
-                    className="p-4 sm:p-5"
+                    className="cursor-pointer p-4 transition hover:bg-[#f8fafb] sm:p-5"
+                    onClick={() => {
+                      setSelectedRequestId(assignment.request_id);
+                      setDetailsOpen(true);
+                    }}
                   >
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1">
@@ -543,6 +569,11 @@ export default function ResponderHistory() {
           </div>
         )}
       </Panel>
+      <RequestDetailsSheet
+        requestId={selectedRequestId}
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+      />
     </div>
   );
 }

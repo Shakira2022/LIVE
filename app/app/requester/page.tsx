@@ -9,16 +9,24 @@ import {
 import {
   ArrowRight,
   Bell,
+  CircleAlert,
+  CircleHelp,
   Clock3,
   History,
   MapPin,
+  Phone,
   Siren,
+  ShieldCheck,
   Ambulance,
   ShieldAlert,
+  Sparkles,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
+import { readRequesterPreferences } from "@/lib/requester-preferences";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
+import { AiAssistantSheet } from "@/components/requester/ai-assistant-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +35,9 @@ import {
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { Sheet } from "@/components/ui/sheet";
 import { requestStatusTone } from "@/lib/utils";
+import type { Responder } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* API compatibility types                                                    */
@@ -118,6 +128,26 @@ type RequestListResponse = {
       };
 };
 
+type RequestAssignment = {
+  id?: string;
+  status?: string | null;
+  responderUserId?: string | null;
+  responder_user_id?: string | null;
+  responderName?: string | null;
+  responder_name?: string | null;
+  responderLatitude?: number | null;
+  responderLongitude?: number | null;
+  teamName?: string | null;
+  team_name?: string | null;
+  vehicleCallSign?: string | null;
+  vehicle_call_sign?: string | null;
+};
+
+type RequestDetailResponse = {
+  data?: { assignments?: RequestAssignment[] };
+  assignments?: RequestAssignment[];
+};
+
 type ApiNotification = {
   id: string;
 
@@ -126,6 +156,115 @@ type ApiNotification = {
 
   read?: boolean;
 };
+
+type RequesterHomeCache = {
+  requests: HomeRequest[];
+  unread: number;
+};
+
+const HOME_CACHE_TTL_MS = 5 * 60_000;
+
+function distanceMetresBetween(
+  firstLatitude: number,
+  firstLongitude: number,
+  secondLatitude: number,
+  secondLongitude: number,
+) {
+  const earthRadiusMetres = 6_371_000;
+  const toRadians = (value: number) => value * (Math.PI / 180);
+  const latitudeDelta = toRadians(secondLatitude - firstLatitude);
+  const longitudeDelta = toRadians(secondLongitude - firstLongitude);
+  const firstLatitudeRadians = toRadians(firstLatitude);
+  const secondLatitudeRadians = toRadians(secondLatitude);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitudeRadians) *
+      Math.cos(secondLatitudeRadians) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 2 * earthRadiusMetres * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+type HelpSection = "help" | "safety";
+
+function HelpAndSafetySheet({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [section, setSection] = useState<HelpSection>("help");
+
+  return (
+    <Sheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Help & Safety"
+      description="Quick guidance for using LIVE safely."
+      className="!h-dvh !max-h-dvh rounded-none"
+    >
+      <nav className="flex border-b border-[#dce5ea] bg-white" aria-label="Help and safety sections">
+        {(["help", "safety"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setSection(value)}
+            className={`flex-1 border-b-2 px-4 py-4 text-sm transition ${section === value ? "border-[#0f6872] font-bold text-[#0f6872]" : "border-transparent text-[#667b89]"}`}
+          >
+            {value === "help" ? "Help" : "Safety"}
+          </button>
+        ))}
+      </nav>
+
+      {section === "help" ? (
+        <div className="divide-y divide-[#dce5ea] px-5 md:px-6">
+          <HelpSheetItem icon={<MapPin />} title="Request help">
+            Choose the emergency type, confirm your current GPS location, and submit the request.
+          </HelpSheetItem>
+          <HelpSheetItem icon={<CircleAlert />} title="Track a request">
+            When a request is active, the map shows the confirmed location and response progress.
+          </HelpSheetItem>
+          <HelpSheetItem icon={<Phone />} title="Stay reachable">
+            Keep your phone nearby after submitting so responders can contact you if needed.
+          </HelpSheetItem>
+        </div>
+      ) : (
+        <div className="divide-y divide-[#dce5ea] px-5 md:px-6">
+          <HelpSheetItem icon={<ShieldCheck />} title="Use an accurate location">
+            Keep location permission enabled and check that the map reflects where you are before submitting.
+          </HelpSheetItem>
+          <HelpSheetItem icon={<CircleAlert />} title="Keep the description brief">
+            Share the most important facts and do not delay a request to write a long note.
+          </HelpSheetItem>
+          <HelpSheetItem icon={<Phone />} title="Immediate danger">
+            If you cannot use LIVE or are in immediate danger, contact your local emergency service directly.
+          </HelpSheetItem>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+function HelpSheetItem({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <article className="flex items-start gap-4 border-b border-[#dce5ea] py-5 last:border-b-0">
+      <span className="mt-0.5 text-[#0f5b67]">{icon}</span>
+      <div>
+        <h2 className="font-semibold text-[#102b3f]">{title}</h2>
+        <p className="mt-1 text-sm leading-6 text-[#667b89]">{children}</p>
+      </div>
+    </article>
+  );
+}
 
 type NotificationResponse = {
   ok?: boolean;
@@ -458,6 +597,23 @@ function normalizeRequest(
   };
 }
 
+function readInitialHomeCache(userId: string): RequesterHomeCache | null {
+  const cachedHome = readCached<RequesterHomeCache>(`requester-home:${userId}`);
+  if (cachedHome) return cachedHome;
+
+  const cachedRequests = readCached<ApiRequest[]>(`requester-history:${userId}`);
+  const cachedNotifications = readCached<ApiNotification[]>(`requester-notifications:${userId}`);
+  if (!cachedRequests && !cachedNotifications) return null;
+
+  return {
+    requests: (cachedRequests ?? []).map(normalizeRequest),
+    unread: (cachedNotifications ?? []).filter((notification) => {
+      if (typeof notification.read === "boolean") return !notification.read;
+      return (notification.readAt ?? notification.read_at ?? null) === null;
+    }).length,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Page                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -473,26 +629,61 @@ export default function RequesterHome() {
     selectedCategory,
     setSelectedCategory,
   ] = useState<
-    "Medical" | "Police"
+    "Medical" | "Police" | "Firefighting"
   >("Medical");
+
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+
+  function announceUrgentRequest(category: "Medical" | "Police" | "Firefighting") {
+    const preferences = readRequesterPreferences();
+    if (!preferences.voiceGuidance || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(
+      new SpeechSynthesisUtterance(
+        `${category} emergency request selected. We will confirm your location before sending the request.`,
+      ),
+    );
+  }
+
+  const initialHomeCache = user?.id ? readInitialHomeCache(user.id) : null;
+  const hasInitialHomeCache = Boolean(initialHomeCache);
 
   const [
     requests,
     setRequests,
   ] =
-    useState<HomeRequest[]>([]);
+    useState<HomeRequest[]>(() => initialHomeCache?.requests ?? []);
 
   const [
     unread,
     setUnread,
   ] =
-    useState(0);
+    useState(() => initialHomeCache?.unread ?? 0);
 
   const [
     dataLoading,
     setDataLoading,
   ] =
-    useState(true);
+    useState(() => !initialHomeCache);
+
+  const initialActiveRequest = initialHomeCache?.requests.find((request) =>
+    ACTIVE_REQUEST_STATUSES.has(request.status),
+  );
+  const initialResponderSnapshot = user?.id && initialActiveRequest
+    ? readCached<{ assigned: boolean; name?: string | null; responder: Responder | null }>(`requester-responder:${initialActiveRequest.id}`)
+    : null;
+
+  const [activeResponder, setActiveResponder] = useState<Responder | undefined>(
+    () => initialResponderSnapshot?.responder ?? undefined,
+  );
+  const [activeResponderAssigned, setActiveResponderAssigned] = useState(
+    () => initialResponderSnapshot?.assigned ?? false,
+  );
+  const [activeResponderName, setActiveResponderName] = useState<string | undefined>(
+    () => initialResponderSnapshot?.name ?? initialResponderSnapshot?.responder?.name ?? undefined,
+  );
+  const [activeResponderStatus, setActiveResponderStatus] = useState<string | undefined>();
 
   /*
    * The old page depended on useMockStore():
@@ -515,9 +706,21 @@ export default function RequesterHome() {
         return;
       }
 
-      setDataLoading(true);
+      const cacheKey = `requester-home:${user.id}`;
+      const cached = readFreshCache<RequesterHomeCache>(cacheKey);
+      if (cached) {
+        setRequests(cached.requests);
+        setUnread(cached.unread);
+        setDataLoading(false);
+      }
+
+      if (!hasInitialHomeCache && requests.length === 0) {
+        setDataLoading(true);
+      }
 
       try {
+        let nextRequests: HomeRequest[] = [];
+        let nextUnread = 0;
         /*
          * Requests are the important part of the home page. The middleware
          * already forces a requester to their own rows, so do not send a
@@ -541,17 +744,11 @@ export default function RequesterHome() {
           requestResponse.status === 401
         ) {
           await refresh();
-          setRequests([]);
+          nextRequests = [];
         } else if (
           requestResponse.ok
         ) {
-          setRequests(
-            extractRequests(
-              requestResult,
-            ).map(
-              normalizeRequest,
-            ),
-          );
+          nextRequests = extractRequests(requestResult).map(normalizeRequest);
         } else {
           /*
            * A request-list failure must not hold the entire landing page on a
@@ -562,7 +759,7 @@ export default function RequesterHome() {
             requestResponse.status,
           );
 
-          setRequests([]);
+          nextRequests = [];
         }
 
         /*
@@ -592,6 +789,12 @@ export default function RequesterHome() {
                 notificationResult,
               );
 
+            writeFreshCache(
+              `requester-notifications:${user.id}`,
+              notifications,
+              5 * 60_000,
+            );
+
             const unreadCount =
               notifications.filter(
                 (notification) => {
@@ -610,15 +813,25 @@ export default function RequesterHome() {
                 },
               ).length;
 
-            setUnread(
-              unreadCount,
-            );
+            nextUnread = unreadCount;
           } else {
-            setUnread(0);
+            nextUnread = 0;
           }
         } catch {
-          setUnread(0);
+          nextUnread = 0;
         }
+
+        setRequests(nextRequests);
+        setUnread(nextUnread);
+        const activeRequest = nextRequests.find((request) =>
+          ACTIVE_REQUEST_STATUSES.has(request.status),
+        );
+        writeFreshCache(
+          `requester-active-request:${user.id}`,
+          { id: activeRequest?.id ?? null },
+          activeRequest ? 5 * 60_000 : 30_000,
+        );
+        writeFreshCache(cacheKey, { requests: nextRequests, unread: nextUnread }, HOME_CACHE_TTL_MS);
       } catch (error) {
         console.warn(
           "Unable to load requester home data:",
@@ -631,13 +844,13 @@ export default function RequesterHome() {
          * Most important part of this fix:
          * even an API/network failure leaves the loading state.
          */
-        setRequests([]);
-        setUnread(0);
       } finally {
         setDataLoading(false);
       }
     }, [
       refresh,
+      hasInitialHomeCache,
+      requests.length,
       user?.id,
     ]);
 
@@ -654,11 +867,99 @@ export default function RequesterHome() {
     }
 
     void loadHomeData();
+
+    // Keep the requester view synchronized with responder status changes and
+    // assignment updates without requiring a manual page refresh.
+    const refreshTimer = window.setInterval(() => {
+      void loadHomeData();
+    }, 3_000);
+
+    return () => window.clearInterval(refreshTimer);
   }, [
     authLoading,
     user?.id,
     loadHomeData,
   ]);
+
+  const activeRequestForResponder = requests.find((request) =>
+    ACTIVE_REQUEST_STATUSES.has(request.status),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const requestId = activeRequestForResponder?.id;
+    if (!requestId) {
+      setActiveResponder(undefined);
+      setActiveResponderAssigned(false);
+      setActiveResponderName(undefined);
+      setActiveResponderStatus(undefined);
+      return;
+    }
+    const cachedResponder = readCached<{ assigned: boolean; name?: string | null; responder: Responder | null }>(`requester-responder:${requestId}`);
+    setActiveResponder(cachedResponder?.responder ?? undefined);
+    setActiveResponderAssigned(cachedResponder?.assigned ?? false);
+    setActiveResponderName(cachedResponder?.name ?? cachedResponder?.responder?.name ?? undefined);
+
+    const loadResponder = async () => {
+      try {
+        const response = await authenticatedFetch(`/api/requests/${encodeURIComponent(requestId)}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        const result = await readJson<RequestDetailResponse>(response);
+        const assignments = result?.data?.assignments ?? result?.assignments ?? [];
+        const assignment = assignments.at(-1);
+        const responderUserId = assignment?.responderUserId ?? assignment?.responder_user_id;
+        const responderName = assignment?.responderName ?? assignment?.responder_name ?? undefined;
+        setActiveResponderStatus(assignment?.status ?? undefined);
+        setActiveResponderAssigned(Boolean(responderUserId));
+        setActiveResponderName(responderName);
+        if (!responderUserId) {
+          writeFreshCache(`requester-responder:${requestId}`, { assigned: false, responder: null }, 5 * 60_000);
+        }
+        const latitude = Number(assignment?.responderLatitude);
+        const longitude = Number(assignment?.responderLongitude);
+        if (cancelled || !assignment || !responderUserId || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          if (responderUserId) writeFreshCache(`requester-responder:${requestId}`, { assigned: true, name: responderName ?? null, responder: null }, 5 * 60_000);
+          return;
+        }
+
+        const responderDetails: Responder = {
+          id: responderUserId,
+          userId: responderUserId,
+          name: assignment.responderName ?? assignment.responder_name ?? "Responder",
+          team: assignment.teamName ?? assignment.team_name ?? "Response team",
+          vehicle: assignment.vehicleCallSign ?? assignment.vehicle_call_sign ?? "Emergency vehicle",
+          phone: "",
+          organisationId: "",
+          availability: "Assigned",
+          location: { lat: latitude, lng: longitude },
+        };
+        setActiveResponder(responderDetails);
+        writeFreshCache(`requester-responder:${requestId}`, {
+          assigned: true,
+          name: responderName ?? null,
+          responder: responderDetails,
+        }, 5 * 60_000);
+      } catch {
+        if (!cancelled) {
+          setActiveResponder(undefined);
+          writeFreshCache(`requester-responder:${requestId}`, { assigned: false, name: null, responder: null }, 5 * 60_000);
+        }
+      }
+    };
+
+    void loadResponder();
+    const refreshTimer = window.setInterval(() => {
+      void loadResponder();
+    }, 3_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshTimer);
+    };
+  }, [activeRequestForResponder?.id]);
 
   /*
    * Only authentication/data bootstrap may show the skeleton.
@@ -680,12 +981,7 @@ export default function RequesterHome() {
     return <PageSkeleton map />;
   }
 
-  const active =
-    requests.find((request) =>
-      ACTIVE_REQUEST_STATUSES.has(
-        request.status,
-      ),
-    );
+  const active = activeRequestForResponder;
 
   /*
    * The current middleware request-list response does not guarantee that the
@@ -701,11 +997,18 @@ export default function RequesterHome() {
    */
   if (active) {
     return (
-      <div className="md:grid md:gap-5">
+      <div className="flex h-[calc(100dvh-4rem-5rem)] flex-col overflow-hidden bg-transparent pt-0 md:grid md:h-[calc(100dvh-4rem)] md:grid-rows-[auto_minmax(0,1fr)] md:gap-5 md:overflow-hidden md:px-8 md:pt-8">
+        <div className="mb-0 px-5 py-3 sm:px-6 md:hidden">
+          <PageHeading
+            title={`Hello, ${user.name.split(" ")[0]}`}
+            description="Your active request is shown below."
+            compact
+          />
+        </div>
+
         {/* Desktop heading only */}
         <div className="hidden md:block">
           <PageHeading
-            eyebrow="Requester"
             title={`Hello, ${
               user.name.split(" ")[0]
             }`}
@@ -742,34 +1045,61 @@ export default function RequesterHome() {
          */}
         <div
           className="
-            fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom))]
-            top-20 z-10 min-h-0
+            relative z-10 min-h-0 flex-1
 
-            md:static md:z-auto md:grid md:h-auto
+            md:static md:z-auto md:grid md:h-full md:min-h-0 md:flex-none
             md:grid-cols-[1.35fr_.65fr] md:gap-4
           "
         >
-          <div className="h-full min-h-0 overflow-hidden md:h-auto md:overflow-visible">
+          <div className="h-full min-h-0 overflow-hidden md:min-h-0 md:overflow-hidden">
             <LiveResponseMap
               request={active as any}
-              responder={responder}
+              responder={activeResponder ?? responder}
+              responderAssigned={activeResponderAssigned}
+              responderName={activeResponderName}
+              responderStatus={activeResponderStatus}
+              responderDistanceMetres={
+                activeResponder?.location && active.location.lat != null && active.location.lng != null
+                  ? distanceMetresBetween(
+                      activeResponder.location.lat,
+                      activeResponder.location.lng,
+                      active.location.lat,
+                      active.location.lng,
+                    )
+                  : null
+              }
               immersive
+              compactRequestDetails
+              mobileBottomOffset
               className="
                 h-full min-h-0 w-full rounded-none
 
-                md:h-[72dvh] md:min-h-[500px]
+                md:h-full md:min-h-0
                 md:rounded-[22px]
               "
               mobileAction={
-                <Link
-                  href={`/app/requester/track/${active.id}`}
-                  className="block"
-                >
-                  <Button className="w-full">
-                    Open tracking
-                    <ArrowRight className="h-4 w-4" />
+                <div className="flex gap-2">
+                  <Link
+                    href={`/app/requester/track/${active.id}`}
+                    className="min-w-0 flex-[7]"
+                  >
+                    <Button className="w-full">
+                      Open tracking
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                  <Button
+                    type="button"
+                    onClick={() => setAiOpen(true)}
+                    variant="primary"
+                    size="icon"
+                    className="w-full flex-[3] bg-[#1b8290] hover:bg-[#146c77]"
+                    aria-label="Ask LIVE AI"
+                    title="Ask LIVE AI"
+                  >
+                    <Sparkles className="h-5 w-5" />
                   </Button>
-                </Link>
+                </div>
               }
             />
           </div>
@@ -842,18 +1172,31 @@ export default function RequesterHome() {
               </div>
             </Panel>
 
-            <Link href="/app/requester/new">
-              <Button
-                variant="danger"
-                size="lg"
-                className="w-full"
-              >
-                <Siren className="h-5 w-5" />
-                Request additional help
-              </Button>
-            </Link>
+            <Button
+              type="button"
+              onClick={() => setAiOpen(true)}
+              variant="outline"
+              size="lg"
+              className="w-full"
+            >
+              <Sparkles className="h-5 w-5" />
+              Ask LIVE AI
+            </Button>
           </div>
         </div>
+
+      <AiAssistantSheet
+        open={aiOpen}
+        onOpenChange={setAiOpen}
+        emergency={{
+          id: active.id,
+          category: active.category,
+          severity: active.severity,
+          note: active.note,
+          status: active.status,
+          location: active.location,
+        }}
+      />
       </div>
     );
   }
@@ -861,36 +1204,16 @@ export default function RequesterHome() {
   return (
     <div className="app-page grid gap-5">
       <PageHeading
-        eyebrow="Requester"
-        title={`Hello, ${
-          user.name.split(" ")[0]
-        }`}
-        description="Request help quickly or review your previous activity."
+        title={`Hello, ${user.name.split(" ")[0]}`}
         action={
-          <Link href="/app/requester/notifications">
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label="Notifications"
-              className="relative"
-            >
-              <Bell className="h-5 w-5" />
-
-              {unread ? (
-                <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#d53f3d] px-1 text-[10px] text-white">
-                  {unread}
-                </span>
-              ) : null}
-            </Button>
-          </Link>
+          <span className="block pt-2.5 text-right text-sm leading-6 text-[#667b89]">
+            Request help quickly.
+          </span>
         }
       />
 
       {/* Emergency Action Card */}
-      <Panel
-        mobileCard={false}
-        className="-mx-5 border-x-0 p-6 md:mx-0 md:rounded-[22px] md:border-x bg-white text-slate-900 shadow-sm"
-      >
+      <Panel mobileCard={false} className="-mx-5 border-x-0 p-6 md:mx-0 md:border-x bg-white text-slate-900">
         <div className="flex flex-col items-center text-center space-y-5">
           <header className="space-y-1">
             <h2 className="text-xl font-bold text-slate-900">Immediate Emergency Assistance</h2>
@@ -900,14 +1223,14 @@ export default function RequesterHome() {
           </header>
 
           {/* Category Selector Toggles */}
-          <div className="grid grid-cols-2 gap-3 w-full max-w-xs">
+          <div className="grid w-full max-w-md grid-cols-3 gap-2 border-b border-[#dfe7ec]">
             <button
               type="button"
               onClick={() => setSelectedCategory("Medical")}
-              className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-xs border transition-all ${
+              className={`flex items-center justify-center gap-2 border-b-2 px-4 py-3 text-xs font-semibold transition-all ${
                 selectedCategory === "Medical"
-                  ? "bg-red-50 border-red-500 text-red-600 shadow-sm ring-1 ring-red-500"
-                  : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                  ? "border-red-500 text-red-600"
+                  : "border-transparent text-slate-600 hover:border-slate-300"
               }`}
             >
               <Ambulance className="h-4 w-4" />
@@ -916,11 +1239,24 @@ export default function RequesterHome() {
 
             <button
               type="button"
+              onClick={() => setSelectedCategory("Firefighting")}
+              className={`flex items-center justify-center gap-2 border-b-2 px-2 py-3 text-xs font-semibold transition-all ${
+                selectedCategory === "Firefighting"
+                  ? "border-orange-500 text-orange-600"
+                  : "border-transparent text-slate-600 hover:border-slate-300"
+              }`}
+            >
+              <Siren className="h-4 w-4" />
+              Fire
+            </button>
+
+            <button
+              type="button"
               onClick={() => setSelectedCategory("Police")}
-              className={`flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-xs border transition-all ${
+              className={`flex items-center justify-center gap-2 border-b-2 px-4 py-3 text-xs font-semibold transition-all ${
                 selectedCategory === "Police"
-                  ? "bg-blue-50 border-blue-500 text-blue-600 shadow-sm ring-1 ring-blue-500"
-                  : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                  ? "border-blue-500 text-blue-600"
+                  : "border-transparent text-slate-600 hover:border-slate-300"
               }`}
             >
               <ShieldAlert className="h-4 w-4" />
@@ -936,10 +1272,11 @@ export default function RequesterHome() {
                 query: { category: selectedCategory },
               }}
               className="block w-full"
+              onClick={() => announceUrgentRequest(selectedCategory)}
             >
               <button
                 type="button"
-                className="w-full py-4 px-6 rounded-2xl bg-[#d53f3d] hover:bg-[#c23533] active:scale-[0.98] text-white font-black text-base shadow-lg shadow-red-500/25 flex items-center justify-center gap-3 transition-all border border-red-400"
+                className="flex w-full items-center justify-center gap-3 bg-[#d53f3d] px-6 py-4 text-base font-bold text-white transition-all hover:bg-[#c23533] active:scale-[0.98]"
               >
                 <Siren className="h-6 w-6 animate-pulse" />
                 <span>REQUEST {selectedCategory.toUpperCase()} HELP</span>
@@ -948,23 +1285,22 @@ export default function RequesterHome() {
           </div>
 
           {/* GPS Location Status Indicator */}
-          <div className="flex items-center justify-center gap-2 text-xs text-slate-500 bg-slate-50 py-2 px-4 rounded-full border border-slate-200">
+          <div className="flex items-center justify-center gap-2 border-t border-[#dfe7ec] px-4 py-2 text-xs text-slate-500">
             <MapPin className="h-3.5 w-3.5 text-[#0f5b67]" />
             <span>GPS location will be automatically attached</span>
           </div>
         </div>
       </Panel>
 
-      <div className="-mx-5 divide-y divide-[#dfe7ec] border-y border-[#dfe7ec] bg-white md:mx-0 md:grid md:grid-cols-2 md:gap-3 md:divide-y-0 md:border-0 md:bg-transparent">
+      <div className="-mx-5 divide-y divide-[#dfe7ec] bg-transparent md:mx-0 md:grid md:grid-cols-3 md:gap-3 md:divide-y-0 md:border-0 md:bg-transparent">
         <Link
           href="/app/requester/history"
           className="
             flex items-center gap-4 px-5 py-4
             transition active:bg-[#eef4f6]
 
-            md:rounded-2xl md:border
-            md:border-[#dfe7ec] md:bg-white md:p-4
-            md:hover:border-[#aabcc7]
+            md:border-y md:border-[#dfe7ec] md:bg-transparent md:p-4
+            md:hover:bg-[#f8fafb]
           "
         >
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f5b67]">
@@ -982,33 +1318,26 @@ export default function RequesterHome() {
           </span>
         </Link>
 
-        <Link
-          href="/app/requester/profile"
-          className="
-            flex items-center gap-4 px-5 py-4
-            transition active:bg-[#eef4f6]
-
-            md:rounded-2xl md:border
-            md:border-[#dfe7ec] md:bg-white md:p-4
-            md:hover:border-[#aabcc7]
-          "
+        <button
+          type="button"
+          onClick={() => setHelpOpen(true)}
+          className="flex items-center gap-4 px-5 py-4 transition active:bg-[#eef4f6] md:p-4 md:hover:bg-[#f8fafb]"
         >
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#edf2f5] text-[#536879]">
-            <MapPin className="h-5 w-5" />
+            <CircleHelp className="h-5 w-5" />
           </span>
 
           <span>
-            <span className="block font-semibold">
-              Emergency details
-            </span>
-
+            <span className="block font-semibold">Help &amp; Safety</span>
             <span className="mt-1 block text-xs text-[#71828d]">
-              Check callback and contact
-              information
+              Safety and how LIVE works
             </span>
           </span>
-        </Link>
+        </button>
+
       </div>
+
+      <HelpAndSafetySheet open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }

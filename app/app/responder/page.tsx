@@ -9,7 +9,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 import { requestStatusTone } from "@/lib/utils";
 
 /* -------------------------------------------------------------------------- */
@@ -34,6 +35,7 @@ type Mission = {
     id: string;
     request_id: string;
     responder_user_id: string;
+    responderUserId?: string;
     organisation_id: string;
     status:
       | "assigned"
@@ -61,6 +63,8 @@ type Mission = {
   responder: {
     user_id: string;
     availability: string;
+    current_latitude: number | null;
+    current_longitude: number | null;
   } | null;
 };
 
@@ -68,12 +72,14 @@ type MissionResponse = {
   ok?: boolean;
   data?: {
     mission?: Mission | null;
+    queuedRequests?: any[];
     message?: string;
     assignment?: Mission["assignment"];
     requestStatus?: string;
     request_status?: string;
   };
   mission?: Mission | null;
+  queuedRequests?: any[];
   assignment?: Mission["assignment"];
   message?: string;
   error?:
@@ -84,6 +90,34 @@ type MissionResponse = {
         details?: Record<string, string[]>;
       };
 };
+
+type MissionCache = {
+  mission: Mission | null;
+  queuedRequests: any[];
+};
+
+const ARRIVAL_THRESHOLD_METRES = 100;
+
+function distanceMetresBetween(
+  firstLatitude: number,
+  firstLongitude: number,
+  secondLatitude: number,
+  secondLongitude: number,
+) {
+  const earthRadiusMetres = 6_371_000;
+  const toRadians = (value: number) => value * (Math.PI / 180);
+  const latitudeDelta = toRadians(secondLatitude - firstLatitude);
+  const longitudeDelta = toRadians(secondLongitude - firstLongitude);
+  const firstLatitudeRadians = toRadians(firstLatitude);
+  const secondLatitudeRadians = toRadians(secondLatitude);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitudeRadians) *
+      Math.cos(secondLatitudeRadians) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 2 * earthRadiusMetres * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 function getApiMessage(
   result: MissionResponse | null,
@@ -184,10 +218,19 @@ export default function ResponderMission() {
     refresh,
   } = useAuth();
 
-  const [mission, setMission] =
-    useState<Mission | null>(null);
+  const missionCacheKey = user?.id ? `responder-mission:${user.id}` : "";
+  const initialMissionCache = user?.id
+    ? readCached<MissionCache>(missionCacheKey)
+    : null;
 
-  const [loading, setLoading] = useState(true);
+  const [mission, setMission] =
+    useState<Mission | null>(() => initialMissionCache?.mission ?? null);
+
+  const [queuedRequests, setQueuedRequests] = useState<any[]>(
+    () => initialMissionCache?.queuedRequests ?? [],
+  );
+
+  const [loading, setLoading] = useState(!initialMissionCache);
 
   const [updating, setUpdating] = useState(false);
 
@@ -195,11 +238,14 @@ export default function ResponderMission() {
     null,
   );
 
+  const [autoArriving, setAutoArriving] = useState(false);
+  const autoArrivalScheduled = useRef(false);
+
   /* ------------------------------------------------------------------------ */
   /* Load current responder mission                                           */
   /* ------------------------------------------------------------------------ */
 
-  const loadMission = useCallback(async () => {
+  const loadMission = useCallback(async (showLoading = true) => {
     if (!user?.id) {
       setMission(null);
       setLoading(false);
@@ -207,7 +253,7 @@ export default function ResponderMission() {
     }
 
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       setError(null);
 
       const response =
@@ -239,7 +285,6 @@ export default function ResponderMission() {
           ),
         );
 
-        setMission(null);
         return;
       }
 
@@ -255,9 +300,22 @@ export default function ResponderMission() {
         result?.mission ??
         null;
 
+      const nextQueuedRequests =
+        result?.data?.queuedRequests ??
+        result?.queuedRequests ??
+        [];
+
       setMission(
         nextMission,
       );
+      setQueuedRequests(nextQueuedRequests);
+      if (missionCacheKey) {
+        writeFreshCache(
+          missionCacheKey,
+          { mission: nextMission, queuedRequests: nextQueuedRequests },
+          nextMission ? 5 * 60_000 : 30_000,
+        );
+      }
     } catch (err) {
       console.warn(
         "Responder mission loading error:",
@@ -270,11 +328,13 @@ export default function ResponderMission() {
         "Could not connect to the responder service.",
       );
 
-      setMission(null);
+      // Keep the last server response visible while offline. The next
+      // successful poll replaces it with the current database state.
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [
+    missionCacheKey,
     refresh,
     user?.id,
   ]);
@@ -285,13 +345,28 @@ export default function ResponderMission() {
 
   useEffect(() => {
     if (!authLoading && user?.id) {
-      void loadMission();
+      const cached = readCached<MissionCache>(`responder-mission:${user.id}`);
+      if (cached) {
+        setMission(cached.mission);
+        setQueuedRequests(cached.queuedRequests);
+        setLoading(false);
+      }
+
+      void loadMission(!cached);
+
+      const refreshTimer = window.setInterval(() => {
+        void loadMission(false);
+      }, 3_000);
+
+      return () => window.clearInterval(refreshTimer);
     }
 
     if (!authLoading && !user) {
       setMission(null);
       setLoading(false);
     }
+
+    return undefined;
   }, [
     authLoading,
     user?.id,
@@ -378,6 +453,13 @@ export default function ResponderMission() {
         return;
       }
 
+      /* Acknowledging an assignment immediately starts the route. */
+      if (status === "acknowledged") {
+        await loadMission();
+        await updateMissionStatus("en_route");
+        return;
+      }
+
       /* ------------------------------------------------------------------ */
       /* IMPORTANT: Completed missions must disappear from the active page. */
       /* ------------------------------------------------------------------ */
@@ -415,11 +497,9 @@ export default function ResponderMission() {
       await loadMission();
 
       alert(
-        status === "acknowledged"
-          ? "Assignment acknowledged."
-          : status === "en_route"
-            ? "Route started."
-            : "Arrival recorded.",
+        status === "en_route"
+          ? "Route started."
+          : "Arrival recorded.",
       );
     } catch (err) {
       console.warn(
@@ -434,8 +514,62 @@ export default function ResponderMission() {
       );
     } finally {
       setUpdating(false);
+      setAutoArriving(false);
     }
   }
+
+  useEffect(() => {
+    const activeMission = mission;
+
+    if (!activeMission || activeMission.assignment.status !== "en_route") {
+      autoArrivalScheduled.current = false;
+      setAutoArriving(false);
+      return;
+    }
+
+    const requestLatitude = Number(activeMission.location?.latitude);
+    const requestLongitude = Number(activeMission.location?.longitude);
+    const responderLatitude = Number(activeMission.responder?.current_latitude);
+    const responderLongitude = Number(activeMission.responder?.current_longitude);
+
+    if (
+      !Number.isFinite(requestLatitude) ||
+      !Number.isFinite(requestLongitude) ||
+      !Number.isFinite(responderLatitude) ||
+      !Number.isFinite(responderLongitude)
+    ) {
+      return;
+    }
+
+    const distanceMetres = distanceMetresBetween(
+      responderLatitude,
+      responderLongitude,
+      requestLatitude,
+      requestLongitude,
+    );
+
+    if (
+      distanceMetres > ARRIVAL_THRESHOLD_METRES ||
+      autoArrivalScheduled.current
+    ) {
+      return;
+    }
+
+    autoArrivalScheduled.current = true;
+    setAutoArriving(true);
+    const timer = window.setTimeout(() => {
+      void updateMissionStatus("arrived");
+    }, 3_000);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    mission?.assignment.id,
+    mission?.assignment.status,
+    mission?.location?.latitude,
+    mission?.location?.longitude,
+    mission?.responder?.current_latitude,
+    mission?.responder?.current_longitude,
+  ]);
 
   /* ------------------------------------------------------------------------ */
   /* Loading                                                                   */
@@ -443,7 +577,7 @@ export default function ResponderMission() {
 
   if (
     authLoading ||
-    loading ||
+    (loading && !initialMissionCache) ||
     !user
   ) {
     return <PageSkeleton map />;
@@ -453,7 +587,7 @@ export default function ResponderMission() {
   /* Error                                                                     */
   /* ------------------------------------------------------------------------ */
 
-  if (error) {
+  if (error && !mission && queuedRequests.length === 0) {
     return (
       <div className="app-page">
         <Panel className="p-8">
@@ -485,44 +619,19 @@ export default function ResponderMission() {
 
   if (!mission) {
     return (
-      <div className="app-page grid gap-5">
-        <PageHeading
-          eyebrow="Responder"
-          title="Ready for assignment"
-          description="No active emergency request is currently assigned to you."
-          action={
-            <Badge tone="success">
-              Available
-            </Badge>
+      <div className="w-full pb-24">
+        <LiveResponseMap
+          requests={queuedRequests}
+          showAll={queuedRequests.length > 0}
+          hideMapStatus
+          responderMode
+          emptyMapMessage={
+            queuedRequests.length > 0
+              ? "Emergency requests available - go online to be assigned"
+              : "No queued emergency requests"
           }
+          className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[calc(100dvh-4rem)] md:min-h-[560px] md:rounded-none"
         />
-
-        <Panel>
-          <EmptyState
-            icon={
-              <Navigation className="h-7 w-7" />
-            }
-            title="No active mission"
-            description="When a dispatcher assigns an emergency request to you, it will appear here automatically."
-            action={
-              <div className="flex flex-wrap justify-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => void loadMission()}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Refresh
-                </Button>
-
-                <Link href="/app/responder/history">
-                  <Button variant="outline">
-                    View assignment history
-                  </Button>
-                </Link>
-              </div>
-            }
-          />
-        </Panel>
       </div>
     );
   }
@@ -544,6 +653,27 @@ export default function ResponderMission() {
     request?.current_status ||
     currentStatus ||
     "assigned";
+
+  const requestLatitude = Number(location?.latitude);
+  const requestLongitude = Number(location?.longitude);
+  const responderLatitude = Number(mission.responder?.current_latitude);
+  const responderLongitude = Number(mission.responder?.current_longitude);
+  const distanceToSceneMetres =
+    Number.isFinite(requestLatitude) &&
+    Number.isFinite(requestLongitude) &&
+    Number.isFinite(responderLatitude) &&
+    Number.isFinite(responderLongitude)
+      ? distanceMetresBetween(
+          responderLatitude,
+          responderLongitude,
+          requestLatitude,
+          requestLongitude,
+        )
+      : null;
+  const arrivedReady =
+    currentStatus === "en_route" &&
+    distanceToSceneMetres !== null &&
+    distanceToSceneMetres <= ARRIVAL_THRESHOLD_METRES;
 
   /* ------------------------------------------------------------------------ */
   /* Action button                                                             */
@@ -608,6 +738,7 @@ export default function ResponderMission() {
           size="lg"
           variant="warning"
           className="w-full"
+          disabled={!arrivedReady || autoArriving}
           onClick={() =>
             void updateMissionStatus(
               "arrived",
@@ -615,7 +746,11 @@ export default function ResponderMission() {
           }
         >
           <MapPin className="h-5 w-5" />
-          Mark arrived
+          {autoArriving
+            ? "Marking arrived..."
+            : arrivedReady
+              ? "Mark arrived"
+              : `Arrived within ${ARRIVAL_THRESHOLD_METRES} m`}
         </Button>
       );
     }
@@ -658,13 +793,37 @@ export default function ResponderMission() {
   const locationLongitude =
     location?.longitude ?? 0;
 
+  const mapRequest = {
+    ...request,
+    location: {
+      address: locationAddress,
+      lat: locationLatitude,
+      lng: locationLongitude,
+      latitude: locationLatitude,
+      longitude: locationLongitude,
+    },
+  };
+
+  const responderLocation =
+    mission.responder?.current_latitude != null &&
+    mission.responder?.current_longitude != null
+      ? {
+          lat: Number(mission.responder.current_latitude),
+          lng: Number(mission.responder.current_longitude),
+        }
+      : undefined;
+
+  const mapResponder = responderLocation
+    ? { location: responderLocation, name: "You" }
+    : undefined;
+
   /* ------------------------------------------------------------------------ */
   /* Page                                                                      */
   /* ------------------------------------------------------------------------ */
 
   return (
-    <div className="app-page grid gap-5">
-      <PageHeading
+    <div className="w-full pb-24 md:mx-auto md:max-w-[1480px] md:px-8 md:py-8">
+      {false && <PageHeading
         eyebrow="Responder"
         title="Active mission"
         description={`${request?.reference_code || request?.id || "Emergency"} · ${
@@ -680,7 +839,7 @@ export default function ResponderMission() {
             {requestStatus}
           </Badge>
         }
-      />
+      />}
 
       <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
         {/* ---------------------------------------------------------------- */}
@@ -688,17 +847,16 @@ export default function ResponderMission() {
         {/* ---------------------------------------------------------------- */}
 
         <LiveResponseMap
-          request={{
-            ...request,
-            location: {
-              address: locationAddress,
-              lat: locationLatitude,
-              lng: locationLongitude,
-              latitude: locationLatitude,
-              longitude: locationLongitude,
-            },
-          }}
+          request={mapRequest}
+          requests={[]}
+          showAll={false}
+          responder={mapResponder}
+          responderAssigned={Boolean(assignment?.responder_user_id || assignment?.responderUserId)}
+          responderMode
+          requesterName={request?.requester_name || request?.requesterName || "Requester"}
           immersive
+          hideMapStatus
+          className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
           mobileAction={action()}
         />
 
@@ -732,7 +890,6 @@ export default function ResponderMission() {
                   <p className="font-semibold">
                     {request?.requester_name ||
                       request?.requesterName ||
-                      request?.requester_id ||
                       "Unknown requester"}
                   </p>
 

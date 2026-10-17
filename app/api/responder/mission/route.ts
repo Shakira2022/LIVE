@@ -20,6 +20,29 @@ const ALLOWED_STATUS_TRANSITIONS = {
   arrived: "completed",
 } as const;
 
+const ARRIVAL_THRESHOLD_METRES = 100;
+
+function distanceMetresBetween(
+  firstLatitude: number,
+  firstLongitude: number,
+  secondLatitude: number,
+  secondLongitude: number,
+) {
+  const earthRadiusMetres = 6_371_000;
+  const toRadians = (value: number) => value * (Math.PI / 180);
+  const latitudeDelta = toRadians(secondLatitude - firstLatitude);
+  const longitudeDelta = toRadians(secondLongitude - firstLongitude);
+  const firstLatitudeRadians = toRadians(firstLatitude);
+  const secondLatitudeRadians = toRadians(secondLatitude);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitudeRadians) *
+      Math.cos(secondLatitudeRadians) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return 2 * earthRadiusMetres * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 const updateMissionSchema = z.object({
   assignment_id: z.string().min(1, "assignment_id is required."),
   status: z.enum([
@@ -84,8 +107,64 @@ export const GET = createHandler(
     }
 
     if (!assignment) {
+      let queuedRequests: unknown[] = [];
+
+      {
+        const { data: queued, error: queuedError } = await db()
+          .from("emergency_requests")
+          .select("*")
+          .in("current_status", ["submitted", "received"])
+          .eq("is_active", true)
+          .order("submitted_at", { ascending: true })
+          .limit(20);
+
+        if (queuedError) {
+          throw ApiError.internal(
+            "Unable to load queued responder requests.",
+            queuedError.message,
+          );
+        }
+
+        const requestIds = (queued ?? []).map((row) => row.id);
+        const { data: locations, error: locationsError } = requestIds.length
+          ? await db()
+              .from("request_locations")
+              .select("request_id, latitude, longitude, address_text, landmark, accuracy_meters, captured_at")
+              .in("request_id", requestIds)
+          : { data: [], error: null };
+
+        if (locationsError) {
+          throw ApiError.internal(
+            "Unable to load queued request locations.",
+            locationsError.message,
+          );
+        }
+
+        const locationByRequest = new Map(
+          (locations ?? []).map((location) => [location.request_id, location]),
+        );
+
+        queuedRequests = (queued ?? []).map((request) => {
+          const location = locationByRequest.get(request.id);
+          return {
+            ...request,
+            location: location
+              ? {
+                  address: location.address_text ?? location.landmark ?? "Request location",
+                  lat: Number(location.latitude),
+                  lng: Number(location.longitude),
+                  accuracy: location.accuracy_meters,
+                  capturedAt: location.captured_at,
+                  method: "Map pin",
+                }
+              : null,
+          };
+        });
+      }
+
       return {
         mission: null,
+        queuedRequests,
       };
     }
 
@@ -118,6 +197,7 @@ export const GET = createHandler(
     const [
       locationResult,
       historyResult,
+      requesterResult,
       responderResult,
     ] = await Promise.all([
       db()
@@ -141,9 +221,15 @@ export const GET = createHandler(
         }),
 
       db()
+        .from("users")
+        .select("id, first_name, last_name, display_name, phone")
+        .eq("id", emergencyRequest.requester_id)
+        .maybeSingle(),
+
+      db()
         .from("responder_profiles")
         .select(
-          "user_id, availability",
+          "user_id, availability, current_latitude, current_longitude",
         )
         .eq(
           "user_id",
@@ -186,7 +272,16 @@ export const GET = createHandler(
       mission: {
         assignment,
         request:
-          emergencyRequest,
+          {
+            ...emergencyRequest,
+            requester_name:
+              requesterResult.data?.display_name ||
+              [requesterResult.data?.first_name, requesterResult.data?.last_name]
+                .filter(Boolean)
+                .join(" ") ||
+              "Requester",
+            requester_phone: requesterResult.data?.phone ?? null,
+          },
         location:
           locationResult.data ??
           null,
@@ -285,6 +380,59 @@ export const PATCH = createHandler(
         "CONFLICT",
         `Invalid status transition. Current status is "${assignment.status}" and the next allowed status is "${expectedNextStatus ?? "none"}".`,
       );
+    }
+
+    if (status === "arrived") {
+      const [locationResult, responderResult] = await Promise.all([
+        db()
+          .from("request_locations")
+          .select("latitude, longitude")
+          .eq("request_id", assignment.request_id)
+          .maybeSingle(),
+        db()
+          .from("responder_profiles")
+          .select("current_latitude, current_longitude")
+          .eq("user_id", responderUserId)
+          .maybeSingle(),
+      ]);
+
+      if (locationResult.error || responderResult.error) {
+        throw ApiError.internal(
+          "Unable to verify responder proximity.",
+          locationResult.error?.message || responderResult.error?.message,
+        );
+      }
+
+      const requestLatitude = Number(locationResult.data?.latitude);
+      const requestLongitude = Number(locationResult.data?.longitude);
+      const responderLatitude = Number(responderResult.data?.current_latitude);
+      const responderLongitude = Number(responderResult.data?.current_longitude);
+
+      if (
+        !Number.isFinite(requestLatitude) ||
+        !Number.isFinite(requestLongitude) ||
+        !Number.isFinite(responderLatitude) ||
+        !Number.isFinite(responderLongitude)
+      ) {
+        throw new ApiError(
+          "CONFLICT",
+          "Update your current location before marking the mission arrived.",
+        );
+      }
+
+      const distanceMetres = distanceMetresBetween(
+        responderLatitude,
+        responderLongitude,
+        requestLatitude,
+        requestLongitude,
+      );
+
+      if (distanceMetres > ARRIVAL_THRESHOLD_METRES) {
+        throw new ApiError(
+          "CONFLICT",
+          `You are ${Math.round(distanceMetres)} m from the scene. Arrived becomes available within ${ARRIVAL_THRESHOLD_METRES} m.`,
+        );
+      }
     }
 
     const now =

@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+
 :root {
   color-scheme: light;
   --canvas: 245 247 249;
@@ -20,6 +21,33 @@
   --navy: 15 38 59;
 }
 
+/* ---- Live map (Leaflet) ---------------------------------------------- */
+.live-map .leaflet-container { font-family: inherit; background: #e9eff3; }
+.live-map .leaflet-top.leaflet-left { top: 3.25rem; }
+.live-map .leaflet-control-attribution { margin: 0 0 0 .75rem !important; border-radius: 6px; background: rgba(255,255,255,.8) !important; font-size: 9px; line-height: 1.5; padding: 0 6px; }
+.live-map .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 10px 25px rgba(16,43,63,.18); }
+.live-map .leaflet-popup-content { margin: 10px 14px; }
+.live-map .live-map-callout { width: 12rem; white-space: normal; border: 0; border-left: 2px solid #d53f3d; border-radius: 0; background: rgba(255,255,255,.95); padding: .6rem .75rem; box-shadow: 0 10px 25px rgba(16,43,63,.15); }
+.live-map .live-map-callout::before { display: none; }
+.live-map .live-map-marker-label {
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 4px 12px rgba(16,43,63,.16);
+  color: #102b3f;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+.live-map .live-map-marker-label::before { display: none; }
+.live-map .live-map-driver-label { background: rgba(15,104,114,.92); color: #fff; }
+@keyframes map-pin-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.live-map .map-pin-bounce { animation: map-pin-bounce 1.8s ease-in-out infinite; transform-origin: 50% 100%; }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; background: rgb(var(--canvas)); }
 body {
@@ -36,6 +64,19 @@ body {
 button, input, textarea, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 ::selection { background: rgba(15, 104, 114, .18); }
+
+@keyframes page-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.page-transition {
+  animation: page-enter .28s ease-out both;
+}
+
+@media (max-width: 767px) {
+  .page-transition { animation-duration: .18s; }
+}
 
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
@@ -89,4 +130,6 @@ button, a { -webkit-tap-highlight-color: transparent; }
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
+
+  .page-transition { animation: none !important; }
 }

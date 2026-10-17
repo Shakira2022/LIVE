@@ -132,25 +132,25 @@ export default function Register() {
   }
 
   return (
-    <main className="grid min-h-dvh place-items-center px-4 pb-10 pt-24">
-      <div className="w-full max-w-lg">
+    <div className="min-h-dvh bg-[#f6f8fb]">
+      <PublicHeader />
+      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+      <div className="w-full max-w-2xl">
         <div className="mb-6 text-center">
           <h1 className="text-3xl font-bold tracking-[-0.025em]">
             Create a requester account
           </h1>
 
           <p className="mt-2 text-sm text-[#667b89]">
-            Your phone and emergency-contact
-            details will be used automatically when
-            you request help.
+            Your callback and emergency-contact details are ready when help is requested.
           </p>
         </div>
 
         <form
           onSubmit={submit}
-          className="grid gap-4 p-5 sm:p-7"
+          className="grid gap-5 border-y border-[#dce5ea] py-5 sm:grid-cols-2 sm:py-6"
         >
-          <label>
+          <label className="sm:col-span-2">
             <FieldLabel>
               Full name
             </FieldLabel>
@@ -164,7 +164,7 @@ export default function Register() {
             />
           </label>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2">
             <label>
               <FieldLabel>
                 Email
@@ -195,7 +195,7 @@ export default function Register() {
             </label>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2">
             <label>
               <FieldLabel>
                 Emergency contact name
@@ -229,7 +229,7 @@ export default function Register() {
             </label>
           </div>
 
-          <label>
+          <label className="sm:col-span-2">
             <FieldLabel>
               Password
             </FieldLabel>
@@ -246,7 +246,7 @@ export default function Register() {
           </label>
 
           {error ? (
-            <p className="rounded-xl bg-[#ffefee] p-3 text-sm font-medium text-[#a93331]">
+            <p className="border-l-2 border-[#d53f3d] bg-[#ffefee] px-3 py-2 text-sm font-medium text-[#a93331] sm:col-span-2">
               {error}
             </p>
           ) : null}
@@ -254,7 +254,7 @@ export default function Register() {
           <Button
             type="submit"
             size="lg"
-            className="w-full"
+            className="w-full sm:col-span-2"
             disabled={busy}
           >
             {busy
@@ -274,5 +274,6 @@ export default function Register() {
         </p>
       </div>
     </main>
+    </div>
   );
 }

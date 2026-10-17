@@ -46,6 +46,8 @@ import { Panel } from "@/components/ui/panel";
 import { PageSkeleton } from "@/components/ui/skeleton";
 
 import { getAddressFromCoordinates } from "@/lib/location/reverseGeocode";
+import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
+import { readRequesterPreferences } from "@/lib/requester-preferences";
 
 import type {
   Coordinates,
@@ -68,8 +70,13 @@ type SuggestionItem = {
   class?: string;
 };
 
+type ActiveRequestCache = {
+  id: string | null;
+};
+
 const LOCATION_ATTEMPTS = 3;
-const ATTEMPT_SECONDS = 5;
+const ATTEMPT_SECONDS = 15;
+const RETRY_DELAY_SECONDS = 5;
 const CONFIRM_REVIEW_SECONDS = 5;
 const MAX_NOTE_LENGTH = 200;
 
@@ -165,6 +172,14 @@ const POLICE_CATEGORIES = [
   "Other Police Emergency",
 ];
 
+const FIREFIGHTING_CATEGORIES = [
+  "Fire / smoke",
+  "Building fire",
+  "Vehicle fire",
+  "Rescue from fire",
+  "Other Fire Emergency",
+];
+
 type ApiEmergencyCategory =
   | "medical"
   | "accident"
@@ -217,29 +232,307 @@ function wait(milliseconds: number) {
   );
 }
 
-function requestBrowserLocation() {
-  return new Promise<GeolocationPosition>(
-    (resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(
-          new Error(
-            "Geolocation is not supported by this browser."
-          )
-        );
-        return;
-      }
+type ActiveQuestion = {
+  question: string;
+  options: string[];
+};
 
-      navigator.geolocation.getCurrentPosition(
-        resolve,
-        reject,
-        {
-          enableHighAccuracy: true,
-          timeout: ATTEMPT_SECONDS * 1000,
-          maximumAge: 0,
-        }
-      );
+function activeQuestionsFor(category: string | null): ActiveQuestion[] {
+  if (category === "Police") {
+    return [
+      {
+        question: "What kind of situation is this?",
+        options: [
+          "Crime in progress",
+          "Suspicious activity",
+          "Personal safety",
+          "Other",
+        ],
+      },
+      {
+        question: "Is it happening right now?",
+        options: [
+          "Yes, right now",
+          "Just happened",
+          "Not currently",
+          "I am not sure",
+        ],
+      },
+    ];
+  }
+
+  if (category === "Firefighting") {
+    return [
+      {
+        question: "What kind of fire emergency is this?",
+        options: [
+          "Building or house fire",
+          "Vehicle fire",
+          "Smoke or suspected fire",
+          "Other",
+        ],
+      },
+      {
+        question: "Is anyone in immediate danger?",
+        options: [
+          "Yes",
+          "No",
+          "I am not sure",
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      question: "What kind of medical emergency is this?",
+      options: [
+        "Vehicle accident",
+        "Injury or trauma",
+        "Breathing problem",
+        "Other",
+      ],
+    },
+    {
+      question: "How many people are involved?",
+      options: [
+        "One person",
+        "Two people",
+        "Three or more",
+        "I am not sure",
+      ],
+    },
+  ];
+}
+
+function ActiveRequestQuestions({
+  category,
+  requestId,
+}: {
+  category: string | null;
+  requestId: string | null;
+}) {
+  const questions = activeQuestionsFor(category);
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [additionalHelp, setAdditionalHelp] = useState<boolean | null>(null);
+  const [complete, setComplete] = useState(false);
+
+  function finish(nextAnswers: string[], extra?: string) {
+    setComplete(true);
+    writeFreshCache(
+      `requester-active-details:${requestId ?? "current"}`,
+      {
+        answers: nextAnswers,
+        additionalHelp: extra ?? null,
+      },
+      5 * 60_000,
+    );
+  }
+
+  function chooseAnswer(answer: string) {
+    const nextAnswers = [
+      ...answers.slice(0, questionIndex),
+      answer,
+    ];
+    setAnswers(nextAnswers);
+
+    if (questionIndex >= questions.length - 1) {
+      finish(nextAnswers);
+      return;
     }
+
+    setQuestionIndex((current) => current + 1);
+  }
+
+  if (complete) {
+    return (
+      <div className="mt-6 px-1 text-center">
+        <CheckCircle2 className="mx-auto h-6 w-6 text-[#0f6872]" />
+        <p className="mt-2 text-sm font-semibold text-[#102b3f]">
+          Thanks. These details have been recorded on this device.
+        </p>
+      </div>
+    );
+  }
+
+  if (additionalHelp === null) {
+    return (
+      <div className="mt-6 px-1">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
+          Optional additional help
+        </p>
+        <h3 className="mt-4 font-semibold text-[#102b3f]">
+          Do you need another type of help with this active request?
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-[#71838f]">
+          Choose an option below. This will not create a second emergency request.
+        </p>
+
+        <div className="mt-3 divide-y divide-[#dfe7ec]">
+          {[
+            { label: "Yes, I need additional help", value: true },
+            { label: "No, continue with this request", value: false },
+          ].map((option, optionIndex) => (
+            <button
+              key={option.label}
+              type="button"
+              onClick={() => setAdditionalHelp(option.value)}
+              className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
+                {optionIndex + 1}
+              </span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (additionalHelp) {
+    const additionalHelpOptions = [
+      "Medical assistance",
+      "Police assistance",
+      "Firefighting assistance",
+      "Rescue assistance",
+    ];
+
+    return (
+      <div className="mt-6 px-1">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
+          Additional help type
+        </p>
+        <h3 className="mt-4 font-semibold text-[#102b3f]">
+          What type of additional help do you need?
+        </h3>
+
+        <div className="mt-3 divide-y divide-[#dfe7ec]">
+          {additionalHelpOptions.map((option, optionIndex) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => finish(answers, option)}
+              className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
+                {optionIndex + 1}
+              </span>
+              <span>{option}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const currentQuestion = questions[questionIndex];
+
+  return (
+    <div className="mt-6 px-1">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
+          Optional details
+        </p>
+        <span className="text-xs font-semibold text-[#758793]">
+          {questionIndex + 1} of {questions.length}
+        </span>
+      </div>
+
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={questionIndex}
+          initial={{ opacity: 0, x: 12 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -12 }}
+          transition={{ duration: 0.2 }}
+          className="mt-4"
+        >
+          <h3 className="font-semibold text-[#102b3f]">
+            {currentQuestion.question}
+          </h3>
+
+          <div className="mt-3 divide-y divide-[#dfe7ec]">
+            {currentQuestion.options.map((option, optionIndex) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => chooseAnswer(option)}
+                className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
+              >
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
+                  {optionIndex + 1}
+                </span>
+                <span>{option}</span>
+              </button>
+            ))}
+          </div>
+        </motion.div>
+      </AnimatePresence>
+
+      <button
+        type="button"
+        onClick={() => setComplete(true)}
+        className="mx-auto mt-3 block text-center text-xs font-semibold text-[#71838f] underline underline-offset-2"
+      >
+        Skip these questions
+      </button>
+    </div>
   );
+}
+
+function requestBrowserLocation() {
+  return new Promise<GeolocationPosition>((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("Geolocation is not supported by this browser."));
+      return;
+    }
+
+    const localHost = ["localhost", "127.0.0.1", "[::1]"].includes(
+      window.location.hostname,
+    );
+
+    if (!window.isSecureContext && !localHost) {
+      reject(new Error("Location access requires an HTTPS connection."));
+      return;
+    }
+
+    let settled = false;
+    let errors = 0;
+    let lastError: GeolocationPositionError | null = null;
+
+    const succeed = (position: GeolocationPosition) => {
+      if (settled) return;
+      settled = true;
+      resolve(position);
+    };
+
+    const fail = (error: GeolocationPositionError) => {
+      lastError = error;
+      errors += 1;
+      if (!settled && errors === 2) {
+        settled = true;
+        reject(lastError);
+      }
+    };
+
+    // Mobile GPS can take a while to obtain a satellite fix. Run a quick
+    // device/network lookup alongside high-accuracy GPS and use whichever
+    // browser-provided location arrives first. Its accuracy is saved with the
+    // request so responders can see the quality of the fix.
+    navigator.geolocation.getCurrentPosition(succeed, fail, {
+      enableHighAccuracy: false,
+      timeout: 7_000,
+      maximumAge: 30_000,
+    });
+
+    navigator.geolocation.getCurrentPosition(succeed, fail, {
+      enableHighAccuracy: true,
+      timeout: ATTEMPT_SECONDS * 1000,
+      maximumAge: 15_000,
+    });
+  });
 }
 
 export default function NewRequest() {
@@ -254,6 +547,8 @@ export default function NewRequest() {
   const categoryOptions =
     selectedMainCategory === "Police"
       ? POLICE_CATEGORIES
+      : selectedMainCategory === "Firefighting"
+        ? FIREFIGHTING_CATEGORIES
       : MEDICAL_CATEGORIES;
 
   const [step, setStep] = useState(0);
@@ -270,25 +565,18 @@ export default function NewRequest() {
   const [coordinates, setCoordinates] =
     useState<Coordinates | null>(null);
 
-  const [isGeocoding, setIsGeocoding] =
-    useState(false);
-
   const [accuracy, setAccuracy] =
     useState<number | undefined>();
 
+  // Retained only for compatibility with the legacy failure branch below;
+  // the GPS-only flow never exposes or uses manual address entry.
+  const [isGeocoding, setIsGeocoding] = useState(false);
+  const [manualAddress, setManualAddress] = useState("");
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [isSearchingSuggestions, setIsSearchingSuggestions] = useState(false);
+
   const [address, setAddress] =
     useState("");
-
-  const [manualAddress, setManualAddress] =
-    useState("");
-
-  const [suggestions, setSuggestions] =
-    useState<SuggestionItem[]>([]);
-
-  const [
-    isSearchingSuggestions,
-    setIsSearchingSuggestions,
-  ] = useState(false);
 
   const [locationState, setLocationState] =
     useState<LocationState>("idle");
@@ -317,15 +605,24 @@ export default function NewRequest() {
   const [submitting, setSubmitting] =
     useState(false);
 
+  const initialActiveRequest = user?.id
+    ? readCached<ActiveRequestCache>(
+        `requester-active-request:${user.id}`,
+      )
+    : null;
+
   const [
     hasActiveRequest,
     setHasActiveRequest,
-  ] = useState(false);
+  ] = useState(() => Boolean(initialActiveRequest?.id));
 
   const [
     activeRequestId,
     setActiveRequestId,
-  ] = useState<string | null>(null);
+  ] = useState<string | null>(() => initialActiveRequest?.id ?? null);
+
+  const [activeRequestReady, setActiveRequestReady] =
+    useState(() => Boolean(initialActiveRequest));
 
   const locationRunRef =
     useRef(0);
@@ -336,6 +633,8 @@ export default function NewRequest() {
   const autoSubmitRef =
     useRef(false);
 
+  const hasStartedExpressFlow = useRef(false);
+
   /*
    * One stable idempotency key is used for this logical submission.
    * If the browser retries after a network failure, the middleware
@@ -343,89 +642,6 @@ export default function NewRequest() {
    */
   const idempotencyKeyRef =
     useRef<string | null>(null);
-
-  /* ---------------------------------------------------------------------- */
-  /* Address suggestions                                                    */
-  /* ---------------------------------------------------------------------- */
-
-  useEffect(() => {
-    const query = manualAddress.trim();
-
-    if (
-      query.length < 3 ||
-      locationState !== "failed"
-    ) {
-      setSuggestions([]);
-      setIsSearchingSuggestions(false);
-      return;
-    }
-
-    setIsSearchingSuggestions(true);
-
-    const timer = window.setTimeout(
-      async () => {
-        try {
-          const response = await fetch(
-            `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(
-              query
-            )}`
-          );
-
-          if (!response.ok) {
-            throw new Error(
-              "Address search failed"
-            );
-          }
-
-          const data: SuggestionItem[] =
-            await response.json();
-
-          setSuggestions(data);
-        } catch {
-          setSuggestions([]);
-        } finally {
-          setIsSearchingSuggestions(false);
-        }
-      },
-      400
-    );
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [manualAddress, locationState]);
-
-  function handleSelectSuggestion(
-    item: SuggestionItem
-  ) {
-    const lat = Number.parseFloat(item.lat);
-    const lng = Number.parseFloat(item.lon);
-
-    if (
-      !Number.isFinite(lat) ||
-      !Number.isFinite(lng)
-    ) {
-      setError(
-        "The selected address could not be located."
-      );
-      return;
-    }
-
-    setManualAddress(item.display_name);
-    setCoordinates({ lat, lng });
-    setAccuracy(undefined);
-    setAddress(item.display_name);
-    setSuggestions([]);
-    setLocationState("success");
-    setLocationMessage(
-      "Manual location confirmed"
-    );
-
-    void (async () => {
-      await wait(1000);
-      setStep(2);
-    })();
-  }
 
   /* ---------------------------------------------------------------------- */
   /* Clear location timer                                                   */
@@ -522,28 +738,27 @@ export default function NewRequest() {
           position.coords.accuracy
         );
 
-        try {
-          const realAddress =
-            await getAddressFromCoordinates(
-              nextCoordinates.lat,
-              nextCoordinates.lng
+        // Confirm GPS immediately. Reverse geocoding is supplementary and
+        // must not delay the user's ability to continue the emergency flow.
+        setAddress(
+          `${nextCoordinates.lat.toFixed(6)}, ${nextCoordinates.lng.toFixed(6)}`
+        );
+
+        void getAddressFromCoordinates(
+          nextCoordinates.lat,
+          nextCoordinates.lng
+        )
+          .then((realAddress) => {
+            if (runId === locationRunRef.current) {
+              setAddress(realAddress);
+            }
+          })
+          .catch((error) => {
+            console.error(
+              "Failed to reverse geocode location:",
+              error
             );
-
-          setAddress(realAddress);
-        } catch (error) {
-          console.error(
-            "Failed to reverse geocode location:",
-            error
-          );
-
-          setAddress(
-            `${nextCoordinates.lat.toFixed(
-              6
-            )}, ${nextCoordinates.lng.toFixed(
-              6
-            )}`
-          );
-        }
+          });
 
         setAttemptCountdown(0);
 
@@ -632,18 +847,25 @@ export default function NewRequest() {
               )
             : undefined;
 
+        if (locationErrorCode === 1) {
+          setLocationState("failed");
+          setLocationMessage(
+            "Location permission is blocked. Allow precise location in your browser settings, then reopen this request.",
+          );
+          return;
+        }
+
         const message =
-          locationErrorCode === 1
-            ? "Location permission was not granted. Allow location access and try again."
-            : "LIVE could not confirm your location after three attempts.";
+          "LIVE could not confirm your location after three attempts. Retrying in 5 seconds.";
 
-        setLocationState("failed");
-
+        setLocationState("retrying");
         setLocationMessage(message);
 
-        setError(
-          "Your request cannot continue until your current location is confirmed."
-        );
+        await wait(RETRY_DELAY_SECONDS * 1000);
+
+        if (runId === locationRunRef.current) {
+          await runLocationAttempt(1, runId);
+        }
       }
     },
     []
@@ -692,6 +914,17 @@ export default function NewRequest() {
     startLocationSequence,
   ]);
 
+  /* Ambulance and police buttons are designed for an express request: details
+   * are optional, so a user can go straight from the chosen service to location
+   * confirmation. The setting stays local to the device. */
+  useEffect(() => {
+    if (!selectedMainCategory || step !== 0 || hasStartedExpressFlow.current) return;
+    const preferences = readRequesterPreferences();
+    if (!preferences.skipIncidentDetails) return;
+    hasStartedExpressFlow.current = true;
+    setStep(1);
+  }, [selectedMainCategory, step]);
+
   /* ---------------------------------------------------------------------- */
   /* Check for an existing active request                                   */
   /* ---------------------------------------------------------------------- */
@@ -702,6 +935,16 @@ export default function NewRequest() {
     }
 
     let cancelled = false;
+
+    const cacheKey = `requester-active-request:${user.id}`;
+    const cached = readFreshCache<ActiveRequestCache>(cacheKey);
+    if (cached) {
+      setHasActiveRequest(Boolean(cached.id));
+      setActiveRequestId(cached.id);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function checkActiveRequest() {
       try {
@@ -762,6 +1005,7 @@ export default function NewRequest() {
               "submitted",
               "received",
               "assigned",
+              "acknowledged",
               "en_route",
               "arrived",
             ].includes(status);
@@ -775,15 +1019,21 @@ export default function NewRequest() {
         if (active) {
           setHasActiveRequest(true);
           setActiveRequestId(active.id);
+          writeFreshCache(cacheKey, { id: active.id }, 5 * 60_000);
         } else {
           setHasActiveRequest(false);
           setActiveRequestId(null);
+          writeFreshCache(cacheKey, { id: null }, 30_000);
         }
       } catch (error) {
         console.error(
           "Failed to check active request:",
           error
         );
+      } finally {
+        if (!cancelled) {
+          setActiveRequestReady(true);
+        }
       }
     }
 
@@ -810,6 +1060,13 @@ export default function NewRequest() {
       if (!user) {
         setError(
           "You must be logged in to submit an emergency request."
+        );
+        return;
+      }
+
+      if (hasActiveRequest) {
+        setError(
+          "You already have an active emergency request. Open it before requesting additional help.",
         );
         return;
       }
@@ -850,9 +1107,6 @@ export default function NewRequest() {
 
       const capturedAt =
         new Date().toISOString();
-
-      const isManual =
-        manualAddress.trim().length > 0;
 
       try {
         /*
@@ -901,10 +1155,7 @@ export default function NewRequest() {
               idempotencyKey:
                 idempotencyKeyRef.current,
 
-              locationMethod:
-                isManual
-                  ? "manual"
-                  : "gps",
+              locationMethod: "gps",
 
               latitude:
                 coordinates.lat,
@@ -917,7 +1168,6 @@ export default function NewRequest() {
 
               addressText:
                 address ||
-                manualAddress.trim() ||
                 "Current device location",
 
               capturedAt,
@@ -1011,7 +1261,7 @@ export default function NewRequest() {
       address,
       category,
       coordinates,
-      manualAddress,
+      hasActiveRequest,
       note,
       router,
       selectedMainCategory,
@@ -1093,7 +1343,7 @@ export default function NewRequest() {
   /* Loading                                                                 */
   /* ---------------------------------------------------------------------- */
 
-  if (!user) {
+  if (!user || !activeRequestReady) {
     return <PageSkeleton map />;
   }
 
@@ -1114,47 +1364,64 @@ export default function NewRequest() {
 
   return (
     <div className="app-page grid gap-5">
-      <PageHeading
-        eyebrow="Emergency request"
-        title="Request assistance"
-        description="Complete only the essential incident information. Contact details are taken from your profile."
-      />
+      {!hasActiveRequest ? (
+        <PageHeading
+          title="Request assistance"
+          description={
+            <>
+              <span className="md:hidden">
+                Complete only the essential incident information.
+              </span>
+              <span className="hidden md:inline">
+                Complete only the essential incident information. Contact details are taken from your profile.
+              </span>
+            </>
+          }
+        />
+      ) : null}
 
       {hasActiveRequest ? (
-        <Panel
-          mobileCard={false}
-          className="-mx-5 border-x-0 border-[#f0c8c7] bg-[#fff7f6] p-5 md:mx-0 md:rounded-[22px] md:border-x"
-        >
-          <div className="flex gap-3">
-            <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
+        <div>
+          <Panel
+            mobileCard={false}
+            className="-mx-5 border-x-0 border-[#f0c8c7] bg-[#fff7f6] p-5 md:mx-0 md:rounded-[22px] md:border-x"
+          >
+            <div className="flex gap-3">
+              <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
 
-            <div>
-              <h2 className="font-semibold">
-                An active request already exists
-              </h2>
+              <div>
+                <h2 className="font-semibold">
+                  An active request already exists
+                </h2>
 
-              <p className="mt-1 text-sm text-[#6d6060]">
-                Open your active request
-                instead of creating a
-                duplicate request.
-              </p>
+                <p className="mt-1 text-sm text-[#6d6060]">
+                  Open your active request
+                  instead of creating a
+                  duplicate request.
+                </p>
 
-              {activeRequestId ? (
-                <Button
-                  variant="danger"
-                  className="mt-4"
-                  onClick={() =>
-                    router.push(
-                      `/app/requester/track/${activeRequestId}`
-                    )
-                  }
-                >
-                  Open active request
-                </Button>
-              ) : null}
+                {activeRequestId ? (
+                  <Button
+                    variant="danger"
+                    className="mt-4"
+                    onClick={() =>
+                      router.push(
+                        `/app/requester/track/${activeRequestId}`
+                      )
+                    }
+                  >
+                    Open active request
+                  </Button>
+                ) : null}
+              </div>
             </div>
-          </div>
-        </Panel>
+          </Panel>
+
+          <ActiveRequestQuestions
+            category={selectedMainCategory}
+            requestId={activeRequestId}
+          />
+        </div>
       ) : (
         <>
           <div className="relative grid grid-cols-3 items-start px-2 sm:px-5">
@@ -1196,7 +1463,7 @@ export default function NewRequest() {
 
           <Panel
             mobileCard={false}
-            className="-mx-5 border-x-0 border-b-0 bg-transparent shadow-none md:mx-0 md:rounded-[22px] md:border md:bg-white md:shadow-[0_14px_38px_rgba(16,43,63,.07)]"
+          className="-mx-5 border-x-0 border-b-0 bg-transparent shadow-none md:mx-0 md:border-x md:bg-white"
           >
             <AnimatePresence mode="wait">
               <motion.div
@@ -1304,19 +1571,16 @@ export default function NewRequest() {
                       />
                     </label>
 
-                    <div className="flex items-start gap-3 bg-[#f3f7f8] px-4 py-3.5 text-sm text-[#5f7480]">
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[#1f845b]" />
+                  <div className="hidden items-start gap-3 bg-[#f3f7f8] px-4 py-3.5 text-sm text-[#5f7480] md:flex">
+                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[#1f845b]" />
+                    <p className="leading-6">
+                      Your saved callback number is attached to this request:{" "}
+                      <span className="font-semibold text-[#102b3f]">
+                        {user.phone || "your registered contact number"}
+                      </span>.
+                    </p>
+                  </div>
 
-                      <p className="leading-6">
-                        LIVE will use{" "}
-                        <span className="font-semibold text-[#102b3f]">
-                          {user.phone ||
-                            "your registered contact number"}
-                        </span>{" "}
-                        as the callback
-                        number.
-                      </p>
-                    </div>
                   </div>
                 ) : step === 1 ? (
                   /* STEP 1 - LOCATION */
@@ -1352,14 +1616,29 @@ export default function NewRequest() {
                             <p className="mt-2 text-sm text-[#617683]">
                               {locationState ===
                               "retrying"
-                                ? "Preparing the next attempt"
+                                ? locationMessage
                                 : `${locationMessage} · ${attemptCountdown}s`}
+                            </p>
+
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {locationState === "failed" ? (
+                        <div className="absolute inset-0 z-30 grid place-items-center bg-[#fff6f5]/96 px-5 text-center backdrop-blur-sm">
+                          <div className="max-w-sm">
+                            <MapPin className="mx-auto h-7 w-7 text-[#c73937]" />
+                            <h2 className="mt-3 font-semibold text-[#102b3f]">
+                              Location permission needed
+                            </h2>
+                            <p className="mt-2 text-sm leading-5 text-[#6f6767]">
+                              {locationMessage}
                             </p>
                           </div>
                         </div>
                       ) : null}
 
-                      {locationState ===
+                      {false && locationState ===
                       "failed" ? (
                         <div className="absolute inset-0 z-30 overflow-y-auto bg-[#fff6f5]/96 px-5 py-6 backdrop-blur-sm">
                           <div className="mx-auto flex min-h-full max-w-md flex-col justify-center">
@@ -1382,63 +1661,6 @@ export default function NewRequest() {
                             </div>
 
                             <div className="mt-5">
-                              <label className="block">
-                                <FieldLabel>
-                                  Manual address
-                                </FieldLabel>
-
-                                <div className="relative mt-1">
-                                  <input
-                                    type="text"
-                                    value={manualAddress}
-                                    onChange={(
-                                      event
-                                    ) => {
-                                      setManualAddress(
-                                        event
-                                          .target
-                                          .value
-                                      );
-                                      setError("");
-                                    }}
-                                    placeholder="Enter your street address or location"
-                                    className="w-full rounded-lg border border-[#c2d1d9] bg-white px-3 py-3 pr-10 text-sm text-[#102b3f] outline-none focus:border-[#1f6f8b] focus:ring-2 focus:ring-[#1f6f8b]/20"
-                                  />
-
-                                  {isSearchingSuggestions ? (
-                                    <Loader2 className="absolute right-3 top-3 h-4 w-4 animate-spin text-[#7a8c98]" />
-                                  ) : (
-                                    <Search className="absolute right-3 top-3 h-4 w-4 text-[#7a8c98]" />
-                                  )}
-                                </div>
-                              </label>
-
-                              {suggestions.length >
-                              0 ? (
-                                <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-[#c2d1d9] bg-white shadow-lg">
-                                  {suggestions.map(
-                                    (item) => (
-                                      <button
-                                        key={
-                                          item.place_id
-                                        }
-                                        type="button"
-                                        onClick={() =>
-                                          handleSelectSuggestion(
-                                            item
-                                          )
-                                        }
-                                        className="block w-full border-b border-[#edf1f3] px-3 py-3 text-left text-sm text-[#102b3f] hover:bg-[#f3f7f8] last:border-b-0"
-                                      >
-                                        {
-                                          item.display_name
-                                        }
-                                      </button>
-                                    )
-                                  )}
-                                </div>
-                              ) : null}
-
                               {error ? (
                                 <p className="mt-2 text-sm text-[#c73937]">
                                   {error}
@@ -1457,10 +1679,7 @@ export default function NewRequest() {
                                 </Button>
 
                                 <Button
-                                  disabled={
-                                    !manualAddress.trim() ||
-                                    isGeocoding
-                                  }
+                                  disabled
                                   onClick={async () => {
                                     const query =
                                       manualAddress.trim();
@@ -1634,9 +1853,7 @@ export default function NewRequest() {
                           <LocateFixed className="h-5 w-5 shrink-0 text-[#0f6872]" />
 
                           <p>
-                            Keep location permission
-                            enabled while LIVE checks
-                            your device position.
+                            Keep location permission enabled while we confirm your device position.
                           </p>
                         </div>
                       )}
@@ -1652,9 +1869,7 @@ export default function NewRequest() {
                       </h2>
 
                       <p className="mt-2 text-sm leading-6 text-[#687b89]">
-                        LIVE confirmed your current
-                        position and prepared the
-                        request for submission.
+                        Your current position is confirmed and the request is ready to send.
                       </p>
 
                       <dl className="mt-4 divide-y divide-[#e2e8ed] border-y border-[#e2e8ed] text-sm">
@@ -1716,8 +1931,7 @@ export default function NewRequest() {
                       </h3>
 
                       <p className="mt-2 text-sm leading-5 text-[#705f5f]">
-                        This demo does not contact
-                        real emergency services.
+                        The request will be sent to the response coordination service.
                       </p>
 
                       <div className="mt-4 bg-white/75 px-4 py-3.5">

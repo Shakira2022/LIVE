@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500">
+  <rect width="900" height="500" fill="#f5f7f9"/>
+  <rect x="245" y="55" width="410" height="390" rx="18" fill="#ffffff" stroke="#dce5ea"/>
+  <text x="450" y="105" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#102b3f">Sign in</text>
+  <text x="450" y="132" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#667b89">Access your secure emergency-response workspace.</text>
+  <text x="285" y="190" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.2" fill="#5d7180">EMAIL ADDRESS</text>
+  <text x="285" y="228" font-family="Arial, sans-serif" font-size="17" fill="#102b3f">requester@live.co.za</text>
+  <line x1="285" y1="248" x2="615" y2="248" stroke="#0f6872" stroke-width="2"/>
+  <text x="285" y="285" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.2" fill="#5d7180">PASSWORD</text>
+  <text x="285" y="323" font-family="Arial, sans-serif" font-size="17" fill="#102b3f">••••••••••••</text>
+  <line x1="285" y1="343" x2="615" y2="343" stroke="#cbd7de" stroke-width="1"/>
+  <rect x="285" y="370" width="330" height="50" rx="12" fill="#0f5b67"/>
+  <text x="450" y="402" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">Sign in</text>
+</svg>

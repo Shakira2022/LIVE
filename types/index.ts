@@ -147,10 +147,14 @@ export interface Assignment {
   organisationId: string;
   responderUserId: string | null;
   responderName: string | null;
+  responderEmployeeNumber?: string | null;
+  responderLatitude?: number | null;
+  responderLongitude?: number | null;
   teamId: string | null;
   teamName: string | null;
   vehicleId: string | null;
   vehicleCallSign: string | null;
+  vehicleRegistrationNumber?: string | null;
   status: AssignmentStatus;
   etaMinutes: number | null;
   assignmentNote: string | null;

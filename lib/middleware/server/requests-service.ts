@@ -147,10 +147,14 @@ function mapAssignment(row: Row): Assignment {
     organisationId: row.organisation_id,
     responderUserId: row.responder_user_id ?? null,
     responderName: nameOf(row.responder?.user ?? row.responder ?? null),
+    responderEmployeeNumber: row.responder?.employee_number ?? null,
+    responderLatitude: row.responder?.current_latitude ?? null,
+    responderLongitude: row.responder?.current_longitude ?? null,
     teamId: row.team_id ?? null,
     teamName: row.team?.name ?? null,
     vehicleId: row.vehicle_id ?? null,
     vehicleCallSign: row.vehicle?.call_sign ?? null,
+    vehicleRegistrationNumber: row.vehicle?.registration_number ?? null,
     status: row.status,
     etaMinutes: row.eta_minutes ?? null,
     assignmentNote: row.assignment_note ?? null,
@@ -296,7 +300,8 @@ export async function getRequestDetail(
       .select(
         'id, organisation_id, responder_user_id, team_id, vehicle_id, status, eta_minutes, ' +
           'assignment_note, assigned_at, acknowledged_at, route_started_at, arrived_at, completed_at, ' +
-          'team:responder_teams ( id, name ), vehicle:vehicles ( id, call_sign )',
+          'responder:responder_profiles ( employee_number, current_latitude, current_longitude, user:users ( id, first_name, last_name, display_name ) ), ' +
+          'team:responder_teams ( id, name ), vehicle:vehicles ( id, call_sign, registration_number )',
       )
       .eq('request_id', id)
       .order('assigned_at', { ascending: true }),
@@ -348,6 +353,237 @@ export interface CreateRequestResult {
   routing: RoutingDecision;
 }
 
+type AvailableResponder = {
+  user_id: string;
+  current_latitude: number | null;
+  current_longitude: number | null;
+};
+
+type AutomaticAssignmentResult =
+  | { assigned: true; responderUserId: string; etaMinutes: number }
+  | { assigned: false; reason: "no_route" | "no_available_responder" | "claim_failed" | "assignment_failed" };
+
+function distanceMetresBetween(
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+) {
+  const radians = (value: number) => (value * Math.PI) / 180;
+  const earthRadius = 6_371_000;
+  const deltaLatitude = radians(to.latitude - from.latitude);
+  const deltaLongitude = radians(to.longitude - from.longitude);
+  const a =
+    Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(radians(from.latitude)) * Math.cos(radians(to.latitude)) *
+      Math.sin(deltaLongitude / 2) ** 2;
+  return 2 * earthRadius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Claims the nearest online responder in the routed organisation. The
+ * availability update is conditional, so two submissions cannot both take a
+ * responder who has just been claimed by the other request. A failed lookup or
+ * claim is deliberately non-fatal: the request remains visible to dispatch.
+ */
+export async function automaticallyAssignNearestResponder(input: {
+  requestId: string;
+  organisationId: string | null;
+  latitude: number;
+  longitude: number;
+  responderUserId?: string;
+}): Promise<AutomaticAssignmentResult> {
+  if (!input.organisationId) return { assigned: false, reason: "no_route" };
+
+  // Do not draw a second assignment for a request that has already been
+  // claimed by another responder. The database constraint below is the final
+  // race-safe guard; this read avoids unnecessary work in the normal path.
+  const { data: existingAssignment, error: existingAssignmentError } = await db()
+    .from("request_assignments")
+    .select("id")
+    .eq("request_id", input.requestId)
+    .in("status", ["assigned", "acknowledged", "en_route", "arrived"])
+    .limit(1)
+    .maybeSingle();
+
+  if (existingAssignmentError || existingAssignment) {
+    return { assigned: false, reason: existingAssignment ? "claim_failed" : "assignment_failed" };
+  }
+
+  let respondersQuery = db()
+    .from("responder_profiles")
+    .select("user_id, current_latitude, current_longitude")
+    .eq("organisation_id", input.organisationId)
+    .eq("availability", "available");
+
+  if (input.responderUserId) {
+    respondersQuery = respondersQuery.eq("user_id", input.responderUserId);
+  } else {
+    // Nearest-responder dispatch requires a known responder position.
+    respondersQuery = respondersQuery
+      .not("current_latitude", "is", null)
+      .not("current_longitude", "is", null);
+  }
+
+  const { data: responders, error: responderError } = await respondersQuery;
+
+  if (responderError || !responders?.length) {
+    return { assigned: false, reason: "no_available_responder" };
+  }
+
+  const ordered = (responders as AvailableResponder[])
+    .filter((responder) => responder.current_latitude !== null && responder.current_longitude !== null)
+    .sort((left, right) => {
+      const leftDistance = distanceMetresBetween(
+        { latitude: Number(left.current_latitude), longitude: Number(left.current_longitude) },
+        { latitude: input.latitude, longitude: input.longitude },
+      );
+      const rightDistance = distanceMetresBetween(
+        { latitude: Number(right.current_latitude), longitude: Number(right.current_longitude) },
+        { latitude: input.latitude, longitude: input.longitude },
+      );
+      return leftDistance - rightDistance;
+    });
+
+  for (const responder of ordered) {
+    const hasResponderLocation =
+      responder.current_latitude !== null && responder.current_longitude !== null;
+    const distanceMetres = hasResponderLocation
+      ? distanceMetresBetween(
+          { latitude: Number(responder.current_latitude), longitude: Number(responder.current_longitude) },
+          { latitude: input.latitude, longitude: input.longitude },
+        )
+      : 0;
+    // A conservative 40 km/h estimate, with a practical three-minute floor.
+    const etaMinutes = Math.max(3, Math.min(45, Math.ceil((distanceMetres / 1000 / 40) * 60)));
+    const now = new Date().toISOString();
+
+    const { data: claimed, error: claimError } = await db()
+      .from("responder_profiles")
+      .update({ availability: "assigned", updated_at: now })
+      .eq("user_id", responder.user_id)
+      .eq("availability", "available")
+      .select("user_id")
+      .maybeSingle();
+
+    if (claimError || !claimed) continue;
+
+    const { data: assignment, error: assignmentError } = await db()
+      .from("request_assignments")
+      .insert({
+        request_id: input.requestId,
+        organisation_id: input.organisationId,
+        responder_user_id: responder.user_id,
+        assigned_by_user_id: null,
+        status: "assigned",
+        eta_minutes: etaMinutes,
+        assignment_note: "Assigned automatically to the nearest available responder.",
+      })
+      .select("id")
+      .single();
+
+    if (assignmentError) {
+      await db().from("responder_profiles").update({ availability: "available", updated_at: now }).eq("user_id", responder.user_id);
+      return { assigned: false, reason: "assignment_failed" };
+    }
+
+    const { error: requestError } = await db()
+      .from("emergency_requests")
+      .update({
+        current_status: "assigned",
+        received_at: now,
+        assigned_at: now,
+        eta_minutes: etaMinutes,
+        estimated_arrival_at: new Date(Date.now() + etaMinutes * 60_000).toISOString(),
+      })
+      .eq("id", input.requestId);
+
+    if (requestError) {
+      // Do not leave an invisible assignment behind if the request status
+      // cannot be advanced. The request can then safely fall back to dispatch.
+      if (assignment?.id) {
+        await db().from("request_assignments").delete().eq("id", assignment.id);
+      }
+      await db().from("responder_profiles").update({ availability: "available", updated_at: now }).eq("user_id", responder.user_id);
+      return { assigned: false, reason: "assignment_failed" };
+    }
+
+    await Promise.all([
+      appendHistory(input.requestId, {
+        previousStatus: "submitted",
+        newStatus: "received",
+        userId: null,
+        role: null,
+        reason: "Automatic dispatch started",
+        note: "A nearby responder is being selected.",
+      }),
+      appendHistory(input.requestId, {
+        previousStatus: "received",
+        newStatus: "assigned",
+        userId: null,
+        role: null,
+        reason: "Responder assigned automatically",
+        note: `Nearest available responder assigned. Estimated arrival: ${etaMinutes} minutes.`,
+      }),
+      db().from("notifications").insert({
+        recipient_user_id: responder.user_id,
+        request_id: input.requestId,
+        notification_type: "assignment",
+        title: "New mission assigned",
+        message: "You have been selected for a nearby emergency request.",
+        sensitivity: "normal",
+      }),
+    ]);
+
+    return { assigned: true, responderUserId: responder.user_id, etaMinutes };
+  }
+
+  return { assigned: false, reason: "claim_failed" };
+}
+
+/**
+ * Gives an available responder the oldest request waiting for that
+ * organisation. Requests are intentionally kept in `submitted` status until
+ * this succeeds, so a temporary lack of responders never rejects the request.
+ */
+export async function assignNextQueuedRequest(
+  responderUserId: string,
+  organisationId: string,
+): Promise<AutomaticAssignmentResult> {
+  const { data: queued, error } = await db()
+    .from("emergency_requests")
+    .select("id")
+    .or(`routed_organisation_id.eq.${organisationId},routed_organisation_id.is.null`)
+    .in("current_status", ["submitted", "received"])
+    .eq("is_active", true)
+    .order("submitted_at", { ascending: true })
+    .limit(20);
+
+  if (error || !queued?.length) {
+    return { assigned: false, reason: "no_available_responder" };
+  }
+
+  for (const row of queued as Array<{ id: string }>) {
+    const { data: location } = await db()
+      .from("request_locations")
+      .select("latitude, longitude")
+      .eq("request_id", row.id)
+      .maybeSingle();
+
+    if (!location) continue;
+
+    const result = await automaticallyAssignNearestResponder({
+      requestId: row.id,
+      organisationId,
+      responderUserId,
+      latitude: Number(location.latitude),
+      longitude: Number(location.longitude),
+    });
+
+    if (result.assigned) return result;
+  }
+
+  return { assigned: false, reason: "claim_failed" };
+}
+
 export async function createRequest(
   auth: AuthPrincipal,
   input: CreateRequestInput,
@@ -373,6 +609,29 @@ export async function createRequest(
         candidateCount: 0,
       },
     };
+  }
+
+  // A requester may have only one open emergency at a time. This check is
+  // intentionally server-side so a second browser tab cannot bypass the UI.
+  const activeRequest = await db()
+    .from('emergency_requests')
+    .select('id')
+    .eq('requester_id', auth.userId)
+    .eq('is_active', true)
+    .in('current_status', OPEN_STATUSES)
+    .limit(1)
+    .maybeSingle();
+
+  if (activeRequest.error) {
+    throw ApiError.internal('Could not verify your active emergency request.', activeRequest.error.message);
+  }
+
+  if (activeRequest.data) {
+    throw new ApiError(
+      'DUPLICATE_REQUEST',
+      'You already have an active emergency request. Open it before requesting additional help.',
+      { details: { requestId: activeRequest.data.id } },
+    );
   }
 
   const now = new Date().toISOString();
@@ -438,14 +697,38 @@ export async function createRequest(
         reason: 'Request submitted',
         note: routing.organisationName
           ? `Routed to ${routing.organisationName}, ${km} km away`
-          : `Not automatically routed (${routing.reason}). Dispatch to assign.`,
+          : `Not automatically routed (${routing.reason}). Dispatch review required.`,
       });
+
+      // Dispatch is the exception path, not the normal assignment path. A
+      // request is automatically assigned only to an online responder in the
+      // routed organisation; when none can be safely claimed it stays on the
+      // dispatcher queue for human triage.
+      if (input.latitude !== undefined && input.longitude !== undefined) {
+        try {
+          await automaticallyAssignNearestResponder({
+            requestId,
+            organisationId: routing.organisationId,
+            latitude: input.latitude,
+            longitude: input.longitude,
+          });
+        } catch {
+          // Assignment automation must never prevent a received emergency
+          // request from reaching the dispatcher fallback queue.
+        }
+      }
 
       return { request: await getRequestDetail(requestId, auth), routing };
     }
 
     if (isUniqueViolation(error) && error.message.includes('idempotency')) {
       throw new ApiError('DUPLICATE_REQUEST', 'This request has already been submitted.');
+    }
+    if (isUniqueViolation(error) && error.message.includes('one_active_per_requester')) {
+      throw new ApiError(
+        'DUPLICATE_REQUEST',
+        'You already have an active emergency request. Open it before requesting additional help.',
+      );
     }
     if (isUniqueViolation(error)) {
       reference = generateReference();
@@ -534,6 +817,22 @@ export async function changeStatus(
 ): Promise<EmergencyRequestDetail> {
   const current = await getRequestSummary(requestId);
   assertCanView(current, auth);
+
+  const { data: existingAssignment, error: existingAssignmentError } = await db()
+    .from('request_assignments')
+    .select('id')
+    .eq('request_id', requestId)
+    .in('status', ['assigned', 'acknowledged', 'en_route', 'arrived'])
+    .limit(1)
+    .maybeSingle();
+
+  if (existingAssignmentError) {
+    throw ApiError.internal('Could not verify whether this request is already assigned.', existingAssignmentError.message);
+  }
+
+  if (existingAssignment) {
+    throw new ApiError('CONFLICT', 'This emergency is already assigned to a responder.');
+  }
 
   const target = input.status as RequestStatus;
 
@@ -634,6 +933,26 @@ export async function assignRequest(
     throw new ApiError('BAD_REQUEST', 'This account is not linked to a responding organisation.');
   }
 
+  if (input.responderUserId) {
+    const { data: responder, error: responderError } = await db()
+      .from('responder_profiles')
+      .select('user_id, organisation_id, availability')
+      .eq('user_id', input.responderUserId)
+      .maybeSingle();
+
+    if (responderError) {
+      throw ApiError.internal('Could not verify responder availability.', responderError.message);
+    }
+
+    if (!responder || responder.organisation_id !== organisationId) {
+      throw new ApiError('BAD_REQUEST', 'That responder is not part of the selected organisation.');
+    }
+
+    if (responder.availability !== 'available') {
+      throw new ApiError('CONFLICT', 'That responder is offline or already assigned and cannot receive a new request.');
+    }
+  }
+
   const { error } = await db()
     .from('request_assignments')
     .insert({
@@ -648,7 +967,12 @@ export async function assignRequest(
       assignment_note: input.assignmentNote ?? null,
     });
 
-  if (error) throw ApiError.internal('Could not create that assignment.', error.message);
+  if (error) {
+    if (isUniqueViolation(error) && error.message.includes('one_active_assignment_per_request')) {
+      throw new ApiError('CONFLICT', 'This emergency is already assigned to a responder.');
+    }
+    throw ApiError.internal('Could not create that assignment.', error.message);
+  }
 
   // Routing the request to the organisation is what makes it visible on that
   // organisation's board.

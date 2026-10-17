@@ -66,59 +66,31 @@ export default function ForgotPasswordPage() {
     <div className="min-h-dvh bg-[#f6f8fb]">
       <PublicHeader />
 
-      <main className="grid min-h-dvh place-items-center px-4 pb-10 pt-24">
-        <div className="w-full max-w-md p-6 sm:p-8">
+      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+        <div className="w-full max-w-md">
 
           {sent ? (
             <div className="text-center">
               <h1 className="text-2xl font-bold">
-                Recovery token generated
+                Check your email
               </h1>
 
               <p className="mt-3 text-sm leading-6 text-[#667b89]">
-                Your password recovery request has
-                been created.
+                If an account exists for that address, we have sent password-reset instructions.
               </p>
 
-              <div className="mt-5 rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-left text-sm leading-6 text-yellow-800">
-                <strong>Development mode:</strong>
-                <br />
-                The reset token is available in the
-                development terminal. Copy the token
-                from the terminal and use it on the
-                Reset Password page.
-              </div>
-
-              <Link
-                href="/reset-password"
-                className="block"
-              >
-                <Button
-                  type="button"
-                  className="mt-6 w-full"
-                  size="lg"
-                >
-                  Continue to reset password
-                </Button>
-              </Link>
-
-              <Link
-                href="/login"
-                className="mt-5 block text-sm text-[#0f6872]"
-              >
-                Back to sign in
-              </Link>
             </div>
           ) : (
-            <form onSubmit={handleSubmit}>
-              <h1 className="text-2xl font-bold tracking-[-0.03em]">
-                Recover your account
-              </h1>
+            <form onSubmit={handleSubmit} className="border-b border-[#dce5ea] py-6">
+              <div className="text-center">
+                <h1 className="text-2xl font-bold tracking-[-0.03em]">
+                  Recover your account
+                </h1>
 
-              <p className="mt-2 text-sm leading-6 text-[#667b89]">
-                Enter your email to start the password
-                recovery process.
-              </p>
+                <p className="mt-2 text-sm leading-6 text-[#667b89]">
+                  Enter your email address and we will send a secure reset link.
+                </p>
+              </div>
 
               <label className="mt-6 block">
                 <FieldLabel>
@@ -148,16 +120,10 @@ export default function ForgotPasswordPage() {
                 disabled={loading}
               >
                 {loading
-                  ? "Processing..."
-                  : "Continue"}
+                  ? "Sending instructions..."
+                  : "Send reset link"}
               </Button>
 
-              <Link
-                href="/login"
-                className="mt-5 block text-center text-sm text-[#0f6872]"
-              >
-                Back to sign in
-              </Link>
             </form>
           )}
         </div>

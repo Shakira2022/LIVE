@@ -5,7 +5,9 @@ import { useEffect, useState } from "react";
 import { History, RefreshCw } from "lucide-react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { RequestListItem } from "@/components/requests/request-list-item";
+import { RequestDetailsSheet } from "@/components/requests/request-details-sheet";
 
 import {
   EmptyState,
@@ -13,7 +15,6 @@ import {
   PanelHeader,
 } from "@/components/ui/panel";
 
-import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { requestStatusTone } from "@/lib/utils";
@@ -154,9 +155,14 @@ function getApiErrorMessage(
 export default function RequestHistory() {
   const { user } = useAuth();
 
-  const [requests, setRequests] = useState<ApiRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [requests, setRequests] = useState<ApiRequest[]>(() =>
+    user?.id
+      ? readCached<ApiRequest[]>(`requester-history:${user.id}`) ?? []
+      : [],
+  );
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
 
   /* ---------------------------------------------------------------------- */
   /* Load request history                                                   */
@@ -165,6 +171,14 @@ export default function RequestHistory() {
   async function loadRequests() {
     if (!user) {
       setRequests([]);
+      setLoading(false);
+      return;
+    }
+
+    const cacheKey = `requester-history:${user.id}`;
+    const cached = readFreshCache<ApiRequest[]>(cacheKey);
+    if (cached) {
+      setRequests(cached);
       setLoading(false);
       return;
     }
@@ -226,18 +240,14 @@ export default function RequestHistory() {
         data?.requests ??
         [];
 
-      setRequests(
-        Array.isArray(nextRequests)
-          ? nextRequests
-          : [],
-      );
+      const normalizedRequests = Array.isArray(nextRequests) ? nextRequests : [];
+      setRequests(normalizedRequests);
+      writeFreshCache(cacheKey, normalizedRequests, 5 * 60_000);
     } catch (error) {
       console.error(
         "Failed to load request history:",
         error,
       );
-
-      setRequests([]);
 
       setError(
         error instanceof Error
@@ -270,7 +280,7 @@ export default function RequestHistory() {
   /* Loading                                                                 */
   /* ---------------------------------------------------------------------- */
 
-  if (loading || !user) {
+  if (!user) {
     return <PageSkeleton />;
   }
 
@@ -280,13 +290,7 @@ export default function RequestHistory() {
 
   if (error) {
     return (
-      <div className="app-page grid gap-5">
-        <PageHeading
-          eyebrow="Requester"
-          title="Request history"
-          description="Review active, completed, cancelled and rejected requests."
-        />
-
+      <div className="app-page !pt-0 grid gap-5">
         <Panel
           mobileCard={false}
           className="-mx-5 border-x-0 p-8 text-center md:mx-0 md:rounded-[22px] md:border-x"
@@ -418,26 +422,24 @@ export default function RequestHistory() {
       };
     });
 
+  const currentRequestId = items.find((request) =>
+    ["submitted", "received", "assigned", "acknowledged", "en_route", "arrived"].includes(request.status),
+  )?.id ?? null;
+
   /* ---------------------------------------------------------------------- */
   /* Render                                                                  */
   /* ---------------------------------------------------------------------- */
 
   return (
-    <div className="app-page grid gap-5">
-      <PageHeading
-        eyebrow="Requester"
-        title="Request history"
-        description="Review active, completed, cancelled and rejected requests."
-      />
-
+    <div className="app-page !pt-0 grid gap-3">
       <Panel
         mobileCard={false}
-        className="-mx-5 border-x-0 md:mx-0 md:rounded-[22px] md:border-x"
+        className="-mx-5 border-0 bg-white md:mx-0 md:rounded-[22px]"
       >
         <PanelHeader
           title={`${items.length} requests`}
           description="Newest activity appears first."
-          className="px-5"
+          className="items-center border-b-0 px-4 py-3"
         />
 
         {items.length > 0 ? (
@@ -446,7 +448,7 @@ export default function RequestHistory() {
               <RequestListItem
                 key={request.id}
                 request={request as any}
-                href={`/app/requester/track/${request.id}`}
+                onClick={() => setSelectedRequestId(request.id)}
               />
             ))}
           </div>
@@ -460,6 +462,14 @@ export default function RequestHistory() {
           />
         )}
       </Panel>
+      <RequestDetailsSheet
+        requestId={selectedRequestId}
+        open={Boolean(selectedRequestId)}
+        showTrackingButton={selectedRequestId === currentRequestId}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRequestId(null);
+        }}
+      />
     </div>
   );
 }

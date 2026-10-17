@@ -19,41 +19,13 @@ type PanelProps = HTMLAttributes<HTMLDivElement> & {
 export function Panel({
   className,
   children,
-  mobileCard = true,
+  mobileCard: _mobileCard = false,
   ...props
 }: PanelProps) {
   return (
     <section
       className={cn(
-        "overflow-hidden",
-
-        mobileCard
-          ? [
-              "rounded-[18px]",
-              "border border-[#dce5ea]",
-              "bg-white",
-              "shadow-[0_10px_30px_rgba(16,43,63,0.05)]",
-              "sm:rounded-[20px]",
-            ]
-          : [
-              /*
-               * Mobile:
-               * No card, no rounded outer container and no shadow.
-               */
-              "border-y border-[#dce5ea]",
-              "bg-transparent",
-              "rounded-none",
-              "shadow-none",
-
-              /*
-               * Tablet and desktop:
-               * Restore the contained card layout.
-               */
-              "sm:rounded-[20px]",
-              "sm:border",
-              "sm:bg-white",
-              "sm:shadow-[0_10px_30px_rgba(16,43,63,0.05)]",
-            ],
+        "overflow-hidden border-y border-[#dce5ea] bg-white shadow-none rounded-none",
 
         className
       )}

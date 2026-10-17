@@ -4,7 +4,6 @@ import {
   Bell,
   CheckCheck,
 } from "lucide-react";
-import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -12,15 +11,16 @@ import {
 } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { Button } from "@/components/ui/button";
 import {
   EmptyState,
   Panel,
   PanelHeader,
 } from "@/components/ui/panel";
-import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { timeAgo } from "@/lib/utils";
+import { RequestDetailsSheet } from "@/components/requests/request-details-sheet";
 
 interface Notification {
   id: string;
@@ -236,18 +236,32 @@ export default function Notifications() {
   } = useAuth();
 
   const [notifications, setNotifications] =
-    useState<Notification[]>([]);
+    useState<Notification[]>(() =>
+      user?.id
+        ? readCached<Notification[]>(`requester-notifications:${user.id}`) ?? []
+        : [],
+    );
 
   const [loading, setLoading] =
-    useState(true);
+    useState(false);
 
   const [markingAll, setMarkingAll] =
     useState(false);
+  const [selectedRequestId, setSelectedRequestId] =
+    useState<string | null>(null);
 
   const fetchNotifications =
     useCallback(async () => {
       if (!user?.id) {
         setNotifications([]);
+        setLoading(false);
+        return;
+      }
+
+      const cacheKey = `requester-notifications:${user.id}`;
+      const cached = readFreshCache<Notification[]>(cacheKey);
+      if (cached) {
+        setNotifications(cached);
         setLoading(false);
         return;
       }
@@ -289,9 +303,9 @@ export default function Notifications() {
           );
         }
 
-        setNotifications(
-          extractNotifications(result),
-        );
+        const nextNotifications = extractNotifications(result);
+        setNotifications(nextNotifications);
+        writeFreshCache(cacheKey, nextNotifications, 5 * 60_000);
       } catch (error) {
         /*
          * Do not use console.error here. In Next.js development mode a
@@ -305,7 +319,6 @@ export default function Notifications() {
             : String(error),
         );
 
-        setNotifications([]);
       } finally {
         setLoading(false);
       }
@@ -376,8 +389,8 @@ export default function Notifications() {
           result,
         );
 
-      setNotifications((current) =>
-        current.map(
+      setNotifications((current) => {
+        const nextNotifications = current.map(
           (notification) =>
             notification.id ===
             notificationId
@@ -389,8 +402,12 @@ export default function Notifications() {
                     new Date().toISOString(),
                 }
               : notification,
-        ),
-      );
+        );
+        if (user?.id) {
+          writeFreshCache(`requester-notifications:${user.id}`, nextNotifications, 5 * 60_000);
+        }
+        return nextNotifications;
+      });
     } catch (error) {
       console.warn(
         "Unable to mark notification as read:",
@@ -430,7 +447,6 @@ export default function Notifications() {
 
   if (
     authLoading ||
-    loading ||
     !user
   ) {
     return <PageSkeleton />;
@@ -442,20 +458,14 @@ export default function Notifications() {
   ).length;
 
   return (
-    <div className="app-page grid gap-5">
-      <PageHeading
-        eyebrow="Requester"
-        title="Notifications"
-        description="Request confirmations and lifecycle updates."
-      />
-
+    <div className="app-page !pt-0 grid gap-3">
       <Panel
         mobileCard={false}
-        className="-mx-5 border-x-0 md:mx-0 md:rounded-[22px] md:border-x"
+        className="-mx-5 border-0 bg-white md:mx-0 md:rounded-[22px]"
       >
         <PanelHeader
           title={`${unread} unread`}
-          className="items-center px-5"
+          className="items-center border-b-0 px-4 py-3"
           action={
             <Button
               variant="ghost"
@@ -489,7 +499,7 @@ export default function Notifications() {
                     key={notification.id}
                     role="button"
                     tabIndex={0}
-                    className={`cursor-pointer px-5 py-4 outline-none transition focus-visible:bg-[#edf5f6] md:px-5 md:py-5 ${
+                    className={`cursor-pointer px-4 py-3 outline-none transition focus-visible:bg-[#edf5f6] md:px-4 md:py-4 ${
                       isUnread
                         ? "bg-[#f2f9f9]"
                         : "bg-transparent md:bg-white"
@@ -499,6 +509,9 @@ export default function Notifications() {
                         markNotificationRead(
                           notification.id,
                         );
+                      }
+                      if (notification.request_id) {
+                        setSelectedRequestId(notification.request_id);
                       }
                     }}
                     onKeyDown={(event) => {
@@ -515,6 +528,9 @@ export default function Notifications() {
                         markNotificationRead(
                           notification.id,
                         );
+                      }
+                      if (notification.request_id) {
+                        setSelectedRequestId(notification.request_id);
                       }
                     }}
                   >
@@ -549,8 +565,8 @@ export default function Notifications() {
                         </p>
 
                         {notification.request_id ? (
-                          <Link
-                            href={`/app/requester/track/${notification.request_id}`}
+                          <button
+                            type="button"
                             className="mt-3 inline-block text-sm font-semibold text-[#0f5b67]"
                             onClick={(
                               event,
@@ -564,10 +580,11 @@ export default function Notifications() {
                                   notification.id,
                                 );
                               }
+                              setSelectedRequestId(notification.request_id);
                             }}
                           >
-                            Open request
-                          </Link>
+                            View request details
+                          </button>
                         ) : null}
                       </div>
                     </div>
@@ -586,6 +603,13 @@ export default function Notifications() {
           />
         )}
       </Panel>
+      <RequestDetailsSheet
+        requestId={selectedRequestId}
+        open={Boolean(selectedRequestId)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRequestId(null);
+        }}
+      />
     </div>
   );
 }

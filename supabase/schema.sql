@@ -32,6 +32,58 @@ begin
 end;
 $$;
 
+create or replace function prevent_offline_responder_assignment()
+returns trigger
+language plpgsql
+as $$
+declare
+  responder_availability resource_status;
+begin
+  if new.responder_user_id is null
+     or new.status not in ('assigned', 'acknowledged', 'en_route', 'arrived') then
+    return new;
+  end if;
+
+  select availability
+    into responder_availability
+  from responder_profiles
+  where user_id = new.responder_user_id;
+
+  if responder_availability is null then
+    raise exception 'Responder profile % does not exist', new.responder_user_id;
+  end if;
+
+  -- Automatic dispatch claims a responder by changing available -> assigned
+  -- immediately before inserting the assignment. Both states are valid here;
+  -- offline, maintenance and other non-online states are not.
+  if responder_availability not in ('available', 'assigned') then
+    raise exception 'Responder % is not online and cannot receive an assignment', new.responder_user_id;
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function prevent_offline_responder_with_active_mission()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.availability = 'offline'
+     and old.availability is distinct from 'offline'
+     and exists (
+       select 1
+       from request_assignments
+       where responder_user_id = new.user_id
+         and status in ('assigned', 'acknowledged', 'en_route', 'arrived')
+     ) then
+    raise exception 'Responder % must complete or transfer the active mission before going offline', new.user_id;
+  end if;
+
+  return new;
+end;
+$$;
+
 create table users (
   id uuid primary key default gen_random_uuid(),
   email citext unique,
@@ -239,7 +291,7 @@ create table request_assignments (
   team_id uuid references responder_teams(id) on delete set null,
   responder_user_id uuid references responder_profiles(user_id) on delete set null,
   vehicle_id uuid references vehicles(id) on delete set null,
-  assigned_by_user_id uuid not null references users(id) on delete restrict,
+  assigned_by_user_id uuid references users(id) on delete restrict,
   status assignment_status not null default 'assigned',
   eta_minutes integer check (eta_minutes is null or eta_minutes >= 0),
   assignment_note text,
@@ -440,6 +492,10 @@ create index emergency_requests_fingerprint_idx on emergency_requests(duplicate_
 create index request_status_history_request_idx on request_status_history(request_id, created_at);
 create index request_assignments_request_idx on request_assignments(request_id, assigned_at desc);
 create index request_assignments_responder_idx on request_assignments(responder_user_id, status);
+create unique index request_assignments_one_open_mission_per_responder
+  on request_assignments(responder_user_id)
+  where responder_user_id is not null
+    and status in ('assigned', 'acknowledged', 'en_route', 'arrived');
 create index notifications_recipient_idx on notifications(recipient_user_id, read_at, created_at desc);
 create index notification_deliveries_retry_idx on notification_deliveries(status, next_retry_at);
 create index device_sessions_user_active_idx on device_sessions(user_id, revoked_at, expires_at);
@@ -457,10 +513,12 @@ create trigger organisations_set_updated_at before update on organisations for e
 create trigger organisation_members_set_updated_at before update on organisation_members for each row execute function set_updated_at();
 create trigger responder_teams_set_updated_at before update on responder_teams for each row execute function set_updated_at();
 create trigger responder_profiles_set_updated_at before update on responder_profiles for each row execute function set_updated_at();
+create trigger responder_profiles_online_guard before update on responder_profiles for each row execute function prevent_offline_responder_with_active_mission();
 create trigger vehicles_set_updated_at before update on vehicles for each row execute function set_updated_at();
 create trigger emergency_requests_set_updated_at before update on emergency_requests for each row execute function set_updated_at();
 create trigger request_locations_set_updated_at before update on request_locations for each row execute function set_updated_at();
 create trigger request_assignments_set_updated_at before update on request_assignments for each row execute function set_updated_at();
+create trigger request_assignments_online_guard before insert or update on request_assignments for each row execute function prevent_offline_responder_assignment();
 create trigger operational_notes_set_updated_at before update on operational_notes for each row execute function set_updated_at();
 create trigger notification_deliveries_set_updated_at before update on notification_deliveries for each row execute function set_updated_at();
 create trigger external_integrations_set_updated_at before update on external_integrations for each row execute function set_updated_at();

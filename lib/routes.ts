@@ -1,4 +1,4 @@
-import { Activity, Bell, Building2, ClipboardList, FileSearch, Gauge, History, MapPinned, Radio, Settings, ShieldCheck, Siren, UserRound, Users, type LucideIcon } from "lucide-react";
+import { Activity, Bell, Building2, CircleDot, ClipboardList, FileSearch, Gauge, History, MapPinned, Radio, Settings, ShieldCheck, Siren, UserRound, Users, type LucideIcon } from "lucide-react";
 import type { UserRole } from "@/lib/types";
 export interface NavItem { label: string; mobileLabel?: string; href: string; icon: LucideIcon; primary?: boolean; }
 export const roleNavigation: Record<UserRole, NavItem[]> = {
@@ -8,6 +8,7 @@ export const roleNavigation: Record<UserRole, NavItem[]> = {
     { label: "History", href: "/app/requester/history", icon: History },
     { label: "Notifications", mobileLabel: "Alerts", href: "/app/requester/notifications", icon: Bell },
     { label: "Profile", href: "/app/requester/profile", icon: UserRound },
+    { label: "Settings", href: "/app/requester/settings", icon: Settings },
   ],
   dispatcher: [
     { label: "Live operations", mobileLabel: "Live", href: "/app/dispatcher", icon: Radio },
@@ -18,7 +19,7 @@ export const roleNavigation: Record<UserRole, NavItem[]> = {
   responder: [
     { label: "Mission", href: "/app/responder", icon: MapPinned },
     { label: "History", href: "/app/responder/history", icon: History },
-    { label: "Profile", href: "/app/responder/profile", icon: UserRound },
+    { label: "Availability", mobileLabel: "Status", href: "/app/responder/profile", icon: CircleDot },
   ],
   admin: [
     { label: "Overview", href: "/app/admin", icon: Activity },
