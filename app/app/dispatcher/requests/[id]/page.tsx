@@ -2,6 +2,7 @@
 
 import {
   Building2,
+  Clock3,
   MapPin,
   PhoneCall,
   Send,
@@ -12,6 +13,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { useCall, useCallRoom } from "@/components/calls/call-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 
 import { Badge } from "@/components/ui/badge";
@@ -34,10 +36,34 @@ import { Sheet } from "@/components/ui/sheet";
 import { supabase } from "@/lib/supabase";
 import { requestStatusTone } from "@/lib/utils";
 
+async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const requestInit: RequestInit = {
+    ...init,
+    credentials: "include",
+  };
+
+  let response = await fetch(input, requestInit);
+  if (response.status !== 401) return response;
+
+  const refreshResponse = await fetch("/api/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!refreshResponse.ok) return response;
+  return fetch(input, requestInit);
+}
+
 export default function DispatchRequestDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { startCall, call } = useCall();
+  useCallRoom(id);
 
   const [sheet, setSheet] = useState<
     null | "assign" | "reroute" | "reject" | "note"
@@ -81,6 +107,9 @@ export default function DispatchRequestDetail() {
     useState<any[]>([]);
 
   const [assignment, setAssignment] =
+    useState<any>(null);
+
+  const [assignedResponder, setAssignedResponder] =
     useState<any>(null);
 
   const [etaMinutes, setEtaMinutes] =
@@ -173,7 +202,74 @@ export default function DispatchRequestDetail() {
         requestData
       );
 
-      setRequest(requestData);
+      let requestDetail: any = null;
+      let emergencyRequestDetail: any = null;
+      let emergencyAssignmentDetail: any = null;
+
+      // Keep the normalized request-detail response as a fallback. Some
+      // staff sessions can read this endpoint, while others are restricted
+      // to the dispatcher-specific endpoint below.
+      if (user?.role !== "dispatcher") {
+        try {
+          const detailResponse = await fetch(`/api/requests/${requestId}`, {
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (detailResponse.ok) {
+            const detailPayload = await detailResponse.json();
+            requestDetail = detailPayload?.data ?? detailPayload;
+          }
+        } catch (detailError) {
+          console.warn("Unable to load normalized request details:", detailError);
+        }
+      }
+
+      try {
+        const emergencyResponse = await authenticatedFetch(`/api/Emergency-request/${requestId}/assignments`, {
+          cache: "no-store",
+        });
+        const emergencyPayload = await emergencyResponse.json();
+        emergencyRequestDetail = emergencyPayload?.emergencyRequest ?? null;
+        emergencyAssignmentDetail = emergencyPayload?.assignment ?? null;
+        if (emergencyPayload?.location) {
+          emergencyRequestDetail = {
+            ...emergencyRequestDetail,
+            location: emergencyPayload.location,
+          };
+        }
+      } catch (detailError) {
+        console.warn("Unable to load emergency location details:", detailError);
+      }
+
+      const emergencyLocation = Array.isArray(emergencyRequestDetail?.request_locations)
+        ? emergencyRequestDetail.request_locations[0]
+        : emergencyRequestDetail?.request_locations;
+      const detailLocation = Array.isArray(requestDetail?.request_locations)
+        ? requestDetail.request_locations[0]
+        : requestDetail?.request_locations;
+      const locationData = requestDetail?.location ?? detailLocation ?? emergencyRequestDetail?.location ?? emergencyLocation ?? requestData.location;
+      const requesterName =
+        requestDetail?.requesterName ||
+        emergencyRequestDetail?.requester?.display_name ||
+        [emergencyRequestDetail?.requester?.first_name, emergencyRequestDetail?.requester?.last_name]
+          .filter(Boolean)
+          .join(" ") ||
+        "Requester";
+
+      setRequest({
+        ...requestData,
+        requester_name: requesterName,
+        location: locationData
+          ? {
+              lat: Number(locationData.latitude ?? locationData.lat),
+              lng: Number(locationData.longitude ?? locationData.lng),
+              address: locationData.addressText || locationData.address_text || locationData.landmark || "Emergency request location",
+              accuracy: locationData.accuracyMeters ?? locationData.accuracy_meters,
+              method: locationData.locationMethod ?? locationData.location_method,
+              capturedAt: locationData.capturedAt ?? locationData.captured_at,
+            }
+          : requestData.location,
+      });
 
       // ==================================================
       // LOAD MOST RECENT ASSIGNMENT
@@ -206,6 +302,44 @@ export default function DispatchRequestDetail() {
         );
 
         setAssignment(assignmentData);
+
+        if (assignmentData?.responder_user_id) {
+          const { data: responderLocation } = await supabase
+            .from("responder_profiles")
+            .select("user_id, current_latitude, current_longitude, availability, last_location_at")
+            .eq("user_id", assignmentData.responder_user_id)
+            .maybeSingle();
+          setAssignedResponder(
+            requestDetail?.assignments?.find((item: any) => item.id === assignmentData.id)
+              ? (() => {
+                  const detailAssignment = requestDetail.assignments.find(
+                    (item: any) => item.id === assignmentData.id,
+                  );
+                  return {
+                    user_id: detailAssignment.responderUserId,
+                    name: detailAssignment.responderName,
+                    current_latitude: detailAssignment.responderLatitude,
+                    current_longitude: detailAssignment.responderLongitude,
+                    availability: assignmentData.availability,
+                  };
+                })()
+              : emergencyAssignmentDetail?.responder
+                ? {
+                    user_id: assignmentData.responder_user_id,
+                    name:
+                      emergencyAssignmentDetail.responder.user?.display_name ||
+                      [
+                        emergencyAssignmentDetail.responder.user?.first_name,
+                        emergencyAssignmentDetail.responder.user?.last_name,
+                      ].filter(Boolean).join(" "),
+                    current_latitude: emergencyAssignmentDetail.responder.current_latitude,
+                    current_longitude: emergencyAssignmentDetail.responder.current_longitude,
+                  }
+                : responderLocation,
+          );
+        } else {
+          setAssignedResponder(null);
+        }
 
         if (
           assignmentData?.eta_minutes !== null &&
@@ -383,6 +517,40 @@ export default function DispatchRequestDetail() {
       loadRequestData();
     }
   }, [user, id]);
+
+  useEffect(() => {
+    const responderUserId = assignment?.responder_user_id;
+    if (!responderUserId) return undefined;
+
+    const refreshResponderLocation = async () => {
+      const response = await authenticatedFetch(`/api/Emergency-request/${id}/assignments`, {
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const latestAssignment = payload?.assignment;
+      const latestResponder = latestAssignment?.responder;
+      if (latestAssignment && latestAssignment.responder_user_id === responderUserId) {
+        setAssignedResponder({
+          user_id: latestAssignment.responder_user_id,
+          name:
+            latestResponder?.user?.display_name ||
+            [latestResponder?.user?.first_name, latestResponder?.user?.last_name]
+              .filter(Boolean)
+              .join(" ") ||
+            "Responder",
+          current_latitude: latestResponder?.current_latitude ?? null,
+          current_longitude: latestResponder?.current_longitude ?? null,
+        });
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshResponderLocation();
+    }, 3_000);
+
+    return () => window.clearInterval(timer);
+  }, [assignment?.responder_user_id, id]);
 
   // ==================================================
   // UPDATE ASSIGNMENT STATUS
@@ -1785,6 +1953,20 @@ export default function DispatchRequestDetail() {
 
         <LiveResponseMap
           request={request}
+          responder={assignedResponder?.current_latitude != null && assignedResponder?.current_longitude != null
+            ? {
+                location: {
+                  lat: Number(assignedResponder.current_latitude),
+                  lng: Number(assignedResponder.current_longitude),
+                },
+                name: assignedResponder?.name || "Responder",
+              }
+            : undefined}
+          responderAssigned={Boolean(assignment?.responder_user_id)}
+          responderName={assignedResponder?.name || "Responder"}
+          requesterName={request.requester_name || request.requesterName || "Requester"}
+          responderStatus={assignment?.status}
+          showMyLocation={false}
           immersive
         />
 
@@ -1851,22 +2033,6 @@ export default function DispatchRequestDetail() {
               ) : null}
 
               {assignment?.status ===
-              "en_route" ? (
-                <Button
-                  onClick={() =>
-                    updateAssignmentStatus(
-                      "arrived"
-                    )
-                  }
-                  disabled={
-                    assignmentLoading
-                  }
-                >
-                  Mark arrived
-                </Button>
-              ) : null}
-
-              {assignment?.status ===
               "arrived" ? (
                 <Button
                   onClick={() =>
@@ -1882,47 +2048,7 @@ export default function DispatchRequestDetail() {
                 </Button>
               ) : null}
 
-              {assignment &&
-              !terminalAssignment ? (
-                <div className="sm:col-span-2">
-                  <FieldLabel>
-                    ETA (minutes)
-                  </FieldLabel>
-
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      type="number"
-                      min="0"
-                      value={
-                        etaMinutes
-                      }
-                      onChange={(
-                        e
-                      ) =>
-                        setEtaMinutes(
-                          e.target.value
-                        )
-                      }
-                      placeholder="e.g. 15"
-                      className="w-full rounded-lg border border-[#d7e0e7] px-3 py-2"
-                    />
-
-                    <Button
-                      type="button"
-                      onClick={
-                        updateAssignmentEta
-                      }
-                      disabled={
-                        assignmentLoading
-                      }
-                    >
-                      Update ETA
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-
-              {!terminalAssignment ? (
+              {assignment?.status === "completed" ? (
                 <Button
                   variant="outline"
                   onClick={() =>
@@ -1950,22 +2076,6 @@ export default function DispatchRequestDetail() {
                 Add note
               </Button>
 
-              {!terminalAssignment ? (
-                <Button
-                  variant="danger"
-                  onClick={() =>
-                    setSheet(
-                      "reject"
-                    )
-                  }
-                  disabled={
-                    assignmentLoading
-                  }
-                >
-                  Reject
-                </Button>
-              ) : null}
-
             </div>
           </Panel>
 
@@ -1978,10 +2088,10 @@ export default function DispatchRequestDetail() {
 
             <dl className="divide-y divide-[#e2e8ed] text-sm">
 
-              <div className="flex gap-3 p-4">
+              <div className="flex items-start gap-3 p-4">
                 <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
 
-                <div>
+                <div className="min-w-0 flex-1">
                   <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
                     Requester
                   </dt>
@@ -1997,6 +2107,59 @@ export default function DispatchRequestDetail() {
                       request.callback_number
                     }
                   </dd>
+
+                </div>
+
+                <Button
+                    type="button"
+                    size="sm"
+                    className="ml-auto shrink-0"
+                    disabled={!id || call.status !== "idle"}
+                    onClick={() => void startCall(id, "Requester", { targetRole: "requester" })}
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    Call requester
+                  </Button>
+              </div>
+
+              {assignment?.responder_user_id ? (
+                <div className="flex items-start gap-3 border-t border-[#e2e8ed] p-4">
+                  <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
+                  <div className="min-w-0 flex-1">
+                    <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+                      Driver
+                    </dt>
+                    <dd className="mt-1 font-semibold">
+                      {assignedResponder?.name || "Assigned responder"}
+                    </dd>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto shrink-0"
+                    disabled={call.status !== "idle"}
+                    onClick={() => void startCall(id, "Responder", { targetUserId: assignment.responder_user_id })}
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    Call driver
+                  </Button>
+                </div>
+              ) : null}
+
+              <div className="flex gap-3 p-4">
+                <Clock3 className="h-5 w-5 text-[#0f5b67]" />
+
+                <div>
+                  <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
+                    Estimated arrival
+                  </dt>
+
+                  <dd className="mt-1 text-[#617582]">
+                    {assignment?.eta_minutes !== null && assignment?.eta_minutes !== undefined
+                      ? `${assignment.eta_minutes} minutes`
+                      : "Not available"}
+                  </dd>
                 </div>
               </div>
 
@@ -2009,7 +2172,10 @@ export default function DispatchRequestDetail() {
                   </dt>
 
                   <dd className="mt-1 text-[#71828d]">
-                    Location data not available on this request.
+                    {request.location?.address ||
+                      (Number.isFinite(Number(request.location?.lat)) && Number.isFinite(Number(request.location?.lng))
+                        ? `${Number(request.location.lat).toFixed(5)}, ${Number(request.location.lng).toFixed(5)}`
+                        : "Location data not available on this request.")}
                   </dd>
                 </div>
               </div>

@@ -24,6 +24,7 @@ import {
   Crosshair,
   Layers3,
   LocateFixed,
+  LoaderCircle,
   Minus,
   Plus,
 } from "lucide-react";
@@ -59,6 +60,7 @@ type LiveResponseMapProps = {
   responderName?: string;
   responderStatus?: string;
   responderDistanceMetres?: number | null;
+  showMyLocation?: boolean;
   requesterName?: string;
   emptyMapMessage?: string;
   responderMode?: boolean;
@@ -128,6 +130,36 @@ function toLatLng(value: unknown): LatLng | null {
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
   return { lat, lng };
 }
+
+function requestLocationValue(request: unknown): unknown {
+  if (!request || typeof request !== "object") return null;
+  const value = request as Record<string, unknown>;
+  if (value.location) return value.location;
+  const locations = value.request_locations;
+  return Array.isArray(locations) ? locations[0] : locations;
+}
+
+function requestLocationAddress(request: unknown): string | null {
+  if (!request || typeof request !== "object") return null;
+  const value = request as Record<string, unknown>;
+  const locations = Array.isArray(value.request_locations)
+    ? value.request_locations
+    : value.request_locations
+      ? [value.request_locations]
+      : [];
+  const candidates = [value.location, ...locations, value];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const location = candidate as Record<string, unknown>;
+    const address = location.address ?? location.addressText ?? location.address_text ?? location.landmark;
+    if (typeof address === "string" && address.trim() && address !== "Current device location" && address !== "Emergency request location") {
+      return address.trim();
+    }
+  }
+  return null;
+}
+
 const formatCoordinate = (value: unknown, decimals = 6): string => {
   const number = Number(value);
   return Number.isFinite(number)
@@ -146,6 +178,15 @@ function escapeHtml(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function isLiveLeafletMap(map: Leaflet.Map | null): map is Leaflet.Map {
+  if (!map) return false;
+  try {
+    return Boolean(map.getContainer()?.isConnected);
+  } catch {
+    return false;
+  }
 }
 
 /** Road-following route from the public OSRM router. Null on any failure. */
@@ -189,37 +230,11 @@ const incidentIconHtml = (large: boolean, bouncing = false) => {
   </div>`;
 };
 
-const responderIconHtml = (heading = 0, symbol = "🚑") => `
-  <div style="position:relative;width:44px;height:44px;display:grid;place-items:center;border-radius:14px;background:#0f6872;border:3px solid #fff;box-shadow:0 8px 18px rgba(15,104,114,.35);">
-    <span style="position:absolute;font-size:15px;line-height:1;transform:translateY(-12px);">${symbol}</span>
-    <svg width="20" height="20" viewBox="0 0 24 24" style="transform:rotate(${heading}deg);transition:transform .3s linear;">
-      <path d="M12 2 19 21 12 17 5 21z" fill="#ffffff"/>
-    </svg>
-  </div>`;
-
-function responderSymbol(
-  responder?: Partial<Pick<Responder, "team" | "vehicle">>,
-): string {
-  const value = `${responder?.team ?? ""} ${responder?.vehicle ?? ""}`.toLowerCase();
-  return value.includes("police") ? "🚓" : "🚑";
-}
-
 const userIconHtml = `
   <div style="position:relative;width:22px;height:22px;">
     <span class="pulse-ring" style="position:absolute;inset:-6px;border-radius:9999px;background:rgba(26,115,232,.28);"></span>
     <span style="position:absolute;inset:0;border-radius:9999px;background:#1a73e8;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);"></span>
   </div>`;
-
-function bearing(a: LatLng, b: LatLng): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const y = Math.sin(toRad(b.lng - a.lng)) * Math.cos(toRad(b.lat));
-  const x =
-    Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
-    Math.sin(toRad(a.lat)) *
-      Math.cos(toRad(b.lat)) *
-      Math.cos(toRad(b.lng - a.lng));
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-}
 
 /* ------------------------------------------------------------------------ */
 /* Component                                                                 */
@@ -232,6 +247,7 @@ export function LiveResponseMap({
   responderName,
   responderStatus,
   responderDistanceMetres,
+  showMyLocation = true,
   requesterName,
   emptyMapMessage,
   responderMode = false,
@@ -255,6 +271,7 @@ export function LiveResponseMap({
   const lastFitKeyRef = useRef<string>("");
 
   const [ready, setReady] = useState(false);
+  const [mapLoading, setMapLoading] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("map");
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [route, setRoute] = useState<{
@@ -302,7 +319,7 @@ export function LiveResponseMap({
           ? [request]
           : [];
     const available = list
-      .map((item) => ({ item, pos: toLatLng(item?.location) }))
+      .map((item) => ({ item, pos: toLatLng(requestLocationValue(item)) }))
       .filter(
         (entry): entry is { item: EmergencyRequest; pos: LatLng } =>
           entry.pos !== null
@@ -384,6 +401,7 @@ export function LiveResponseMap({
       routeLayerRef.current = L.layerGroup().addTo(map);
       userLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
+      setMapLoading(true);
 
       // Leaflet needs a size recalculation when its container is resized
       // (mobile sheets, responsive grids, etc).
@@ -409,6 +427,7 @@ export function LiveResponseMap({
       baseLayerRef.current = [];
       lastFitKeyRef.current = "";
       setReady(false);
+      setMapLoading(true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -423,6 +442,7 @@ export function LiveResponseMap({
     if (!ready || !L || !map) return;
 
     baseLayerRef.current.forEach((layer) => map.removeLayer(layer));
+    setMapLoading(true);
 
     baseLayerRef.current =
       baseLayer === "map"
@@ -446,6 +466,16 @@ export function LiveResponseMap({
       layer.addTo(map);
       (layer as Leaflet.TileLayer).bringToBack?.();
     });
+    const primaryLayer = baseLayerRef.current[0] as Leaflet.TileLayer | undefined;
+    let settled = false;
+    const finishLoading = () => {
+      if (settled) return;
+      settled = true;
+      setMapLoading(false);
+    };
+    primaryLayer?.once("load", finishLoading);
+    const fallbackTimer = window.setTimeout(finishLoading, 8_000);
+    return () => window.clearTimeout(fallbackTimer);
   }, [ready, baseLayer]);
 
   /* ---------------------------------------------------------------- */
@@ -458,7 +488,12 @@ export function LiveResponseMap({
     const group = dataLayerRef.current;
     if (!ready || !L || !map || !group) return;
 
-    group.clearLayers();
+    if (!isLiveLeafletMap(map)) return;
+    try {
+      group.clearLayers();
+    } catch {
+      return;
+    }
 
     incidents.forEach(({ item, pos }) => {
       const marker = L.marker([pos.lat, pos.lng], {
@@ -474,12 +509,17 @@ export function LiveResponseMap({
 
       marker.on("click", () => {
         setSelectedIncidentId(item.id);
-        map.flyTo([pos.lat, pos.lng], Math.max(map.getZoom(), 15), {
-          animate: true,
-          duration: 0.6,
-        });
-        const element = marker.getElement();
-        element?.querySelector(".map-pin-bounce")?.classList.remove("map-pin-bounce");
+        if (!isLiveLeafletMap(map)) return;
+        try {
+          map.flyTo([pos.lat, pos.lng], Math.max(map.getZoom(), 15), {
+            animate: true,
+            duration: 0.6,
+          });
+          const element = marker.getElement();
+          element?.querySelector(".map-pin-bounce")?.classList.remove("map-pin-bounce");
+        } catch {
+          // The marker can be removed during a responsive rerender.
+        }
       });
 
       if (landingPreview) {
@@ -495,11 +535,7 @@ export function LiveResponseMap({
           }
         );
       } else {
-        const address =
-          item.location?.address &&
-          item.location.address !== "Current device location"
-            ? item.location.address
-            : `${formatCoordinate(pos.lat, 5)}, ${formatCoordinate(pos.lng, 5)}`;
+        const address = requestLocationAddress(item) ?? `${formatCoordinate(pos.lat, 5)}, ${formatCoordinate(pos.lng, 5)}`;
         marker.bindPopup(
           `<div style="font:600 12px/1.4 system-ui,sans-serif;color:#102b3f;min-width:160px">
              <div style="color:#a33a38;text-transform:uppercase;font-size:10px;letter-spacing:.08em">${escapeHtml(String(item.status ?? ""))}</div>
@@ -508,7 +544,7 @@ export function LiveResponseMap({
              <div style="margin-top:4px;font-weight:400;color:#8a9aa4;font-size:11px">${escapeHtml(String(item.id ?? ""))}</div>
            </div>`
         );
-        if (!showAll) marker.bindTooltip(responderMode ? "Request location" : "You", {
+        if (!showAll) marker.bindTooltip(responderMode ? "Request location" : "Requester", {
           permanent: true,
           direction: "top",
           offset: [0, -48],
@@ -634,10 +670,15 @@ export function LiveResponseMap({
 
   useEffect(() => {
     const L = LRef.current;
+    const map = mapRef.current;
     const group = routeLayerRef.current;
     if (!ready || !L || !group) return;
 
-    group.clearLayers();
+    try {
+      group.clearLayers();
+    } catch {
+      return;
+    }
     responderMarkerRef.current = null;
     if (!route || !responderPos) return;
 
@@ -662,17 +703,12 @@ export function LiveResponseMap({
       interactive: false,
     }).addTo(group);
 
-    const heading =
-      route.points.length > 1 ? bearing(route.points[0], route.points[1]) : 0;
-
     const marker = L.marker([responderPos.lat, responderPos.lng], {
       icon: L.divIcon({
         className: "",
-        html: responderMode
-          ? userIconHtml
-          : responderIconHtml(heading, responderSymbol(responder)),
-        iconSize: responderMode ? [22, 22] : [44, 44],
-        iconAnchor: responderMode ? [11, 11] : [22, 22],
+        html: userIconHtml,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
       }),
       zIndexOffset: 1000,
     });
@@ -690,7 +726,6 @@ export function LiveResponseMap({
     if (responder && !landingPreview) {
       marker.bindPopup(
         `<div style="font:600 12px/1.4 system-ui,sans-serif;color:#102b3f">
-           <div style="font-size:18px">${responderSymbol(responder)}</div>
            ${escapeHtml(responder.name ?? "Responder")}
            <div style="font-weight:400;color:#5d7080">${escapeHtml(
              [responder.team, responder.vehicle].filter(Boolean).join(" · ")
@@ -706,6 +741,7 @@ export function LiveResponseMap({
       });
     }
 
+    if (!isLiveLeafletMap(map)) return;
     marker.addTo(group);
     responderMarkerRef.current = marker;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -714,7 +750,14 @@ export function LiveResponseMap({
   /* Keep the responder marker in sync with live position updates. */
   useEffect(() => {
     if (landingPreview || !responderPos) return;
-    responderMarkerRef.current?.setLatLng([responderPos.lat, responderPos.lng]);
+    const marker = responderMarkerRef.current;
+    const group = routeLayerRef.current;
+    if (!marker || !group || !group.hasLayer(marker)) return;
+    try {
+      marker.setLatLng([responderPos.lat, responderPos.lng]);
+    } catch {
+      // Ignore updates targeting a marker removed by a route/map rerender.
+    }
   }, [responderPos, landingPreview]);
 
   /* Landing page: drive the responder along the route on a loop. */
@@ -738,6 +781,7 @@ export function LiveResponseMap({
     const start = performance.now();
 
     const tick = (now: number) => {
+      if (!routeLayerRef.current?.hasLayer(marker)) return;
       const cycle = ((now - start) % (duration * 2)) / duration;
       const t = cycle <= 1 ? cycle : 2 - cycle; // ping-pong
       let dist = t * total;
@@ -749,7 +793,11 @@ export function LiveResponseMap({
       const f = segLengths[i] ? dist / segLengths[i] : 0;
       const a = pts[i];
       const b = pts[i + 1];
-      marker.setLatLng([a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f]);
+      try {
+        marker.setLatLng([a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f]);
+      } catch {
+        return;
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -884,34 +932,44 @@ export function LiveResponseMap({
     }
   }, [ready, responderMode, userPosition]);
 
-  // On the responder's empty/searching screen, locate the responder
-  // automatically so the map starts at the real current position.
+  // Locate the responder automatically on every responder mission map so the
+  // route can be drawn immediately. Previously this stopped when a request
+  // existed, which made the route appear only after clicking "My location".
   useEffect(() => {
-  if (!responderMode || landingPreview || !ready || userPosition || request) return;
+    if (!responderMode || landingPreview || !ready || userPosition) return;
     void locateMe();
-}, [responderMode, landingPreview, ready, userPosition, request, locateMe]);
+  }, [responderMode, landingPreview, ready, userPosition, request, locateMe]);
 
   const recenter = () => {
     const L = LRef.current;
     const map = mapRef.current;
-    if (!L || !map) return;
+    if (!L || !isLiveLeafletMap(map)) return;
     const points: LatLng[] = [
       ...incidents.map((e) => e.pos),
       ...(previewPos ? [previewPos] : []),
       ...(responderPos ? [responderPos] : []),
     ];
     if (points.length === 0) return;
-    if (points.length === 1) {
-      map.flyTo([points[0].lat, points[0].lng], 16, { duration: 0.6 });
-    } else {
-      map.flyToBounds(
-        L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])),
-        { padding: [60, 60], maxZoom: 16, duration: 0.6 }
-      );
+    try {
+      if (points.length === 1) {
+        map.flyTo([points[0].lat, points[0].lng], 16, { duration: 0.6 });
+      } else {
+        map.flyToBounds(
+          L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])),
+          { padding: [60, 60], maxZoom: 16, duration: 0.6 }
+        );
+      }
+    } catch {
+      // Ignore a control click that races with map unmount/navigation.
     }
   };
 
-  const hasRequestLocation = Boolean(toLatLng(request?.location));
+  const requestLocation = requestLocationValue(request);
+  const hasRequestLocation = Boolean(toLatLng(requestLocation));
+  const displayLocation = requestLocationAddress(request) ??
+    (hasRequestLocation && requestLocation && typeof requestLocation === "object"
+      ? `${formatCoordinate((requestLocation as Record<string, unknown>).lat ?? (requestLocation as Record<string, unknown>).latitude)}, ${formatCoordinate((requestLocation as Record<string, unknown>).lng ?? (requestLocation as Record<string, unknown>).longitude)}`
+      : "Location unavailable");
   const hasResponderAssignment = Boolean(responderAssigned || responder || request?.assignedResponderId);
   const responderHasArrived = responderStatus === "arrived";
   const responderIsNear = !responderHasArrived && responderDistanceMetres != null && responderDistanceMetres <= 1_000;
@@ -941,8 +999,13 @@ export function LiveResponseMap({
       />
 
       {/* Loading shimmer while Leaflet initialises */}
-      {!ready ? (
-        <div className="map-grid absolute inset-0 z-[1] animate-pulse" />
+      {mapLoading ? (
+        <div className="absolute inset-0 z-[20] grid place-items-center bg-[#edf2f4]/85 backdrop-blur-[1px]">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/95 px-4 py-2 text-sm font-semibold text-[#102b3f] shadow-md">
+            <LoaderCircle className="h-4 w-4 animate-spin text-[#0f6872]" />
+            Loading map...
+          </div>
+        </div>
       ) : null}
 
       {/* Map labels */}
@@ -990,7 +1053,7 @@ export function LiveResponseMap({
 
         {!landingPreview ? (
           <>
-            <Button
+            {showMyLocation ? <Button
               variant="outline"
               size="icon"
               aria-label="Show my location"
@@ -999,7 +1062,7 @@ export function LiveResponseMap({
               className="bg-white shadow-md"
             >
               <LocateFixed className={cn("h-5 w-5", locating && "animate-pulse text-[#1a73e8]")} />
-            </Button>
+            </Button> : null}
 
             <Button
               variant="outline"
@@ -1087,21 +1150,13 @@ export function LiveResponseMap({
                   {responder?.name ?? responderName ?? "Responder"} on the way
                 </p>
               ) : (
-                <p className="text-sm font-semibold text-[#102b3f]">
-                  <span>Emergency sent</span>{" "}
-                  <span className="text-xs font-normal text-[#687b89]">- no ambulance or police yet</span>
-                </p>
+                <p className="text-sm font-semibold text-[#102b3f]">Emergency sent</p>
               )}
             </div>
-            {requesterName ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">{requesterName}</p> : null}
+            {requesterName ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">Requester: {requesterName}</p> : null}
+            {!responderMode && hasResponderAssignment ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">Driver: {responder?.name ?? responderName ?? "Responder"}</p> : null}
               <p className="mt-1 truncate text-sm font-semibold">
-                {hasRequestLocation &&
-                request.location?.address &&
-                request.location.address !== "Current device location"
-                  ? request.location.address
-                  : hasRequestLocation
-                    ? `${formatCoordinate(request.location.lat)}, ${formatCoordinate(request.location.lng)}`
-                    : "Location unavailable"}
+                {displayLocation}
               </p>
               <p className="mt-1 text-xs text-[#687b89]">
                 Emergency request location

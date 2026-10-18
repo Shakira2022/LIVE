@@ -21,7 +21,7 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { requestStatusTone } from "@/lib/utils";
-import { readFreshCache, writeFreshCache } from "@/lib/client-cache";
+import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { RequestDetailsSheet } from "@/components/requests/request-details-sheet";
 
 import {
@@ -170,10 +170,10 @@ export default function ResponderHistory() {
   } = useAuth();
 
   const [items, setItems] =
-    useState<HistoryItem[]>(() => user?.id ? readFreshCache<HistoryItem[]>(`responder-history:${user.id}`) ?? [] : []);
+    useState<HistoryItem[]>(() => user?.id ? readCached<HistoryItem[]>(`responder-history:${user.id}`) ?? [] : []);
 
   const [loading, setLoading] =
-    useState(() => !(user?.id && readFreshCache<HistoryItem[]>(`responder-history:${user.id}`)));
+    useState(() => !(user?.id && readCached<HistoryItem[]>(`responder-history:${user.id}`)));
 
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -309,7 +309,7 @@ export default function ResponderHistory() {
   // ==========================================================
 
   const cachedHistory = user?.id
-    ? readFreshCache<HistoryItem[]>(`responder-history:${user.id}`)
+    ? readCached<HistoryItem[]>(`responder-history:${user.id}`)
     : null;
 
   if (
@@ -359,23 +359,11 @@ export default function ResponderHistory() {
   return (
     <div className="app-page grid gap-5">
       <PageHeading
-        eyebrow="Responder"
         title="Assignment history"
         description="Completed and previous emergency assignments assigned to you."
-        action={
-          <Button
-            variant="outline"
-            onClick={() =>
-              void loadHistory(true)
-            }
-          >
-            <RefreshCw className="h-4 w-4" />
-            Refresh
-          </Button>
-        }
       />
 
-      <Panel>
+      <Panel className={items.length === 0 ? "!bg-transparent !border-b-0 sm:!bg-white sm:!border-b" : undefined}>
         <PanelHeader
           title={`${items.length} assignment${
             items.length === 1
@@ -383,6 +371,7 @@ export default function ResponderHistory() {
               : "s"
           }`}
           description="Completed missions remain here for reference and are never treated as active missions."
+          descriptionClassName="hidden sm:block"
         />
 
         {items.length === 0 ? (

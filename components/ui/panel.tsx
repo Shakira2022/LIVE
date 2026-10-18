@@ -39,6 +39,7 @@ export function Panel({
 type PanelHeaderProps = {
   title: string;
   description?: string;
+  descriptionClassName?: string;
   action?: ReactNode;
   className?: string;
 };
@@ -46,6 +47,7 @@ type PanelHeaderProps = {
 export function PanelHeader({
   title,
   description,
+  descriptionClassName,
   action,
   className,
 }: PanelHeaderProps) {
@@ -64,7 +66,7 @@ export function PanelHeader({
         </h2>
 
         {description ? (
-          <p className="mt-1 text-sm leading-6 text-[#667b89]">
+          <p className={cn("mt-1 text-sm leading-6 text-[#667b89]", descriptionClassName)}>
             {description}
           </p>
         ) : null}

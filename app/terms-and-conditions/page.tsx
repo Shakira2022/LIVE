@@ -13,9 +13,6 @@ export default function TermsAndConditionsPage() {
 
       <main className="mx-auto max-w-3xl px-5 pb-32 pt-28 sm:px-6">
         <div className="p-1 sm:p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#0f6872]">
-            Legal
-          </p>
           <h1 className="mt-3 text-3xl font-bold tracking-[-0.025em] text-[#102b3f]">
             Terms and Conditions
           </h1>

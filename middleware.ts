@@ -90,7 +90,7 @@ function securityHeaders(res: NextResponse, requestId: string, isDev: boolean): 
   // Geolocation is granted to this origin only. Everything else is off.
   res.headers.set(
     'Permissions-Policy',
-    'geolocation=(self), camera=(), microphone=(), payment=(), usb=()',
+    'geolocation=(self), camera=(), microphone=(self), payment=(), usb=()',
   );
   if (!isDev) {
     res.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');

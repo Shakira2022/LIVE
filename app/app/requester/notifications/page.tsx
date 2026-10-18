@@ -19,6 +19,7 @@ import {
   PanelHeader,
 } from "@/components/ui/panel";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { PageHeading } from "@/components/ui/page-heading";
 import { timeAgo } from "@/lib/utils";
 import { RequestDetailsSheet } from "@/components/requests/request-details-sheet";
 
@@ -458,13 +459,20 @@ export default function Notifications() {
   ).length;
 
   return (
-    <div className="app-page !pt-0 grid gap-3">
+    <div className="app-page grid gap-5">
+      <PageHeading
+        title="Notifications"
+        description="Important updates about your emergency requests appear here."
+      />
+
       <Panel
         mobileCard={false}
-        className="-mx-5 border-0 bg-white md:mx-0 md:rounded-[22px]"
+        className={notifications.length === 0 ? "!border-b-0 !bg-transparent md:!rounded-[22px] md:!border-b md:!bg-white" : "border-0 bg-white md:rounded-[22px]"}
       >
         <PanelHeader
           title={`${unread} unread`}
+          description="Notifications about request status and activity remain here for reference."
+          descriptionClassName="hidden sm:block"
           className="items-center border-b-0 px-4 py-3"
           action={
             <Button

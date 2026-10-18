@@ -137,7 +137,7 @@ export default function Register() {
       <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
       <div className="w-full max-w-2xl">
         <div className="mb-6 text-center">
-          <h1 className="text-3xl font-bold tracking-[-0.025em]">
+          <h1 className="text-3xl font-bold tracking-[-0.025em] text-[#102b3f] sm:text-5xl">
             Create a requester account
           </h1>
 

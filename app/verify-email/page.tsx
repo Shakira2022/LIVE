@@ -10,6 +10,8 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
+import { PublicHeader } from "@/components/layout/public-header";
+
 import {
   Suspense,
   useEffect,
@@ -235,6 +237,74 @@ function VerificationShell({
 
   const loading =
     state === "loading";
+
+  return (
+    <>
+      <PublicHeader />
+      <main className="min-h-dvh bg-[#f5f7f9] px-4 pb-16 pt-28 text-[#102b3f] sm:px-6 sm:pt-32">
+        <section className="mx-auto flex w-full max-w-2xl flex-col items-center text-center">
+          <div className="grid h-14 w-14 place-items-center rounded-2xl bg-[#e4f1f2] text-[#0f6872]">
+            {loading ? (
+              <LoaderCircle className="h-7 w-7 animate-spin" />
+            ) : success ? (
+              <CheckCircle2 className="h-7 w-7" />
+            ) : (
+              <CircleAlert className="h-7 w-7 text-[#c75546]" />
+            )}
+          </div>
+
+          <p className="mt-7 text-xs font-bold uppercase tracking-[0.16em] text-[#0f6872]">
+            Email verification
+          </p>
+          <h1 className="mt-4 text-3xl font-bold tracking-[-0.03em] text-[#102b3f] sm:text-5xl">
+            {loading ? "Verifying your email" : success ? "Email verified" : "Verification problem"}
+          </h1>
+          <p className="mt-5 max-w-xl text-sm leading-7 text-[#647884]" aria-live="polite">
+            {message}
+          </p>
+
+          {loading ? (
+            <div className="mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-[#dfe9ec]">
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-[#0f6872]" />
+            </div>
+          ) : null}
+
+          {success ? (
+            <div className="mt-8 grid w-full max-w-sm gap-3">
+              <Link
+                href="/login"
+                className="flex min-h-12 items-center justify-center rounded-xl bg-[#0f6872] px-5 text-sm font-bold text-white transition hover:bg-[#0c5962]"
+              >
+                Continue to sign in
+              </Link>
+              <p className="text-xs leading-5 text-[#83939c]">Your account is now active.</p>
+            </div>
+          ) : null}
+
+          {!loading && !success ? (
+            <div className="mt-8 grid w-full max-w-sm gap-3">
+              <Link
+                href="/login"
+                className="flex min-h-12 items-center justify-center rounded-xl bg-[#0f6872] px-5 text-sm font-bold text-white transition hover:bg-[#0c5962]"
+              >
+                Back to sign in
+              </Link>
+              <p className="text-xs leading-5 text-[#83939c]">
+                If your link expired, request a fresh verification email before signing in.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="mt-12 flex items-start gap-3 border-t border-[#dce5e9] pt-6 text-left">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0f6872]" />
+            <p className="text-xs leading-5 text-[#83939c]">
+              LIVE verification links are single-use and expire after one hour.
+            </p>
+          </div>
+        </section>
+      </main>
+    </>
+  );
 
   return (
     <main

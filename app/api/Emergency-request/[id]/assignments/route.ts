@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase-server";
-import { verifyAccessToken } from "@/lib/auth/jwt";
+import { COOKIE_ACCESS } from "@/lib/middleware/env";
+import { jwtConfig } from "@/lib/middleware/api/handler";
+import { verifyAccessToken } from "@/lib/middleware/jwt";
 
 
 type AssignmentBody = {
@@ -31,19 +33,23 @@ const ALLOWED_ASSIGNER_ROLES = [
  */
 async function getAuthenticatedUser() {
   const cookieStore = await cookies();
-  const token = cookieStore.get("access_token")?.value;
+  const token = cookieStore.get(COOKIE_ACCESS)?.value;
 
   if (!token) {
     return null;
   }
 
-  const payload = await verifyAccessToken(token);
+  const outcome = await verifyAccessToken(jwtConfig(), token);
 
-  if (!payload) {
+  if (!outcome.valid) {
     return null;
   }
 
-  return payload;
+  return {
+    userId: outcome.claims.sub,
+    role: outcome.claims.role,
+    organisationId: outcome.claims.org ?? null,
+  };
 }
 
 /**
@@ -1220,17 +1226,11 @@ export async function GET(
     // ============================================================
 
     const {
-      data: emergencyRequest,
+      data: emergencyRequestRow,
       error: requestError,
     } = await supabaseServer
       .from("emergency_requests")
-      .select(
-        `
-        *,
-        request_locations(*),
-        request_status_history(*)
-        `
-      )
+      .select("*")
       .eq("id", id)
       .maybeSingle();
 
@@ -1250,7 +1250,7 @@ export async function GET(
       );
     }
 
-    if (!emergencyRequest) {
+    if (!emergencyRequestRow) {
       return NextResponse.json(
         {
           ok: false,
@@ -1259,6 +1259,27 @@ export async function GET(
         { status: 404 }
       );
     }
+
+    const { data: requestLocations } = await supabaseServer
+      .from("request_locations")
+      .select("*")
+      .eq("request_id", emergencyRequestRow.id)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const { data: requesterUser } = emergencyRequestRow.requester_id
+      ? await supabaseServer
+          .from("users")
+          .select("id, first_name, last_name, display_name")
+          .eq("id", emergencyRequestRow.requester_id)
+          .maybeSingle()
+      : { data: null };
+
+    const emergencyRequest: any = {
+      ...emergencyRequestRow,
+      requester: requesterUser,
+      request_locations: requestLocations ?? [],
+    };
 
     // ============================================================
     // REQUESTER OWNERSHIP
@@ -1329,10 +1350,61 @@ export async function GET(
       }
     }
 
+    const { data: currentAssignmentRow } = await supabaseServer
+      .from("request_assignments")
+      .select("id, responder_user_id, status")
+      .eq("request_id", emergencyRequest.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let currentAssignment: any = currentAssignmentRow;
+
+    // Load the responder profile explicitly by user_id. This avoids losing
+    // valid GPS coordinates when Supabase cannot materialize the nested
+    // responder/user relationship for a particular organisation.
+    if (currentAssignmentRow?.responder_user_id) {
+      const { data: responderProfile } = await supabaseServer
+        .from("responder_profiles")
+        .select("current_latitude, current_longitude")
+        .eq("user_id", currentAssignmentRow.responder_user_id)
+        .maybeSingle();
+
+      const { data: responderUser } = await supabaseServer
+        .from("users")
+        .select("id, first_name, last_name, display_name")
+        .eq("id", currentAssignmentRow.responder_user_id)
+        .maybeSingle();
+
+      currentAssignment = {
+        ...currentAssignmentRow,
+        responder: {
+          ...(responderProfile ?? {}),
+          user: responderUser,
+        },
+      };
+    }
+
+    const rawLocation = Array.isArray(emergencyRequest.request_locations)
+      ? emergencyRequest.request_locations[0]
+      : emergencyRequest.request_locations;
+    const location = rawLocation
+      ? {
+          lat: Number(rawLocation.latitude),
+          lng: Number(rawLocation.longitude),
+          address: rawLocation.address_text ?? rawLocation.landmark ?? null,
+          accuracy: rawLocation.accuracy_meters ?? null,
+          method: rawLocation.location_method ?? null,
+          capturedAt: rawLocation.captured_at ?? null,
+        }
+      : null;
+
     return NextResponse.json(
       {
         ok: true,
         emergencyRequest,
+        location,
+        assignment: currentAssignment,
       },
       { status: 200 }
     );

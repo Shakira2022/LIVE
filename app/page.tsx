@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   LocateFixed,
   MapPin,
+  Play,
   Radio,
   ShieldCheck,
   Siren,
@@ -134,25 +135,13 @@ export default function LandingPage() {
                 </Link>
               </div>
 
-              <div className="mt-9 grid gap-4 border-t border-[#dfe6ea] pt-6 sm:grid-cols-3">
-                {[
-                  ["Fast", "Short guided request flow"],
-                  ["Visible", "Location and progress states"],
-                  ["Controlled", "Role-based access and actions"],
-                ].map(([title, text]) => (
-                  <div key={title}>
-                    <p className="text-sm font-semibold text-[#102b3f]">{title}</p>
-                    <p className="mt-1 text-xs leading-5 text-[#71838e]">{text}</p>
-                  </div>
-                ))}
-              </div>
             </motion.div>
 
             <motion.div
               initial={{ opacity: 0, scale: 0.985 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.5, delay: 0.08 }}
-              className="relative overflow-hidden rounded-[16px] border border-[#d5dfe4] bg-[#edf2f4] p-1.5 shadow-[0_20px_55px_rgba(16,43,63,.10)]"
+              className="relative overflow-hidden rounded-[16px] border border-[#d5dfe4] bg-[#edf2f4] p-1.5 shadow-[0_20px_55px_rgba(16,43,63,.10)] lg:col-start-2 lg:row-span-2"
             >
               <LiveResponseMap
                 request={request}
@@ -160,6 +149,19 @@ export default function LandingPage() {
                 landingPreview
               />
             </motion.div>
+
+            <div className="grid gap-4 border-t border-[#dfe6ea] pt-6 sm:grid-cols-3 lg:col-start-1 lg:row-start-2">
+              {[
+                ["Fast", "Short guided request flow"],
+                ["Visible", "Location and progress states"],
+                ["Controlled", "Role-based access and actions"],
+              ].map(([title, text]) => (
+                <div key={title}>
+                  <p className="text-sm font-semibold text-[#102b3f]">{title}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#71838e]">{text}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -232,6 +234,16 @@ export default function LandingPage() {
                 <p className="mt-4 leading-7 text-[#647783]">
                   Open any capability to see what it does, what the requester sees and how it supports the response workflow.
                 </p>
+                <div className="relative mt-8 flex aspect-video items-center justify-center overflow-hidden rounded-2xl bg-[#dce8eb] shadow-sm">
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(15,104,114,0.16),_transparent_58%)]" />
+                  <button
+                    type="button"
+                    aria-label="Play capability overview video"
+                    className="relative grid h-16 w-16 place-items-center rounded-full bg-[#0f6872] text-white shadow-lg transition hover:scale-105 hover:bg-[#0b5660] focus:outline-none focus:ring-4 focus:ring-[#88d3d6]/60"
+                  >
+                    <Play className="ml-1 h-7 w-7 fill-current" />
+                  </button>
+                </div>
               </div>
 
               <div className="border-t border-[#d9e2e7]">

@@ -23,6 +23,7 @@ import {
 import {
   useAuth,
 } from "@/components/auth/auth-provider";
+import { useCallRoom } from "@/components/calls/call-provider";
 import {
   LiveResponseMap,
 } from "@/components/maps/live-response-map";
@@ -550,6 +551,7 @@ export default function RequestTrackingPage() {
     typeof params?.id === "string"
       ? params.id
       : "";
+  useCallRoom(id);
 
   const cachedRequests = user?.id
     ? readCached<ApiRequest[]>(

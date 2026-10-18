@@ -7,7 +7,7 @@ export const roleNavigation: Record<UserRole, NavItem[]> = {
     { label: "Request help", mobileLabel: "Help", href: "/app/requester/new", icon: Siren, primary: true },
     { label: "History", href: "/app/requester/history", icon: History },
     { label: "Notifications", mobileLabel: "Alerts", href: "/app/requester/notifications", icon: Bell },
-    { label: "Profile", href: "/app/requester/profile", icon: UserRound },
+    { label: "Profile", href: "/app/requester/settings?section=profile", icon: UserRound },
     { label: "Settings", href: "/app/requester/settings", icon: Settings },
   ],
   dispatcher: [

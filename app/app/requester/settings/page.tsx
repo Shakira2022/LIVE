@@ -2,6 +2,7 @@
 
 import { Globe2, Mic, Moon, Sun, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { RequesterProfileContent } from "@/components/requester/profile-content";
 import { defaultRequesterPreferences, readRequesterPreferences, saveRequesterPreferences, type RequesterPreferences } from "@/lib/requester-preferences";
 
@@ -47,6 +48,7 @@ function PreferenceRow({
 }
 
 export default function RequesterSettingsPage() {
+  const searchParams = useSearchParams();
   const [preferences, setPreferences] = useState<RequesterPreferences>(defaultRequesterPreferences);
   const [section, setSection] = useState<"system" | "request" | "profile">("system");
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -66,6 +68,12 @@ export default function RequesterSettingsPage() {
     "isiNdebele",
     "XiTsonga",
   ];
+
+  useEffect(() => {
+    if (searchParams.get("section") === "profile") {
+      setSection("profile");
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     setPreferences(readRequesterPreferences());
@@ -97,7 +105,7 @@ export default function RequesterSettingsPage() {
 
   return (
     <div className="app-page !px-0 !pt-0 grid gap-4 md:!px-8">
-      <nav className="flex justify-center border-b border-[#dce5ea] bg-white px-4 md:px-0" aria-label="Settings sections">
+      <nav className="sticky top-16 z-30 flex justify-center border-b border-[#dce5ea] bg-white px-4 shadow-sm md:px-0" aria-label="Settings sections">
         <button
           type="button"
           onClick={() => setSection("system")}

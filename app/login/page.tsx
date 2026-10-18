@@ -78,6 +78,44 @@ async function warmRequesterCache(userId: string) {
   }
 }
 
+async function warmResponderCache(userId: string) {
+  try {
+    const [historyResult, availabilityResult] = await Promise.allSettled([
+      fetch("/api/responder/history", {
+        credentials: "include",
+        cache: "no-store",
+      }),
+      fetch("/api/responder/availability", {
+        credentials: "include",
+        cache: "no-store",
+      }),
+    ]);
+
+    if (historyResult.status === "fulfilled" && historyResult.value.ok) {
+      const payload = await historyResult.value.json() as {
+        data?: { assignments?: unknown[] };
+        assignments?: unknown[];
+      };
+      const assignments = payload.data?.assignments ?? payload.assignments ?? [];
+      writeFreshCache(`responder-history:${userId}`, Array.isArray(assignments) ? assignments : [], 5 * 60_000);
+    }
+
+    if (availabilityResult.status === "fulfilled" && availabilityResult.value.ok) {
+      const payload = await availabilityResult.value.json() as {
+        data?: { responder?: Record<string, unknown> } | Record<string, unknown>;
+        responder?: Record<string, unknown>;
+      };
+      const data = payload.data;
+      const responder = payload.responder ?? (data && "responder" in data ? data.responder : data);
+      if (responder && typeof responder === "object" && "availability" in responder) {
+        writeFreshCache(`responder-availability:${userId}`, responder, 5 * 60_000);
+      }
+    }
+  } catch {
+    // Login must still complete if responder cache warming fails.
+  }
+}
+
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
@@ -157,6 +195,11 @@ export default function LoginPage() {
         warmRequesterCache(result.user.id),
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ]);
+    } else if (result.user.role === "responder") {
+      await Promise.race([
+        warmResponderCache(result.user.id),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ]);
     }
 
     router.replace(safeNext ?? roleHome(result.user.role));
@@ -169,7 +212,7 @@ export default function LoginPage() {
       <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
         <div className="w-full max-w-md">
           <div className="relative top-2 mb-7 text-center">
-            <h1 className="text-3xl font-bold tracking-[-0.025em]">
+            <h1 className="text-3xl font-bold tracking-[-0.025em] sm:text-5xl">
               Sign in
             </h1>
 
@@ -194,6 +237,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
                 placeholder="Type in here"
+                className="animated-placeholder"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 required
@@ -215,7 +259,7 @@ export default function LoginPage() {
                   }}
                   className={`mb-2 text-xs font-semibold transition ${busy ? "pointer-events-none cursor-not-allowed text-[#9aaab3]" : "text-[#0f6872]"}`}
                 >
-                  Forgot?
+                  Forgot password
                 </Link>
               </div>
 
@@ -223,6 +267,7 @@ export default function LoginPage() {
                 type="password"
                 autoComplete="current-password"
                 placeholder="Type in here"
+                className="animated-placeholder"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 required

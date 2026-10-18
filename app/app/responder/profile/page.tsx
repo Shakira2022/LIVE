@@ -111,7 +111,7 @@ export default function ResponderProfile() {
 
   return (
     <div className="app-page grid gap-5">
-      <PageHeading eyebrow="Responder" title="Availability" description="Set your availability before you can receive an automatically assigned mission." />
+      <PageHeading title="Availability" description="Set your availability before you can receive an automatically assigned mission." />
 
       <section className="border-y border-[#dce5ea] bg-white">
         <div className="flex items-center justify-between gap-4 px-5 py-5 sm:px-6">

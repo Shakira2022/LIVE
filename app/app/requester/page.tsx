@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { useCallRoom } from "@/components/calls/call-provider";
 import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { readRequesterPreferences } from "@/lib/requester-preferences";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
@@ -884,6 +885,7 @@ export default function RequesterHome() {
   const activeRequestForResponder = requests.find((request) =>
     ACTIVE_REQUEST_STATUSES.has(request.status),
   );
+  useCallRoom(activeRequestForResponder?.id);
 
   useEffect(() => {
     let cancelled = false;

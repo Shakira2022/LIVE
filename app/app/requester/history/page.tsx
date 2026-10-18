@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/panel";
 
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { PageHeading } from "@/components/ui/page-heading";
 import { Button } from "@/components/ui/button";
 import { requestStatusTone } from "@/lib/utils";
 
@@ -431,15 +432,21 @@ export default function RequestHistory() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    <div className="app-page !pt-0 grid gap-3">
+    <div className="app-page grid gap-5">
+      <PageHeading
+        title="Request history"
+        description="Submitted and previous emergency requests appear here."
+      />
+
       <Panel
         mobileCard={false}
-        className="-mx-5 border-0 bg-white md:mx-0 md:rounded-[22px]"
+        className={items.length === 0 ? "!border-b-0 !bg-transparent md:!rounded-[22px] md:!border-b md:!bg-white" : "border-y border-[#dce5ea] bg-white md:rounded-[22px]"}
       >
         <PanelHeader
           title={`${items.length} requests`}
           description="Newest activity appears first."
-          className="items-center border-b-0 px-4 py-3"
+          descriptionClassName="hidden sm:block"
+          className="items-center px-4 py-3"
         />
 
         {items.length > 0 ? (

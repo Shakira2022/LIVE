@@ -83,7 +83,7 @@ export default function ForgotPasswordPage() {
           ) : (
             <form onSubmit={handleSubmit} className="border-b border-[#dce5ea] py-6">
               <div className="text-center">
-                <h1 className="text-2xl font-bold tracking-[-0.03em]">
+                <h1 className="text-3xl font-bold tracking-[-0.03em] text-[#102b3f] sm:text-5xl">
                   Recover your account
                 </h1>
 

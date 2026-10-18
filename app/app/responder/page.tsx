@@ -12,8 +12,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { useCall, useCallRoom } from "@/components/calls/call-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
-import { StatusTimeline } from "@/components/requests/status-timeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +22,6 @@ import {
   PanelHeader,
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
-import { PageSkeleton } from "@/components/ui/skeleton";
 import { readCached, writeFreshCache } from "@/lib/client-cache";
 import { requestStatusTone } from "@/lib/utils";
 
@@ -240,6 +239,8 @@ export default function ResponderMission() {
 
   const [autoArriving, setAutoArriving] = useState(false);
   const autoArrivalScheduled = useRef(false);
+  const { startCall, call } = useCall();
+  useCallRoom(mission?.assignment.request_id);
 
   /* ------------------------------------------------------------------------ */
   /* Load current responder mission                                           */
@@ -575,12 +576,8 @@ export default function ResponderMission() {
   /* Loading                                                                   */
   /* ------------------------------------------------------------------------ */
 
-  if (
-    authLoading ||
-    (loading && !initialMissionCache) ||
-    !user
-  ) {
-    return <PageSkeleton map />;
+  if (authLoading || !user) {
+    return null;
   }
 
   /* ------------------------------------------------------------------------ */
@@ -625,11 +622,9 @@ export default function ResponderMission() {
           showAll={queuedRequests.length > 0}
           hideMapStatus
           responderMode
-          emptyMapMessage={
-            queuedRequests.length > 0
-              ? "Emergency requests available - go online to be assigned"
-              : "No queued emergency requests"
-          }
+          emptyMapMessage={loading ? undefined : queuedRequests.length > 0
+            ? "Emergency requests available - go online to be assigned"
+            : "No queued emergency requests"}
           className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[calc(100dvh-4rem)] md:min-h-[560px] md:rounded-none"
         />
       </div>
@@ -749,8 +744,8 @@ export default function ResponderMission() {
           {autoArriving
             ? "Marking arrived..."
             : arrivedReady
-              ? "Mark arrived"
-              : `Arrived within ${ARRIVAL_THRESHOLD_METRES} m`}
+              ? "Arrived"
+              : "En route"}
         </Button>
       );
     }
@@ -822,7 +817,7 @@ export default function ResponderMission() {
   /* ------------------------------------------------------------------------ */
 
   return (
-    <div className="w-full pb-24 md:mx-auto md:max-w-[1480px] md:px-8 md:py-8">
+    <div className="w-full md:mx-auto md:max-w-[1480px] md:px-8 md:py-8">
       {false && <PageHeading
         eyebrow="Responder"
         title="Active mission"
@@ -857,14 +852,33 @@ export default function ResponderMission() {
           immersive
           hideMapStatus
           className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
-          mobileAction={action()}
+          mobileAction={
+            <div className="grid gap-2">
+              {action()}
+              <Button
+                type="button"
+                size="lg"
+                variant="outline"
+                className="w-full"
+                disabled={!mission?.assignment.request_id || call.status !== "idle"}
+                onClick={() => void startCall(
+                  mission!.assignment.request_id,
+                  request?.requester_name || request?.requesterName || "Requester",
+                  { targetRole: "requester" },
+                )}
+              >
+                <PhoneCall className="h-5 w-5" />
+                Call requester
+              </Button>
+            </div>
+          }
         />
 
         {/* ---------------------------------------------------------------- */}
         {/* Desktop actions                                                   */}
         {/* ---------------------------------------------------------------- */}
 
-        <div className="hidden content-start gap-4 xl:grid">
+        <div className="hidden content-start gap-4 md:grid">
           <Panel>
             <PanelHeader
               title="Mission action"
@@ -898,6 +912,21 @@ export default function ResponderMission() {
                       request?.callbackNumber ||
                       "No callback number"}
                   </p>
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="mt-3"
+                    disabled={!mission?.assignment.request_id || call.status !== "idle"}
+                    onClick={() => void startCall(
+                      mission!.assignment.request_id,
+                      request?.requester_name || request?.requesterName || "Requester",
+                      { targetRole: "requester" },
+                    )}
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    Call requester
+                  </Button>
                 </div>
               </div>
 
@@ -948,21 +977,6 @@ export default function ResponderMission() {
           </Panel>
         </div>
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Mission timeline                                                  */}
-        {/* ---------------------------------------------------------------- */}
-
-        <Panel className="xl:col-span-2">
-          <PanelHeader
-            title="Mission timeline"
-          />
-
-          <StatusTimeline
-            entries={
-              mission.statusHistory || []
-            }
-          />
-        </Panel>
       </div>
     </div>
   );

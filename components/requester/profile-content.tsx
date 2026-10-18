@@ -91,6 +91,7 @@ export function RequesterProfileContent() {
 
   async function handleLogout() {
     if (loggingOut) return;
+    if (document.body.dataset.liveCallActive === "true" && !window.confirm("A LIVE call is still active. Logging out will end the call. Continue?")) return;
     setLoggingOut(true);
     window.dispatchEvent(new Event("live:logout-start"));
     await logout();

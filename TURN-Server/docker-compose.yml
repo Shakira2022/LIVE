@@ -1,0 +1,18 @@
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: live-coturn
+    restart: unless-stopped
+    command:
+      - -n
+      - --lt-cred-mech
+      - --fingerprint
+      - --realm=${TURN_REALM}
+      - --user=${TURN_USERNAME}:${TURN_PASSWORD}
+      - --min-port=${TURN_MIN_PORT}
+      - --max-port=${TURN_MAX_PORT}
+      - --log-file=stdout
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "${TURN_MIN_PORT}-${TURN_MAX_PORT}:${TURN_MIN_PORT}-${TURN_MAX_PORT}/udp"

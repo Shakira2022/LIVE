@@ -16,7 +16,7 @@ export function applySecurityHeaders(res: NextResponse): NextResponse {
   res.headers.set('X-Frame-Options', 'DENY');
   res.headers.set('Referrer-Policy', 'no-referrer');
   res.headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  res.headers.set('Permissions-Policy', 'geolocation=(self), camera=(), microphone=(), payment=()');
+  res.headers.set('Permissions-Policy', 'geolocation=(self), camera=(), microphone=(self), payment=()');
   // API payloads carry emergency data: never store them in a shared cache.
   res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
   return res;

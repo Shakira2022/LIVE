@@ -4,6 +4,7 @@
 
 
 :root {
+  --live-keyboard-height: 0px;
   color-scheme: light;
   --canvas: 245 247 249;
   --surface: 255 255 255;
@@ -63,11 +64,23 @@ body {
 }
 button, input, textarea, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
+@media (max-width: 767px) {
+  input:focus, textarea:focus, select:focus { scroll-margin-bottom: calc(var(--live-keyboard-height) + 1rem); }
+}
 ::selection { background: rgba(15, 104, 114, .18); }
 
 @keyframes page-enter {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@keyframes placeholder-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animated-placeholder::placeholder {
+  animation: placeholder-fade 1.8s ease-in-out infinite;
 }
 
 .page-transition {

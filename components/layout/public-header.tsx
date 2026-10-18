@@ -9,6 +9,7 @@ export function PublicHeader({ disabled = false }: { disabled?: boolean }) {
     "/register",
     "/forgot-password",
     "/reset-password",
+    "/verify-email",
     "/terms-and-conditions",
   ].includes(pathname);
 
@@ -35,20 +36,23 @@ export function PublicHeader({ disabled = false }: { disabled?: boolean }) {
               </Link>
             ) : null}
             {pathname !== "/register" ? (
-              <Link href="/register" className={itemClass()} tabIndex={disabled ? -1 : undefined}>
-                <span>Register</span>
+              <Link
+                href="/register"
+                className="inline-flex min-h-10 items-center rounded-xl bg-[#0f5b67] px-4 py-2.5 text-xs font-bold text-white transition hover:bg-[#0b4d57]"
+                tabIndex={disabled ? -1 : undefined}
+              >
+                <span>Create account</span>
               </Link>
             ) : null}
             {pathname !== "/forgot-password" ? (
               <Link href="/forgot-password" className={itemClass()} tabIndex={disabled ? -1 : undefined}>
                 <span className="hidden sm:inline">Forgot password</span>
-                <span className="sm:hidden">Forgot?</span>
+                <span className="sm:hidden">Forgot password</span>
               </Link>
             ) : null}
           </nav>
         ) : (
           <nav className="ml-auto flex items-center gap-2">
-            {pathname === "/" ? <Link href="/#about" className="px-3 py-2 text-xs font-bold text-[#536879]">About</Link> : null}
             {pathname !== "/login" ? <Link href="/login" className="px-3 py-2 text-xs font-bold text-[#536879]">Sign in</Link> : null}
             {pathname === "/" ? <Link href="/register" className="rounded-xl bg-[#0f5b67] px-4 py-2.5 text-xs font-bold text-white">Create account</Link> : null}
           </nav>
