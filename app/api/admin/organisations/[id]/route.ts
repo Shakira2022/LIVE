@@ -11,7 +11,7 @@ const paramsSchema = z.object({
 });
 
 const bodySchema = z.object({
-  status: z.enum(["active", "paused", "inactive"]),
+  status: z.enum(["pending", "active", "paused", "suspended", "closed"]),
 });
 
 export const PATCH = createHandler(
