@@ -32,6 +32,14 @@ export const POST = createHandler(
     const baseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
     const model = process.env.OLLAMA_MODEL || "gemma3:1b-it-q4_K_M";
 
+    // Only what the model needs. No address, no coordinates, no request id.
+    const aiContext = {
+      category: emergency.category,
+      severity: emergency.severity,
+      status: emergency.status,
+      note: emergency.note,
+    };
+
     // Urgent CPR guidance must not depend on a small model correctly
     // following the conversation. Route it directly to the safety guidance.
     if (/\bcpr\b|not breathing|stopped breathing/i.test(question)) {
@@ -45,8 +53,8 @@ export const POST = createHandler(
       "Tell the user to contact local emergency services for immediate danger.",
       "Use only the supplied emergency context.",
       "",
-      `Emergency context: ${JSON.stringify(emergency)}`,
-      `Conversation so far: ${JSON.stringify(messages)}`,
+      `Emergency context: ${JSON.stringify(aiContext)}`,
+      `Conversation so far: ${JSON.stringify(messages.slice(-6))}`,
       `Follow-up answers: ${JSON.stringify(answers)}`,
       `Latest user question: ${question}`,
       "The latest user question is the priority. Answer it directly and do not repeat or ask a previous follow-up question unless the user specifically asks for that information.",
@@ -56,16 +64,27 @@ export const POST = createHandler(
     ].join("\n");
 
     try {
+
+
+      // Create a timer to cancel the request if it takes longer than 2 seconds
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
       const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, prompt, stream: false, options: { temperature: 0.2, num_predict: 220 } }),
+        signal: controller.signal // Attach the controller here
       });
+
+      // Clear the timer if the request succeeds
+      clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error("Ollama request failed.");
       const payload = await response.json() as { response?: string };
       return { answer: payload.response?.trim() || fallbackAnswer(question, emergency), model };
     } catch {
+      // If the 2 seconds pass, it jumps straight to here and returns the safe fallback
       return { answer: fallbackAnswer(question, emergency), model: "local-safety-fallback" };
     }
   },

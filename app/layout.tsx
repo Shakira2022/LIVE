@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/auth/auth-provider";
 import { MockStoreProvider } from "@/lib/mock-store";
+import { LiveChatbot } from "@/components/chatbot/live-chatbot";
 
 export const metadata: Metadata = {
   title: { default: "LIVE", template: "%s · LIVE" },
@@ -22,7 +23,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <AuthProvider>
-          <MockStoreProvider>{children}</MockStoreProvider>
+          <MockStoreProvider>{children}<LiveChatbot /></MockStoreProvider>
         </AuthProvider>
       </body>
     </html>
