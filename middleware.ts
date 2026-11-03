@@ -106,8 +106,11 @@ function securityHeaders(res: NextResponse, requestId: string, isDev: boolean): 
       `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
+      // Map tiles: OpenStreetMap (street map) and Esri (satellite + labels).
       "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.openstreetmap.org https://server.arcgisonline.com",
       "frame-src https://www.openstreetmap.org",
+      // router.project-osrm.org draws road routes on the live map;
+      // nominatim.openstreetmap.org is used for address search.
       `connect-src 'self' https://router.project-osrm.org https://nominatim.openstreetmap.org${supabase ? ` ${supabase} ${supabase.replace('https://', 'wss://')}` : ''}`,
       "form-action 'self'",
       "frame-ancestors 'none'",
