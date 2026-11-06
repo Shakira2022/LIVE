@@ -89,7 +89,7 @@ export const PATCH = createHandler(
         ctx.user.userId,
       )
       .select(
-        "id, recipient_user_id, request_id, notification_type, title, message, sensitivity, created_at, read_at, expires_at",
+        "id, recipient_user_id, request_id, call_id, responder_report_id, notification_type, title, message, sensitivity, created_at, read_at, expires_at",
       )
       .single();
 

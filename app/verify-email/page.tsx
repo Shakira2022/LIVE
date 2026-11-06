@@ -241,7 +241,7 @@ function VerificationShell({
   return (
     <>
       <PublicHeader />
-      <main className="min-h-dvh bg-[#f5f7f9] px-4 pb-16 pt-28 text-[#102b3f] sm:px-6 sm:pt-32">
+      <main className="min-h-[calc(100dvh-4rem)] bg-[#f5f7f9] px-4 pb-16 pt-8 text-[#102b3f] sm:px-6 sm:pt-10">
         <section className="mx-auto flex w-full max-w-2xl flex-col items-center text-center">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-[#e4f1f2] text-[#0f6872]">
             {loading ? (

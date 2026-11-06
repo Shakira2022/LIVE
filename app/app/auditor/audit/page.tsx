@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AuditorListControls, auditorFilterOptions, filterAuditorRows } from "@/components/auditor/auditor-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
+import { formatAuditAction } from "@/lib/audit-display";
+import { LogTechnicalDetails } from "@/components/auditor/log-technical-details";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type AuditLog = {
   id: string;
@@ -15,7 +19,12 @@ type AuditLog = {
   target_id?: string | null;
   result: string;
   actor_role?: string | null;
+  actor_user_id?: string | null;
   correlation_id?: string;
+  request_id?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  safe_metadata?: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -145,9 +154,15 @@ export default function AuditorAudit() {
     loading: authLoading,
     refresh,
   } = useAuth();
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = user?.id ? `auditor-audit-logs:${user.id}` : null;
+  const cachedLogs = cacheKey ? readCached<AuditLog[]>(cacheKey) : null;
+  const [logs, setLogs] = useState<AuditLog[]>(() => cachedLogs ?? []);
+  const [loading, setLoading] = useState(() => !cachedLogs);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [resultFilter, setResultFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const loadAuditLogs =
     useCallback(async () => {
@@ -158,7 +173,7 @@ export default function AuditorAudit() {
       }
 
       try {
-        setLoading(true);
+        if (!cacheKey || !readCached(cacheKey)) setLoading(true);
         setError("");
 
         const response =
@@ -180,7 +195,6 @@ export default function AuditorAudit() {
             await refresh();
           }
 
-          setLogs([]);
           setError(
             getApiMessage(
               result,
@@ -191,9 +205,9 @@ export default function AuditorAudit() {
           return;
         }
 
-        setLogs(
-          extractLogs(result),
-        );
+        const nextLogs = extractLogs(result);
+        setLogs(nextLogs);
+        if (cacheKey) writeFreshCache(cacheKey, nextLogs, 5 * 60_000);
       } catch (error) {
         console.warn(
           "Unable to load audit logs.",
@@ -202,7 +216,6 @@ export default function AuditorAudit() {
             : String(error),
         );
 
-        setLogs([]);
         setError(
           error instanceof Error
             ? error.message
@@ -212,6 +225,7 @@ export default function AuditorAudit() {
         setLoading(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -234,6 +248,22 @@ export default function AuditorAudit() {
     user?.id,
   ]);
 
+  const resultOptions = useMemo(
+    () => auditorFilterOptions(logs.map((log) => log.result)),
+    [logs],
+  );
+  const filteredLogs = useMemo(
+    () => filterAuditorRows(logs, {
+      search,
+      type: resultFilter,
+      fromDate,
+      toDate,
+      getType: (log) => log.result,
+      getDate: (log) => log.created_at,
+    }),
+    [logs, search, resultFilter, fromDate, toDate],
+  );
+
   if (authLoading || loading || !user) {
     return <PageSkeleton />;
   }
@@ -255,15 +285,31 @@ export default function AuditorAudit() {
       )}
 
       <Panel>
-        <PanelHeader title={`${logs.length} events`} />
+        <PanelHeader title="Audit event records" />
+        <AuditorListControls
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Action, actor, target, request ID"
+          typeLabel="Result"
+          typeValue={resultFilter}
+          onTypeChange={setResultFilter}
+          typeOptions={resultOptions}
+          fromDate={fromDate}
+          onFromDateChange={setFromDate}
+          toDate={toDate}
+          onToDateChange={setToDate}
+          visibleCount={filteredLogs.length}
+          totalCount={logs.length}
+        />
 
-        {logs.length === 0 && !error ? (
+        {filteredLogs.length === 0 ? (
           <div className="p-5 text-sm text-[#617582]">
-            No audit events were found.
+            {logs.length === 0 ? "No audit events were found." : "No audit events match these filters."}
           </div>
         ) : (
-          <div className="divide-y divide-[#e2e8ed]">
-            {logs.map((log) => (
+          <div role="region" aria-label="Audit log results" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto">
+            <div className="divide-y divide-[#e2e8ed]">
+            {filteredLogs.map((log) => (
               <article
                 key={log.id}
                 className="p-4 sm:p-5"
@@ -271,7 +317,7 @@ export default function AuditorAudit() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="font-semibold">
-                      {log.action}
+                      {formatAuditAction(log.action)}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
@@ -286,6 +332,17 @@ export default function AuditorAudit() {
                       {formatDateTime(log.created_at)} ·{" "}
                       {log.correlation_id || "No correlation ID"}
                     </p>
+
+                    <LogTechnicalDetails
+                      details={[
+                        { label: "Original action", value: log.action },
+                        { label: "Actor user ID", value: log.actor_user_id },
+                        { label: "Request ID", value: log.request_id },
+                        { label: "IP address", value: log.ip_address },
+                        { label: "User agent", value: log.user_agent },
+                        { label: "Metadata", value: log.safe_metadata },
+                      ]}
+                    />
                   </div>
 
                   <Badge
@@ -302,6 +359,7 @@ export default function AuditorAudit() {
                 </div>
               </article>
             ))}
+            </div>
           </div>
         )}
       </Panel>

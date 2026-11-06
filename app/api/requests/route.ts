@@ -62,6 +62,12 @@ export const GET = createHandler(
         search:
           ctx.query.search,
 
+        dateFrom:
+          ctx.query.dateFrom,
+
+        dateTo:
+          ctx.query.dateTo,
+
         limit:
           ctx.query.limit,
 

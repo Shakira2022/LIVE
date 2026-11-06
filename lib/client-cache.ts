@@ -62,3 +62,15 @@ export function clearClientCache(key: string) {
     // No-op: see writeFreshCache.
   }
 }
+
+/** Clear every cached API response for this browser tab on logout. */
+export function clearAllClientCache() {
+  if (typeof window === "undefined") return;
+  try {
+    for (const key of Object.keys(window.sessionStorage)) {
+      if (key.startsWith(PREFIX)) window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Storage is optional; logout must still complete if it is unavailable.
+  }
+}

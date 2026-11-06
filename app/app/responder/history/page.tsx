@@ -360,7 +360,7 @@ export default function ResponderHistory() {
     <div className="app-page grid gap-5">
       <PageHeading
         title="Assignment history"
-        description="Completed and previous emergency assignments assigned to you."
+        description="Current, completed and previous emergency assignments assigned to you."
       />
 
       <Panel className={items.length === 0 ? "!bg-transparent !border-b-0 sm:!bg-white sm:!border-b" : undefined}>
@@ -370,7 +370,7 @@ export default function ResponderHistory() {
               ? ""
               : "s"
           }`}
-          description="Completed missions remain here for reference and are never treated as active missions."
+          description="Current assignments stay visible here until they are completed or closed."
           descriptionClassName="hidden sm:block"
         />
 
@@ -379,11 +379,11 @@ export default function ResponderHistory() {
             icon={
               <History className="h-7 w-7" />
             }
-            title="No assignment history"
-            description="Assignments completed by you will appear here."
+            title="No assignments yet"
+            description="Current and completed assignments will appear here."
           />
         ) : (
-          <div className="divide-y divide-[#e2e8ed]">
+          <div className="max-h-[60vh] touch-pan-y overscroll-contain overflow-y-auto divide-y divide-[#e2e8ed]">
             {items.map(
               (item) => {
                 const assignment =
@@ -463,6 +463,13 @@ export default function ResponderHistory() {
                             <CheckCircle2 className="h-4 w-4" />
 
                             Mission completed
+                          </div>
+                        )}
+
+                        {!isCompleted && (
+                          <div className="mt-3 flex items-center gap-2 rounded-xl bg-[#eef5f7] px-3 py-2 text-sm font-semibold text-[#0f6872]">
+                            <Navigation className="h-4 w-4" />
+                            Current assignment
                           </div>
                         )}
 

@@ -9,6 +9,8 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
+import { formatAuditAction } from "@/lib/audit-display";
 
 type AuditResult =
   | "success"
@@ -128,8 +130,10 @@ export default function AdminAudit() {
     refresh,
   } = useAuth();
 
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const auditCacheKey = user?.id ? `admin-audit:${user.id}` : null;
+  const cachedLogs = auditCacheKey ? readCached<AuditLog[]>(auditCacheKey) : null;
+  const [logs, setLogs] = useState<AuditLog[]>(() => cachedLogs ?? []);
+  const [loading, setLoading] = useState(() => !cachedLogs);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<FilterValue>("All");
 
@@ -142,7 +146,7 @@ export default function AdminAudit() {
       }
 
       try {
-        setLoading(true);
+        if (!auditCacheKey || !readCached(auditCacheKey)) setLoading(true);
         setError("");
 
         const response =
@@ -164,7 +168,6 @@ export default function AdminAudit() {
             await refresh();
           }
 
-          setLogs([]);
           setError(
             getApiMessage(
               result,
@@ -184,8 +187,10 @@ export default function AdminAudit() {
             ? nextLogs
             : [],
         );
+        if (auditCacheKey) {
+          writeFreshCache(auditCacheKey, Array.isArray(nextLogs) ? nextLogs : [], 5 * 60_000);
+        }
       } catch {
-        setLogs([]);
         setError(
           "Unable to connect to the audit logging service.",
         );
@@ -193,6 +198,7 @@ export default function AdminAudit() {
         setLoading(false);
       }
     }, [
+      auditCacheKey,
       refresh,
       user?.id,
     ]);
@@ -254,7 +260,7 @@ export default function AdminAudit() {
     }
   }
 
-  if (authLoading || loading || !user) {
+  if (authLoading || (loading && logs.length === 0) || !user) {
     return <PageSkeleton />;
   }
 
@@ -299,7 +305,7 @@ export default function AdminAudit() {
         ) : (
           <>
             {/* Mobile */}
-            <div className="grid gap-3 p-3 md:hidden">
+            <div role="region" aria-label="Audit events list" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto p-3 md:hidden">
               {filteredLogs.map((log) => (
                 <article
                   key={log.id}
@@ -308,7 +314,7 @@ export default function AdminAudit() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h2 className="font-semibold">
-                        {log.action}
+                        {formatAuditAction(log.action)}
                       </h2>
 
                       <p className="mt-1 text-xs text-[#71828d]">
@@ -338,7 +344,7 @@ export default function AdminAudit() {
                       </dt>
 
                       <dd className="mt-1">
-                        {log.action}
+                        {formatAuditAction(log.action)}
                       </dd>
                     </div>
 
@@ -379,7 +385,7 @@ export default function AdminAudit() {
             </div>
 
             {/* Desktop */}
-            <div className="hidden overflow-x-auto md:block">
+            <div role="region" aria-label="Audit events table" tabIndex={0} className="hidden max-h-[65vh] touch-pan-y overscroll-contain overflow-auto md:block">
               <table className="w-full min-w-[1100px] text-left text-sm">
                 <thead className="border-y border-[#e2e8ed] bg-[#f7f9fa] text-xs uppercase tracking-wide text-[#70838f]">
                   <tr>
@@ -428,7 +434,7 @@ export default function AdminAudit() {
 
                       <td className="px-5 py-4">
                         <p className="font-semibold">
-                          {log.action}
+                          {formatAuditAction(log.action)}
                         </p>
 
                         <p className="mt-1 max-w-sm break-all text-xs text-[#71828d]">

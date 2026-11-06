@@ -1,33 +1,39 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
   ArrowRight,
+  Activity,
   Bell,
-  CircleAlert,
-  CircleHelp,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   History,
   MapPin,
-  Phone,
+  PhoneCall,
   Siren,
-  ShieldCheck,
   Ambulance,
   ShieldAlert,
-  Sparkles,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth/auth-provider";
-import { useCallRoom } from "@/components/calls/call-provider";
+import { useCall, useCallRoom } from "@/components/calls/call-provider";
 import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { readRequesterPreferences } from "@/lib/requester-preferences";
+import { requesterLocale, requesterText, useRequesterLanguage } from "@/lib/requester-ui";
+import { playNotificationSound } from "@/lib/notification-sound";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 import { AiAssistantSheet } from "@/components/requester/ai-assistant-sheet";
+import { BlindHomeGuidance } from "@/components/requester/blind-home-guidance";
+import { CancelRequestButton } from "@/components/requester/cancel-request-button";
+import { RequesterPageHelpButton } from "@/components/requester/requester-page-help-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +43,7 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { Sheet } from "@/components/ui/sheet";
+import { TopValidationAlert } from "@/components/ui/top-validation-alert";
 import { requestStatusTone } from "@/lib/utils";
 import type { Responder } from "@/lib/types";
 
@@ -85,6 +92,9 @@ type ApiRequest = {
   currentStatus?: string;
   current_status?: string;
   status?: string;
+
+  cancellationRequestedAt?: string | null;
+  cancellation_requested_at?: string | null;
 
   etaMinutes?: number | null;
   eta_minutes?: number | null;
@@ -145,8 +155,19 @@ type RequestAssignment = {
 };
 
 type RequestDetailResponse = {
-  data?: { assignments?: RequestAssignment[] };
+  data?: { assignments?: RequestAssignment[]; history?: RequestStatusHistory[] };
   assignments?: RequestAssignment[];
+  history?: RequestStatusHistory[];
+};
+
+type RequestStatusHistory = {
+  id: string;
+  newStatus?: string;
+  new_status?: string;
+  createdAt?: string;
+  created_at?: string;
+  note?: string | null;
+  reason?: string | null;
 };
 
 type ApiNotification = {
@@ -186,87 +207,6 @@ function distanceMetresBetween(
   return 2 * earthRadiusMetres * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-type HelpSection = "help" | "safety";
-
-function HelpAndSafetySheet({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const [section, setSection] = useState<HelpSection>("help");
-
-  return (
-    <Sheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Help & Safety"
-      description="Quick guidance for using LIVE safely."
-      className="!h-dvh !max-h-dvh rounded-none"
-    >
-      <nav className="flex border-b border-[#dce5ea] bg-white" aria-label="Help and safety sections">
-        {(["help", "safety"] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setSection(value)}
-            className={`flex-1 border-b-2 px-4 py-4 text-sm transition ${section === value ? "border-[#0f6872] font-bold text-[#0f6872]" : "border-transparent text-[#667b89]"}`}
-          >
-            {value === "help" ? "Help" : "Safety"}
-          </button>
-        ))}
-      </nav>
-
-      {section === "help" ? (
-        <div className="divide-y divide-[#dce5ea] px-5 md:px-6">
-          <HelpSheetItem icon={<MapPin />} title="Request help">
-            Choose the emergency type, confirm your current GPS location, and submit the request.
-          </HelpSheetItem>
-          <HelpSheetItem icon={<CircleAlert />} title="Track a request">
-            When a request is active, the map shows the confirmed location and response progress.
-          </HelpSheetItem>
-          <HelpSheetItem icon={<Phone />} title="Stay reachable">
-            Keep your phone nearby after submitting so responders can contact you if needed.
-          </HelpSheetItem>
-        </div>
-      ) : (
-        <div className="divide-y divide-[#dce5ea] px-5 md:px-6">
-          <HelpSheetItem icon={<ShieldCheck />} title="Use an accurate location">
-            Keep location permission enabled and check that the map reflects where you are before submitting.
-          </HelpSheetItem>
-          <HelpSheetItem icon={<CircleAlert />} title="Keep the description brief">
-            Share the most important facts and do not delay a request to write a long note.
-          </HelpSheetItem>
-          <HelpSheetItem icon={<Phone />} title="Immediate danger">
-            If you cannot use LIVE or are in immediate danger, contact your local emergency service directly.
-          </HelpSheetItem>
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-function HelpSheetItem({
-  icon,
-  title,
-  children,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <article className="flex items-start gap-4 border-b border-[#dce5ea] py-5 last:border-b-0">
-      <span className="mt-0.5 text-[#0f5b67]">{icon}</span>
-      <div>
-        <h2 className="font-semibold text-[#102b3f]">{title}</h2>
-        <p className="mt-1 text-sm leading-6 text-[#667b89]">{children}</p>
-      </div>
-    </article>
-  );
-}
-
 type NotificationResponse = {
   ok?: boolean;
 
@@ -303,6 +243,7 @@ type HomeRequest = {
   note: string;
   callbackNumber: string;
   status: string;
+  cancellationRequestedAt?: string | null;
   etaMinutes?: number;
   assignedResponderId?: string;
   createdAt: string;
@@ -371,6 +312,7 @@ async function authenticatedFetch(
       method: "POST",
       credentials: "include",
       cache: "no-store",
+      signal: requestInit.signal,
     },
   );
 
@@ -384,6 +326,20 @@ async function authenticatedFetch(
   );
 
   return response;
+}
+
+async function fetchHomeEndpoint(input: RequestInfo | URL, timeoutMs = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await authenticatedFetch(input, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function extractRequests(
@@ -551,6 +507,11 @@ function normalizeRequest(
 
     status,
 
+    cancellationRequestedAt:
+      request.cancellationRequestedAt ??
+      request.cancellation_requested_at ??
+      null,
+
     etaMinutes:
       request.etaMinutes ??
       request.eta_minutes ??
@@ -625,6 +586,9 @@ export default function RequesterHome() {
     loading: authLoading,
     refresh,
   } = useAuth();
+  const uiLanguage = useRequesterLanguage(user?.id ?? "");
+  const router = useRouter();
+  const { startCall, call } = useCall();
 
   const [
     selectedCategory,
@@ -633,11 +597,17 @@ export default function RequesterHome() {
     "Medical" | "Police" | "Firefighting"
   >("Medical");
 
-  const [helpOpen, setHelpOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [emergencyTypeChooserOpen, setEmergencyTypeChooserOpen] = useState(false);
+
+  const chooseEmergencyType = useCallback((category: "Medical" | "Police" | "Firefighting") => {
+    setSelectedCategory(category);
+    setEmergencyTypeChooserOpen(false);
+    router.push(`/app/requester/new?category=${encodeURIComponent(category)}&flow=immediate`);
+  }, [router]);
 
   function announceUrgentRequest(category: "Medical" | "Police" | "Firefighting") {
-    const preferences = readRequesterPreferences();
+    const preferences = readRequesterPreferences(user?.id);
     if (!preferences.voiceGuidance || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(
@@ -648,7 +618,6 @@ export default function RequesterHome() {
   }
 
   const initialHomeCache = user?.id ? readInitialHomeCache(user.id) : null;
-  const hasInitialHomeCache = Boolean(initialHomeCache);
 
   const [
     requests,
@@ -685,6 +654,10 @@ export default function RequesterHome() {
     () => initialResponderSnapshot?.name ?? initialResponderSnapshot?.responder?.name ?? undefined,
   );
   const [activeResponderStatus, setActiveResponderStatus] = useState<string | undefined>();
+  const [activeHistory, setActiveHistory] = useState<RequestStatusHistory[]>([]);
+  const [activityIndex, setActivityIndex] = useState(0);
+  const activeHistoryLoaded = useRef(false);
+  const homeLoadInFlight = useRef(false);
 
   /*
    * The old page depended on useMockStore():
@@ -707,16 +680,15 @@ export default function RequesterHome() {
         return;
       }
 
+      if (homeLoadInFlight.current) return;
+      homeLoadInFlight.current = true;
+
       const cacheKey = `requester-home:${user.id}`;
       const cached = readFreshCache<RequesterHomeCache>(cacheKey);
       if (cached) {
         setRequests(cached.requests);
         setUnread(cached.unread);
         setDataLoading(false);
-      }
-
-      if (!hasInitialHomeCache && requests.length === 0) {
-        setDataLoading(true);
       }
 
       try {
@@ -727,14 +699,7 @@ export default function RequesterHome() {
          * already forces a requester to their own rows, so do not send a
          * requesterId/phone from the browser.
          */
-        const requestResponse =
-          await authenticatedFetch(
-            "/api/requests?limit=50&offset=0",
-            {
-              method: "GET",
-              cache: "no-store",
-            },
-          );
+        const requestResponse = await fetchHomeEndpoint("/api/requests?limit=50&offset=0");
 
         const requestResult =
           await readJson<RequestListResponse>(
@@ -768,14 +733,7 @@ export default function RequesterHome() {
          * the requester home page from opening.
          */
         try {
-          const notificationResponse =
-            await authenticatedFetch(
-              "/api/notifications",
-              {
-                method: "GET",
-                cache: "no-store",
-              },
-            );
+          const notificationResponse = await fetchHomeEndpoint("/api/notifications", 5_000);
 
           if (
             notificationResponse.ok
@@ -829,7 +787,7 @@ export default function RequesterHome() {
         );
         writeFreshCache(
           `requester-active-request:${user.id}`,
-          { id: activeRequest?.id ?? null },
+          { id: activeRequest?.id ?? null, category: activeRequest?.category ?? null },
           activeRequest ? 5 * 60_000 : 30_000,
         );
         writeFreshCache(cacheKey, { requests: nextRequests, unread: nextUnread }, HOME_CACHE_TTL_MS);
@@ -847,11 +805,10 @@ export default function RequesterHome() {
          */
       } finally {
         setDataLoading(false);
+        homeLoadInFlight.current = false;
       }
     }, [
       refresh,
-      hasInitialHomeCache,
-      requests.length,
       user?.id,
     ]);
 
@@ -882,10 +839,99 @@ export default function RequesterHome() {
     loadHomeData,
   ]);
 
+  useEffect(() => {
+    if (!authLoading && !user) router.replace("/login?reason=session_unavailable");
+  }, [authLoading, router, user]);
+
   const activeRequestForResponder = requests.find((request) =>
     ACTIVE_REQUEST_STATUSES.has(request.status),
   );
   useCallRoom(activeRequestForResponder?.id);
+
+  useEffect(() => {
+    const handleVoiceAction = (event: Event) => {
+      const action = (event as CustomEvent<{ action?: string }>).detail?.action;
+      const detail = (event as CustomEvent<{ action?: string; category?: string }>).detail;
+      if (action === "open-emergency-type-chooser") {
+        if (activeRequestForResponder?.id) router.push(`/app/requester/track/${activeRequestForResponder.id}`);
+        else setEmergencyTypeChooserOpen(true);
+      }
+      if (action === "request-emergency-immediate" && detail?.category) {
+        if (activeRequestForResponder?.id) router.push(`/app/requester/track/${activeRequestForResponder.id}`);
+        else if (detail.category === "Medical" || detail.category === "Police" || detail.category === "Firefighting") {
+          chooseEmergencyType(detail.category);
+        }
+      }
+      if (action === "open-ai") setAiOpen(true);
+      if (action === "close-ai") setAiOpen(false);
+      if (action === "open-tracking" && activeRequestForResponder?.id) {
+        router.push(`/app/requester/track/${activeRequestForResponder.id}`);
+      }
+      if (action === "call-driver" && activeRequestForResponder?.id && activeResponder?.userId && activeResponderName) {
+        void startCall(activeRequestForResponder.id, activeResponderName, { targetRole: "responder", targetUserId: activeResponder.userId });
+      }
+    };
+    window.addEventListener("live:requester-voice-action", handleVoiceAction);
+    return () => window.removeEventListener("live:requester-voice-action", handleVoiceAction);
+  }, [activeRequestForResponder?.id, activeResponder?.userId, activeResponderName, call.isCaller, call.roomId, call.targetUserId, chooseEmergencyType, router, startCall]);
+
+  useEffect(() => {
+    if (!emergencyTypeChooserOpen) return;
+    const handleVoiceChoice = (event: Event) => {
+      const detail = (event as CustomEvent<{ transcript?: string; consumed?: boolean; isFinal?: boolean }>).detail;
+      if (!detail) return;
+      const spoken = (detail.transcript ?? "").toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+      const category = /\b(?:fire|firefighting|fire fighter|fire department|smoke|burning|flames)\b/.test(spoken)
+        ? "Firefighting"
+        : /\b(?:police|law enforcement|police department|personal safety|unsafe|being followed)\b/.test(spoken)
+          ? "Police"
+          : /\b(?:medical|medicine|ambulance|doctor|health|injured|injury|not breathing|unconscious)\b/.test(spoken)
+            ? "Medical"
+            : null;
+      if (!category) return;
+      detail.consumed = true;
+      if (detail.isFinal) chooseEmergencyType(category);
+    };
+    window.addEventListener("live:requester-voice-input", handleVoiceChoice);
+    return () => window.removeEventListener("live:requester-voice-input", handleVoiceChoice);
+  }, [emergencyTypeChooserOpen, chooseEmergencyType]);
+
+  const lastObservedRequestStatus = useRef<{ id: string; status: string } | null>(null);
+  const [responderArrivedNoticeOpen, setResponderArrivedNoticeOpen] = useState(false);
+  useEffect(() => {
+    if (!activeRequestForResponder) {
+      lastObservedRequestStatus.current = null;
+      return;
+    }
+
+    const currentStatus = activeRequestForResponder.status.toLowerCase().replace(/[\s-]+/g, "_");
+    const previous = lastObservedRequestStatus.current;
+    if (previous?.id === activeRequestForResponder.id && previous.status !== "arrived" && currentStatus === "arrived" && user?.id) {
+      playNotificationSound(user.id, 3);
+      setResponderArrivedNoticeOpen(true);
+    }
+    if (user?.id && readRequesterPreferences(user.id).voiceGuidance && (currentStatus === "assigned" || currentStatus === "en_route" || currentStatus === "arrived" || currentStatus === "closed")) {
+      const isFirstObservation = previous?.id !== activeRequestForResponder.id;
+      const statusChanged = previous?.id === activeRequestForResponder.id && previous.status !== currentStatus;
+      if (isFirstObservation || statusChanged) {
+        const message = currentStatus === "assigned"
+          ? "A responder has been assigned to your request. They may not have started travelling yet."
+          : currentStatus === "en_route"
+            ? "Your responder is on the way. Keep your phone available."
+            : currentStatus === "arrived"
+              ? "Your responder has arrived. Follow their instructions."
+              : "Your emergency request has been closed.";
+        if ("speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(requesterText(uiLanguage, message));
+          utterance.lang = ({ English: "en-ZA", Afrikaans: "af-ZA", isiZulu: "zu-ZA", isiXhosa: "xh-ZA", Sesotho: "st-ZA", Setswana: "tn-ZA", Sepedi: "nso-ZA", siSwati: "ss-ZA", Tshivenda: "ve-ZA", isiNdebele: "nr-ZA", XiTsonga: "ts-ZA" } as const)[uiLanguage];
+          utterance.rate = 0.94;
+          window.speechSynthesis.speak(utterance);
+        }
+      }
+    }
+    lastObservedRequestStatus.current = { id: activeRequestForResponder.id, status: currentStatus };
+  }, [activeRequestForResponder?.id, activeRequestForResponder?.status, uiLanguage, user?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -901,6 +947,9 @@ export default function RequesterHome() {
     setActiveResponder(cachedResponder?.responder ?? undefined);
     setActiveResponderAssigned(cachedResponder?.assigned ?? false);
     setActiveResponderName(cachedResponder?.name ?? cachedResponder?.responder?.name ?? undefined);
+    setActiveHistory([]);
+    setActivityIndex(0);
+    activeHistoryLoaded.current = false;
 
     const loadResponder = async () => {
       try {
@@ -910,6 +959,14 @@ export default function RequesterHome() {
         });
         if (!response.ok) return;
         const result = await readJson<RequestDetailResponse>(response);
+        const history = result?.data?.history ?? result?.history ?? [];
+        if (!cancelled) {
+          setActiveHistory(history);
+          if (!activeHistoryLoaded.current && history.length > 0) {
+            setActivityIndex(history.length - 1);
+            activeHistoryLoaded.current = true;
+          }
+        }
         const assignments = result?.data?.assignments ?? result?.assignments ?? [];
         const assignment = assignments.at(-1);
         const responderUserId = assignment?.responderUserId ?? assignment?.responder_user_id;
@@ -974,13 +1031,9 @@ export default function RequesterHome() {
     return <PageSkeleton map />;
   }
 
-  /*
-   * Protected routing normally redirects an unauthenticated visitor before
-   * this point. Keep a skeleton briefly if AuthProvider has no user rather
-   * than trying to render user.name.
-   */
+  /* Redirect after failed auth instead of leaving a permanent skeleton. */
   if (!user) {
-    return <PageSkeleton map />;
+    return null;
   }
 
   const active = activeRequestForResponder;
@@ -999,39 +1052,57 @@ export default function RequesterHome() {
    */
   if (active) {
     return (
-      <div className="flex h-[calc(100dvh-4rem-5rem)] flex-col overflow-hidden bg-transparent pt-0 md:grid md:h-[calc(100dvh-4rem)] md:grid-rows-[auto_minmax(0,1fr)] md:gap-5 md:overflow-hidden md:px-8 md:pt-8">
+      <div className="flex h-[calc(100dvh-4rem-5rem)] flex-col overflow-hidden bg-transparent pt-0 md:grid md:h-auto md:min-h-[calc(100dvh-4rem)] md:grid-rows-[auto_auto] md:gap-5 md:overflow-visible md:px-8 md:pt-8 md:pb-8">
+        <BlindHomeGuidance
+          userId={user.id}
+          language={uiLanguage}
+          loading={false}
+          emergency={{
+            id: active.id,
+            category: active.category,
+            note: active.note,
+            address: active.location.address,
+            status: active.status,
+            driverAssigned: activeResponderAssigned,
+            driverName: activeResponderName,
+            driverStatus: activeResponderStatus,
+            etaMinutes: active.etaMinutes,
+          }}
+        />
         <div className="mb-0 px-5 py-3 sm:px-6 md:hidden">
           <PageHeading
-            title={`Hello, ${user.name.split(" ")[0]}`}
-            description="Your active request is shown below."
+            title={requesterText(uiLanguage, "Hello, {name}", { name: user.name })}
+            description={requesterText(uiLanguage, "Your active request is shown below.")}
             compact
+            action={<RequesterPageHelpButton page="home" language={uiLanguage} />}
           />
         </div>
 
         {/* Desktop heading only */}
         <div className="hidden md:block">
           <PageHeading
-            title={`Hello, ${
-              user.name.split(" ")[0]
-            }`}
-            description="Your active request is shown below."
+            title={requesterText(uiLanguage, "Hello, {name}", { name: user.name })}
+            description={requesterText(uiLanguage, "Your active request is shown below.")}
             action={
-              <Link href="/app/requester/notifications">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  aria-label="Notifications"
-                  className="relative"
-                >
-                  <Bell className="h-5 w-5" />
+              <div className="flex items-center gap-2">
+                <Link href="/app/requester/notifications">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label={requesterText(uiLanguage, "Notifications")}
+                    className="relative"
+                  >
+                    <Bell className="h-5 w-5" />
 
-                  {unread ? (
-                    <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#d53f3d] px-1 text-[10px] text-white">
-                      {unread}
-                    </span>
-                  ) : null}
-                </Button>
-              </Link>
+                    {unread ? (
+                      <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#d53f3d] px-1 text-[10px] text-white">
+                        {unread}
+                      </span>
+                    ) : null}
+                  </Button>
+                </Link>
+                <RequesterPageHelpButton page="home" language={uiLanguage} />
+              </div>
             }
           />
         </div>
@@ -1049,13 +1120,14 @@ export default function RequesterHome() {
           className="
             relative z-10 min-h-0 flex-1
 
-            md:static md:z-auto md:grid md:h-full md:min-h-0 md:flex-none
+            md:static md:z-auto md:grid md:h-auto md:min-h-[min(72dvh,800px)] md:flex-none
             md:grid-cols-[1.35fr_.65fr] md:gap-4
           "
         >
           <div className="h-full min-h-0 overflow-hidden md:min-h-0 md:overflow-hidden">
             <LiveResponseMap
               request={active as any}
+              uiLanguage={uiLanguage}
               responder={activeResponder ?? responder}
               responderAssigned={activeResponderAssigned}
               responderName={activeResponderName}
@@ -1076,31 +1148,47 @@ export default function RequesterHome() {
               className="
                 h-full min-h-0 w-full rounded-none
 
-                md:h-full md:min-h-0
+                md:h-[min(72dvh,800px)] md:min-h-[500px] md:self-start
                 md:rounded-[22px]
               "
               mobileAction={
-                <div className="flex gap-2">
-                  <Link
-                    href={`/app/requester/track/${active.id}`}
-                    className="min-w-0 flex-[7]"
-                  >
-                    <Button className="w-full">
-                      Open tracking
+                <div className="grid grid-cols-2 gap-2">
+                  <Link href={`/app/requester/track/${active.id}`} className="min-w-0">
+                    <Button data-live-voice-number="1" className="w-full px-2 text-xs sm:text-sm">
+                      {requesterText(uiLanguage, "Open tracking")}
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   </Link>
                   <Button
+                    data-live-voice-number="2"
                     type="button"
-                    onClick={() => setAiOpen(true)}
-                    variant="primary"
-                    size="icon"
-                    className="w-full flex-[3] bg-[#1b8290] hover:bg-[#146c77]"
-                    aria-label="Ask LIVE AI"
-                    title="Ask LIVE AI"
+                    variant="outline"
+                    disabled={!activeResponderAssigned || !activeResponder?.userId || call.status !== "idle"}
+                    onClick={() => {
+                      if (!activeResponder?.userId) return;
+                      void startCall(`responder:${activeResponder.userId}`, activeResponderName || activeResponder.name || "Responder", {
+                        targetRole: "responder",
+                        targetUserId: activeResponder.userId,
+                        requestId: active.id,
+                      });
+                    }}
+                    className="w-full min-w-0 px-2 text-xs sm:text-sm"
+                    aria-label={requesterText(uiLanguage, "Call assigned responder")}
+                    title={requesterText(uiLanguage, "Call assigned responder")}
                   >
-                    <Sparkles className="h-5 w-5" />
+                    <PhoneCall className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{requesterText(uiLanguage, "Call responder")}</span>
                   </Button>
+                  <CancelRequestButton
+                    key={active.id}
+                    requestId={active.id}
+                    status={active.status}
+                    language={uiLanguage}
+                    requestedAlready={Boolean(active.cancellationRequestedAt)}
+                    voiceButtonNumber={3}
+                    onRequested={() => void loadHomeData()}
+                    className="col-span-2 min-w-0"
+                  />
                 </div>
               }
             />
@@ -1110,14 +1198,14 @@ export default function RequesterHome() {
           <div className="hidden content-start gap-4 md:grid">
             <Panel>
               <PanelHeader
-                title="Active request"
+                title={requesterText(uiLanguage, "Active request")}
                 action={
                   <Badge
                     tone={requestStatusTone(
                       active.status as any
                     )}
                   >
-                    {active.status}
+                    {requesterText(uiLanguage, active.status)}
                   </Badge>
                 }
               />
@@ -1128,62 +1216,86 @@ export default function RequesterHome() {
                 </p>
 
                 <h2 className="mt-2 text-xl font-semibold">
-                  {active.category}
+                  {requesterText(uiLanguage, active.category)}
                 </h2>
 
                 <p className="mt-2 text-sm leading-6 text-[#5f7482]">
                   {active.note}
                 </p>
 
-                <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="mt-4 grid grid-cols-1 gap-3">
                   <div className="rounded-xl bg-[#f2f6f8] p-3">
                     <Clock3 className="h-4 w-4 text-[#0f5b67]" />
 
                     <p className="mt-2 text-xs font-semibold text-[#748693]">
-                      Estimated arrival
+                      {requesterText(uiLanguage, "Estimated arrival")}
                     </p>
 
                     <p className="mt-1 font-semibold">
                       {active.etaMinutes
                         ? `${active.etaMinutes} min`
-                        : "Pending"}
+                        : requesterText(uiLanguage, "Pending")}
                     </p>
                   </div>
 
-                  <div className="rounded-xl bg-[#f2f6f8] p-3">
-                    <MapPin className="h-4 w-4 text-[#0f5b67]" />
-
-                    <p className="mt-2 text-xs font-semibold text-[#748693]">
-                      Location
-                    </p>
-
-                    <p className="mt-1 truncate font-semibold">
-                      {active.location.method}
-                    </p>
-                  </div>
                 </div>
 
-                <Link
-                  href={`/app/requester/track/${active.id}`}
-                >
-                  <Button className="mt-4 w-full">
-                    Open tracking
-                    <ArrowRight className="h-4 w-4" />
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <Link href={`/app/requester/track/${active.id}`} className="min-w-0">
+                    <Button data-live-voice-number="1" className="w-full min-w-0 px-2 text-xs sm:text-sm">
+                      {requesterText(uiLanguage, "Open tracking")}
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                  <Button
+                    data-live-voice-number="2"
+                    type="button"
+                    variant="outline"
+                    disabled={!activeResponderAssigned || !activeResponder?.userId || call.status !== "idle"}
+                    onClick={() => {
+                      if (!activeResponder?.userId) return;
+                      void startCall(`responder:${activeResponder.userId}`, activeResponderName || activeResponder.name || "Responder", {
+                        targetRole: "responder",
+                        targetUserId: activeResponder.userId,
+                        requestId: active.id,
+                      });
+                    }}
+                    className="w-full min-w-0 px-2 text-xs sm:text-sm"
+                  >
+                    <PhoneCall className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{requesterText(uiLanguage, "Call responder")}</span>
                   </Button>
-                </Link>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <CancelRequestButton
+                    key={active.id}
+                    requestId={active.id}
+                    status={active.status}
+                    language={uiLanguage}
+                    requestedAlready={Boolean(active.cancellationRequestedAt)}
+                    voiceButtonNumber={3}
+                    onRequested={() => void loadHomeData()}
+                    className="col-span-2 min-w-0"
+                  />
+                </div>
               </div>
             </Panel>
 
-            <Button
-              type="button"
-              onClick={() => setAiOpen(true)}
-              variant="outline"
-              size="lg"
-              className="w-full"
-            >
-              <Sparkles className="h-5 w-5" />
-              Ask LIVE AI
-            </Button>
+            <Panel>
+              <PanelHeader title={requesterText(uiLanguage, "Activity")} description={requesterText(uiLanguage, "Latest request status update.")} />
+              <div className="flex items-center gap-3 p-4">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e7f3f4] text-[#0f5b67]"><Activity className="h-4 w-4" /></span>
+                <div key={`${active.id}-${activityIndex}`} className="activity-status-transition min-w-0 flex-1">
+                  <p className="font-semibold capitalize text-[#102b3f]">{requesterText(uiLanguage, (activeHistory[activityIndex]?.newStatus ?? activeHistory[activityIndex]?.new_status ?? active.status).replace(/_/g, " "))}</p>
+                  <p className="mt-1 text-xs text-[#84949d]">{(() => { const timestamp = activeHistory[activityIndex]?.createdAt ?? activeHistory[activityIndex]?.created_at ?? active.updatedAt; return timestamp ? new Intl.DateTimeFormat(requesterLocale(uiLanguage), { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp)) : requesterText(uiLanguage, "Latest status"); })()}</p>
+                  {activeHistory[activityIndex]?.note || activeHistory[activityIndex]?.reason ? <p className="mt-1 text-sm leading-5 text-[#5f7482]">{requesterText(uiLanguage, activeHistory[activityIndex].note ?? activeHistory[activityIndex].reason ?? "")}</p> : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button type="button" aria-label={requesterText(uiLanguage, "View earlier activity")} disabled={activityIndex <= 0} onClick={() => setActivityIndex((index) => Math.max(0, index - 1))} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce5ea] text-[#0f5b67] disabled:opacity-40"><ChevronLeft className="h-4 w-4" /></button>
+                  <button type="button" aria-label={requesterText(uiLanguage, "View newer activity")} disabled={activityIndex >= activeHistory.length - 1} onClick={() => setActivityIndex((index) => Math.min(activeHistory.length - 1, index + 1))} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce5ea] text-[#0f5b67] disabled:opacity-40"><ChevronRight className="h-4 w-4" /></button>
+                </div>
+              </div>
+            </Panel>
           </div>
         </div>
 
@@ -1197,6 +1309,9 @@ export default function RequesterHome() {
           note: active.note,
           status: active.status,
           location: active.location,
+          responder: activeResponder?.userId && activeResponderName
+            ? { id: activeResponder.userId, name: activeResponderName }
+            : null,
         }}
       />
       </div>
@@ -1205,28 +1320,34 @@ export default function RequesterHome() {
 
   return (
     <div className="app-page grid gap-5">
+      <TopValidationAlert
+        open={responderArrivedNoticeOpen}
+        onClose={() => setResponderArrivedNoticeOpen(false)}
+        message={requesterText(uiLanguage, "Your responder has arrived at the scene.")}
+        autoDismissMs={12_000}
+        topClassName="top-20"
+      />
+      <BlindHomeGuidance userId={user.id} language={uiLanguage} loading={false} emergency={null} />
       <PageHeading
-        title={`Hello, ${user.name.split(" ")[0]}`}
-        action={
-          <span className="block pt-2.5 text-right text-sm leading-6 text-[#667b89]">
-            Request help quickly.
-          </span>
-        }
+        title={requesterText(uiLanguage, "Hello, {name}", { name: user.name })}
+        description={requesterText(uiLanguage, "Request help quickly.")}
+        action={<RequesterPageHelpButton page="home" language={uiLanguage} />}
       />
 
       {/* Emergency Action Card */}
       <Panel mobileCard={false} className="-mx-5 border-x-0 p-6 md:mx-0 md:border-x bg-white text-slate-900">
         <div className="flex flex-col items-center text-center space-y-5">
           <header className="space-y-1">
-            <h2 className="text-xl font-bold text-slate-900">Immediate Emergency Assistance</h2>
+            <h2 className="text-xl font-bold text-slate-900">{requesterText(uiLanguage, "Immediate Emergency Assistance")}</h2>
             <p className="text-xs text-slate-500 max-w-sm">
-              Select your emergency type to request priority dispatch.
+              {requesterText(uiLanguage, "Select your emergency type to request priority dispatch.")}
             </p>
           </header>
 
           {/* Category Selector Toggles */}
           <div className="grid w-full max-w-md grid-cols-3 gap-2 border-b border-[#dfe7ec]">
             <button
+              data-live-voice-number="1"
               type="button"
               onClick={() => setSelectedCategory("Medical")}
               className={`flex items-center justify-center gap-2 border-b-2 px-4 py-3 text-xs font-semibold transition-all ${
@@ -1236,10 +1357,11 @@ export default function RequesterHome() {
               }`}
             >
               <Ambulance className="h-4 w-4" />
-              Medical
+              {requesterText(uiLanguage, "Medical")}
             </button>
 
             <button
+              data-live-voice-number="2"
               type="button"
               onClick={() => setSelectedCategory("Firefighting")}
               className={`flex items-center justify-center gap-2 border-b-2 px-2 py-3 text-xs font-semibold transition-all ${
@@ -1249,10 +1371,11 @@ export default function RequesterHome() {
               }`}
             >
               <Siren className="h-4 w-4" />
-              Fire
+              {requesterText(uiLanguage, "Fire")}
             </button>
 
             <button
+              data-live-voice-number="3"
               type="button"
               onClick={() => setSelectedCategory("Police")}
               className={`flex items-center justify-center gap-2 border-b-2 px-4 py-3 text-xs font-semibold transition-all ${
@@ -1262,7 +1385,7 @@ export default function RequesterHome() {
               }`}
             >
               <ShieldAlert className="h-4 w-4" />
-              Police
+              {requesterText(uiLanguage, "Police")}
             </button>
           </div>
 
@@ -1271,17 +1394,18 @@ export default function RequesterHome() {
             <Link
               href={{
                 pathname: "/app/requester/new",
-                query: { category: selectedCategory },
+                query: { category: selectedCategory, flow: "immediate" },
               }}
               className="block w-full"
               onClick={() => announceUrgentRequest(selectedCategory)}
             >
               <button
+                data-live-voice-number="4"
                 type="button"
                 className="flex w-full items-center justify-center gap-3 bg-[#d53f3d] px-6 py-4 text-base font-bold text-white transition-all hover:bg-[#c23533] active:scale-[0.98]"
               >
                 <Siren className="h-6 w-6 animate-pulse" />
-                <span>REQUEST {selectedCategory.toUpperCase()} HELP</span>
+                <span>{requesterText(uiLanguage, `REQUEST ${selectedCategory.toUpperCase()} HELP`)}</span>
               </button>
             </Link>
           </div>
@@ -1289,12 +1413,12 @@ export default function RequesterHome() {
           {/* GPS Location Status Indicator */}
           <div className="flex items-center justify-center gap-2 border-t border-[#dfe7ec] px-4 py-2 text-xs text-slate-500">
             <MapPin className="h-3.5 w-3.5 text-[#0f5b67]" />
-            <span>GPS location will be automatically attached</span>
+            <span>{requesterText(uiLanguage, "GPS location will be automatically attached")}</span>
           </div>
         </div>
       </Panel>
 
-      <div className="-mx-5 divide-y divide-[#dfe7ec] bg-transparent md:mx-0 md:grid md:grid-cols-3 md:gap-3 md:divide-y-0 md:border-0 md:bg-transparent">
+      <div className="-mx-5 divide-y divide-[#dfe7ec] bg-transparent md:mx-0 md:grid md:grid-cols-1 md:gap-3 md:divide-y-0 md:border-0 md:bg-transparent">
         <Link
           href="/app/requester/history"
           className="
@@ -1311,35 +1435,56 @@ export default function RequesterHome() {
 
           <span>
             <span className="block font-semibold">
-              Request history
+              {requesterText(uiLanguage, "Request history")}
             </span>
 
             <span className="mt-1 block text-xs text-[#71828d]">
-              {requests.length} stored requests
+              {requesterText(uiLanguage, "{count} stored requests", { count: requests.length })}
             </span>
           </span>
         </Link>
-
-        <button
-          type="button"
-          onClick={() => setHelpOpen(true)}
-          className="flex items-center gap-4 px-5 py-4 transition active:bg-[#eef4f6] md:p-4 md:hover:bg-[#f8fafb]"
-        >
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#edf2f5] text-[#536879]">
-            <CircleHelp className="h-5 w-5" />
-          </span>
-
-          <span>
-            <span className="block font-semibold">Help &amp; Safety</span>
-            <span className="mt-1 block text-xs text-[#71828d]">
-              Safety and how LIVE works
-            </span>
-          </span>
-        </button>
-
       </div>
 
-      <HelpAndSafetySheet open={helpOpen} onOpenChange={setHelpOpen} />
+      <Sheet
+        open={emergencyTypeChooserOpen}
+        onOpenChange={setEmergencyTypeChooserOpen}
+        title={requesterText(uiLanguage, "Choose emergency help")}
+        description={requesterText(uiLanguage, "Choose Medical, Fire, or Police. We will confirm your location before sending the request.")}
+        side="center"
+      >
+        <div className="grid gap-3 px-5 py-4 sm:px-6">
+          {([
+            { label: "Medical", category: "Medical" as const },
+            { label: "Fire", category: "Firefighting" as const },
+            { label: "Police", category: "Police" as const },
+          ]).map((option, index) => (
+            <Button
+              key={option.category}
+              data-live-voice-option
+              type="button"
+              variant="outline"
+              className="min-h-14 justify-start gap-3 text-left"
+              onClick={() => chooseEmergencyType(option.category)}
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e7f3f4] text-xs font-bold text-[#0f6872]">{index + 1}</span>
+              <span>{requesterText(uiLanguage, option.label)}</span>
+            </Button>
+          ))}
+          <p className="text-center text-xs text-[#71838f]">{requesterText(uiLanguage, "With voice commands on, say Medical, Fire, or Police, or say an option number and select.")}</p>
+        </div>
+      </Sheet>
+      <AiAssistantSheet
+        open={aiOpen}
+        onOpenChange={setAiOpen}
+        emergency={{
+          id: "",
+          category: "General assistance",
+          severity: "High",
+          note: "",
+          status: "",
+          location: { address: "Location unavailable" },
+        }}
+      />
     </div>
   );
 }

@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import {
+  ArrowLeft,
   AlertCircle,
-  Clock3,
+  ChevronLeft,
+  ChevronRight,
   History,
-  MapPin,
+  PhoneCall,
   RefreshCw,
-  Siren,
 } from "lucide-react";
 import {
   useCallback,
@@ -23,7 +24,7 @@ import {
 import {
   useAuth,
 } from "@/components/auth/auth-provider";
-import { useCallRoom } from "@/components/calls/call-provider";
+import { useCall, useCallRoom } from "@/components/calls/call-provider";
 import {
   LiveResponseMap,
 } from "@/components/maps/live-response-map";
@@ -46,7 +47,11 @@ import {
 import {
   requestStatusTone,
 } from "@/lib/utils";
-import { readCached } from "@/lib/client-cache";
+import { clearClientCache, readCached } from "@/lib/client-cache";
+import type { RequesterLanguage } from "@/lib/requester-language";
+import { requesterLocale, requesterText, useRequesterLanguage } from "@/lib/requester-ui";
+import { useBlindVoiceAnnouncement } from "@/components/requester/use-blind-voice-announcement";
+import { CancelRequestButton } from "@/components/requester/cancel-request-button";
 import type { Responder } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
@@ -64,6 +69,10 @@ type EmergencyStatus =
   | "closed"
   | "cancelled"
   | "rejected";
+
+function isTerminalRequestStatus(status?: string | null) {
+  return ["completed", "closed", "cancelled", "rejected"].includes(String(status ?? "").toLowerCase());
+}
 
 type ApiLocation = {
   latitude?: number | null;
@@ -124,6 +133,8 @@ type ApiRequest = {
   reference?: string;
   requesterId?: string;
   currentStatus?: EmergencyStatus;
+  cancellationRequestedAt?: string | null;
+  cancellation_requested_at?: string | null;
   callbackNumber?: string | null;
   etaMinutes?: number | null;
   assignedResponderId?: string | null;
@@ -195,6 +206,7 @@ type UiRequest = {
   note: string;
   callbackNumber: string;
   status: EmergencyStatus;
+  cancellationRequestedAt?: string | null;
   etaMinutes?: number;
   assignedResponderId?: string;
   createdAt: string;
@@ -398,6 +410,11 @@ function normalizeRequest(
 
     status,
 
+    cancellationRequestedAt:
+      request.cancellationRequestedAt ??
+      request.cancellation_requested_at ??
+      null,
+
     etaMinutes:
       request.etaMinutes ??
       request.eta_minutes ??
@@ -487,6 +504,7 @@ function normalizeRequest(
 
 function formatDateTime(
   value: string,
+  language: RequesterLanguage,
 ) {
   const date =
     new Date(value);
@@ -500,7 +518,7 @@ function formatDateTime(
   }
 
   return date.toLocaleString(
-    undefined,
+    requesterLocale(language),
     {
       dateStyle: "medium",
       timeStyle: "short",
@@ -546,6 +564,19 @@ export default function RequestTrackingPage() {
     user,
     loading: authLoading,
   } = useAuth();
+  const { call, startCall } = useCall();
+  const isResponder = user?.role === "responder";
+  const isRequester = user?.role === "requester";
+  const uiLanguage = useRequesterLanguage(user?.id ?? "");
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const updateViewport = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewport();
+    mediaQuery.addEventListener("change", updateViewport);
+    return () => mediaQuery.removeEventListener("change", updateViewport);
+  }, []);
 
   const id =
     typeof params?.id === "string"
@@ -562,7 +593,10 @@ export default function RequestTrackingPage() {
   const cachedRequest = cachedRequests?.find(
     (cached) => cached.id === id,
   );
-  const cachedResponder = user?.id
+  // Requesters must load the current status before showing a responder marker;
+  // cached history may still describe a mission that has since ended.
+  const initialCachedRequest = user?.role === "requester" ? null : cachedRequest;
+  const cachedResponder = user?.id && user.role !== "requester"
     ? readCached<ResponderSnapshot>(`requester-responder:${id}`)
     : null;
 
@@ -572,16 +606,18 @@ export default function RequestTrackingPage() {
   ] =
     useState<UiRequest | null>(
       () =>
-        cachedRequest
-          ? normalizeRequest(cachedRequest)
+        initialCachedRequest
+          ? normalizeRequest(initialCachedRequest)
           : null,
     );
+
+  const [activityIndex, setActivityIndex] = useState(0);
 
   const [
     loading,
     setLoading,
   ] =
-    useState(() => !cachedRequest);
+    useState(() => !initialCachedRequest);
 
   const [
     notFound,
@@ -605,6 +641,58 @@ export default function RequestTrackingPage() {
     () => cachedResponder?.assigned ?? false,
   );
   const [activeResponderStatus, setActiveResponderStatus] = useState<string | undefined>();
+  const requestIsTerminal = isTerminalRequestStatus(request?.status);
+  const canCallRequester = user?.role === "responder" &&
+    Boolean(request?.assignedResponderId === user.id) &&
+    Boolean(request?.requesterId) &&
+    ["assigned", "acknowledged", "en_route", "arrived"].includes(String(request?.status).toLowerCase());
+  const trackedRequestLocation = request?.location;
+  const trackingDistanceMetres = !requestIsTerminal && activeResponder?.location && trackedRequestLocation?.lat != null && trackedRequestLocation.lng != null
+    ? distanceMetresBetween(
+        activeResponder.location.lat,
+        activeResponder.location.lng,
+        trackedRequestLocation.lat,
+        trackedRequestLocation.lng,
+      )
+    : null;
+  const responderHasArrived = activeResponderStatus === "arrived" || request?.status === "arrived";
+  const responderIsNear = !responderHasArrived && trackingDistanceMetres != null && trackingDistanceMetres <= 1_000;
+  const mobileTrackingStatus = !request
+    ? requesterText(uiLanguage, "Loading request")
+    : responderHasArrived
+      ? requesterText(uiLanguage, "You have arrived")
+      : responderIsNear
+        ? requesterText(uiLanguage, "You are arriving soon")
+        : requesterText(uiLanguage, request.status.replace(/_/g, " "));
+  const trackingAnnouncement = loading
+    ? null
+    : notFound
+      ? requesterText(uiLanguage, "I could not find this emergency request.")
+      : request
+        ? [
+            requesterText(uiLanguage, "Request {reference} status: {status}.", {
+              reference: request.referenceCode,
+              status: requesterText(uiLanguage, request.status.replace(/_/g, " ")),
+            }),
+            responderAssigned
+              ? activeResponderStatus?.toLowerCase() === "arrived" || request.status === "arrived"
+                ? requesterText(uiLanguage, "Responder {name} has arrived.", { name: activeResponderName || requesterText(uiLanguage, "assigned responder") })
+                : activeResponderStatus?.toLowerCase() === "en_route" || request.status === "en_route"
+                  ? requesterText(uiLanguage, "Responder {name} is on the way. Estimated arrival: {eta}.", {
+                      name: activeResponderName || requesterText(uiLanguage, "assigned responder"),
+                      eta: request.etaMinutes != null ? `${request.etaMinutes} ${requesterText(uiLanguage, "minutes")}` : requesterText(uiLanguage, "not available"),
+                    })
+                  : requesterText(uiLanguage, "Responder {name} has been assigned.", { name: activeResponderName || requesterText(uiLanguage, "assigned responder") })
+              : requesterText(uiLanguage, "Dispatch is reviewing your request. No responder has been assigned yet."),
+          ].join(" ")
+        : null;
+  useBlindVoiceAnnouncement(trackingAnnouncement, uiLanguage, isRequester, user?.id);
+
+  function callRequester() {
+    const requesterId = request?.requesterId;
+    if (!canCallRequester || call.status !== "idle" || !requesterId) return;
+    void startCall(id, "Requester", { targetRole: "requester", targetUserId: requesterId, requestId: id });
+  }
 
   /* ---------------------------------------------------------------------- */
   /* Load request                                                           */
@@ -733,22 +821,27 @@ export default function RequestTrackingPage() {
             );
           }
 
-          setRequest(
-            normalizeRequest(
-              apiRequest,
-            ),
-          );
-          const nextResponder = assignmentToResponder(apiRequest.assignments);
-          const latestAssignment = apiRequest.assignments?.at(-1);
-          const nextResponderName = latestAssignment?.responderName ?? latestAssignment?.responder_name ?? undefined;
-          setActiveResponderStatus(latestAssignment?.status ?? undefined);
-          const nextAssigned = Boolean(
-            latestAssignment?.responderUserId ??
-            latestAssignment?.responder_user_id,
-          );
-          setActiveResponder(nextResponder);
-          setActiveResponderName(nextResponderName);
-          setResponderAssigned(nextAssigned);
+          const nextRequest = normalizeRequest(apiRequest);
+          setRequest(nextRequest);
+          if (isTerminalRequestStatus(nextRequest.status)) {
+            setActiveResponder(undefined);
+            setActiveResponderName(undefined);
+            setActiveResponderStatus(undefined);
+            setResponderAssigned(false);
+            clearClientCache(`requester-responder:${id}`);
+          } else {
+            const nextResponder = assignmentToResponder(apiRequest.assignments);
+            const latestAssignment = apiRequest.assignments?.at(-1);
+            const nextResponderName = latestAssignment?.responderName ?? latestAssignment?.responder_name ?? undefined;
+            setActiveResponderStatus(latestAssignment?.status ?? undefined);
+            const nextAssigned = Boolean(
+              latestAssignment?.responderUserId ??
+              latestAssignment?.responder_user_id,
+            );
+            setActiveResponder(nextResponder);
+            setActiveResponderName(nextResponderName);
+            setResponderAssigned(nextAssigned);
+          }
 
           setNotFound(false);
         } catch (loadError) {
@@ -823,7 +916,8 @@ export default function RequestTrackingPage() {
       !user ||
       !id ||
       notFound ||
-      !request
+      !request ||
+      requestIsTerminal
     ) {
       return;
     }
@@ -847,6 +941,7 @@ export default function RequestTrackingPage() {
     loadRequest,
     notFound,
     request,
+    requestIsTerminal,
     user,
   ]);
 
@@ -893,7 +988,7 @@ export default function RequestTrackingPage() {
           request.etaMinutes,
 
         assignedResponderId:
-          request.assignedResponderId,
+          requestIsTerminal ? undefined : request.assignedResponderId,
 
         createdAt:
           request.createdAt,
@@ -904,7 +999,7 @@ export default function RequestTrackingPage() {
         location:
           request.location,
       } as any;
-    }, [request]);
+    }, [request, requestIsTerminal]);
 
   /* ---------------------------------------------------------------------- */
   /* Loading                                                                */
@@ -943,12 +1038,12 @@ export default function RequestTrackingPage() {
           className="-mx-5 border-x-0 p-8 text-center md:mx-0 md:rounded-[22px] md:border-x"
         >
           <h1 className="text-xl font-semibold text-[#102b3f]">
-            Request not found
+            {requesterText(uiLanguage, "Request not found")}
           </h1>
 
           <p className="mt-2 text-sm text-[#687b89]">
             {error ||
-              "Emergency request not found."}
+              requesterText(uiLanguage, "Emergency request not found.")}
           </p>
 
           <div className="mt-5 flex flex-wrap justify-center gap-2">
@@ -959,7 +1054,7 @@ export default function RequestTrackingPage() {
               }
             >
               <RefreshCw className="h-4 w-4" />
-              Try again
+              {requesterText(uiLanguage, "Try again")}
             </Button>
 
             <Button
@@ -969,7 +1064,7 @@ export default function RequestTrackingPage() {
                 )
               }
             >
-              Back to history
+              {requesterText(uiLanguage, "Back to history")}
             </Button>
           </div>
         </Panel>
@@ -996,7 +1091,7 @@ export default function RequestTrackingPage() {
           </span>
 
           <h1 className="mt-4 text-xl font-semibold text-[#102b3f]">
-            Unable to load request
+            {requesterText(uiLanguage, "Unable to load request")}
           </h1>
 
           <p className="mx-auto mt-2 max-w-md text-sm text-[#687b89]">
@@ -1011,7 +1106,7 @@ export default function RequestTrackingPage() {
               }
             >
               <RefreshCw className="h-4 w-4" />
-              Try again
+                {requesterText(uiLanguage, "Try again")}
             </Button>
 
             <Link
@@ -1019,7 +1114,7 @@ export default function RequestTrackingPage() {
             >
               <Button>
                 <History className="h-4 w-4" />
-                Back to history
+                {requesterText(uiLanguage, "Back to history")}
               </Button>
             </Link>
           </div>
@@ -1039,119 +1134,118 @@ export default function RequestTrackingPage() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    <div className="flex h-[calc(100dvh-4rem)] flex-col gap-0 overflow-hidden p-0 md:grid md:h-auto md:gap-5 md:p-8">
+    <div className={isResponder
+      ? "fixed inset-0 z-[1200] flex h-[100dvh] w-full flex-col overflow-hidden bg-[#111d24] p-0 md:static md:z-auto md:grid md:h-auto md:w-auto md:gap-5 md:overflow-visible md:bg-transparent md:p-8"
+      : "flex h-[calc(100dvh-4rem-5rem)] flex-col gap-0 overflow-hidden p-0 md:grid md:h-auto md:gap-5 md:p-8"}>
+      {isResponder ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-[1100] flex items-center justify-between gap-3 px-4 pb-3 md:hidden" style={{ paddingTop: "max(env(safe-area-inset-top), 0.75rem)" }}>
+            <button type="button" onClick={() => router.push("/app/responder")} aria-label={requesterText(uiLanguage, "Back to mission")} className="pointer-events-auto grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-white/20 bg-[#112630]/95 text-white shadow-lg backdrop-blur-sm transition hover:bg-[#1a3946]">
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <span
+              role="status"
+              aria-live="polite"
+              className={`max-w-[70%] truncate rounded-full border px-4 py-2 text-sm font-bold capitalize shadow-lg backdrop-blur-sm ${
+                responderIsNear
+                  ? "border-[#e5bc38] bg-[#f2c94c]"
+                  : responderHasArrived
+                    ? "border-[#d53f3d] bg-[#d53f3d]"
+                    : "border-white/20 bg-[#112630]/95"
+              }`}
+              style={{ color: responderIsNear ? "#3f2e00" : "#ffffff" }}
+            >
+              {mobileTrackingStatus}
+            </span>
+        </div>
+      ) : null}
+      {isResponder && canCallRequester ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1100] px-4 pt-3 md:hidden" style={{ paddingBottom: "max(env(safe-area-inset-bottom), 1rem)" }}>
+              <Button type="button" size="lg" className="pointer-events-auto w-full shadow-xl" disabled={call.status !== "idle"} onClick={callRequester}>
+                <PhoneCall className="h-5 w-5" />{requesterText(uiLanguage, "Call requester")}
+              </Button>
+        </div>
+      ) : null}
       <div className="hidden md:block">
       <PageHeading
-        eyebrow="Emergency request"
+        eyebrow={requesterText(uiLanguage, "Emergency request")}
         title={request.referenceCode}
-        description={`${request.category} · ${request.severity} priority`}
-        action={
+        description={`${requesterText(uiLanguage, request.category)} · ${requesterText(uiLanguage, request.severity)} ${requesterText(uiLanguage, "priority")}`}
+        action={request.status.toLowerCase() !== "submitted" ? (
           <Badge
             tone={requestStatusTone(
               request.status as any,
             )}
             className="min-h-9 px-4"
           >
-            {request.status}
+            {requesterText(uiLanguage, request.status.replace(/_/g, " "))}
           </Badge>
-        }
+        ) : undefined}
       />
       </div>
 
-      <div className="grid min-h-0 gap-0 md:gap-4 xl:grid-cols-[1.3fr_.7fr]">
+      <div className="min-h-0 flex-1 grid gap-0 md:flex-none md:grid-cols-[1.3fr_.7fr] md:gap-4">
         <LiveResponseMap
           request={mapRequest}
-          responder={activeResponder}
-          responderAssigned={responderAssigned}
-          responderName={activeResponderName}
-          responderStatus={activeResponderStatus}
-          responderDistanceMetres={
-            activeResponder?.location && request.location.lat != null && request.location.lng != null
-              ? distanceMetresBetween(
-                  activeResponder.location.lat,
-                  activeResponder.location.lng,
-                  request.location.lat,
-                  request.location.lng,
-                )
-              : null
-          }
+          uiLanguage={uiLanguage}
+          responder={requestIsTerminal ? undefined : activeResponder}
+          responderAssigned={!requestIsTerminal && responderAssigned}
+          responderName={requestIsTerminal ? undefined : activeResponderName}
+          responderStatus={requestIsTerminal ? undefined : activeResponderStatus}
+          responderDistanceMetres={trackingDistanceMetres}
+          responderMode={isResponder && isMobileViewport}
           immersive
           compactRequestDetails
-          className="h-[calc(100dvh-15rem)] min-h-[320px] w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
+          hideActiveRequestDetailsMobile={isResponder}
+          mapStatusOffsetClassName={isResponder && isMobileViewport ? "top-[4.5rem] sm:top-[4.5rem]" : undefined}
+          mapControlsOffsetClassName={isResponder && isMobileViewport ? "top-[4.5rem] sm:top-[4.5rem]" : undefined}
+          showMyLocation={!isResponder || !isMobileViewport}
+          mobileAction={isRequester && !requestIsTerminal ? (
+            <CancelRequestButton
+              key={request.id}
+              requestId={request.id}
+              status={request.status}
+              language={uiLanguage}
+              requestedAlready={Boolean(request.cancellationRequestedAt)}
+              onRequested={() => void loadRequest(true)}
+            />
+          ) : canCallRequester ? (
+            <Button type="button" size="lg" className="w-full" disabled={call.status !== "idle"} onClick={callRequester}>
+              <PhoneCall className="h-5 w-5" />{requesterText(uiLanguage, "Call requester")}
+            </Button>
+          ) : undefined}
+          className="h-full min-h-0 w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
         />
-
-        <div className="grid grid-cols-2 gap-3 bg-[#f6f8fb] p-4 pb-5 md:hidden">
-          <div className="rounded-xl bg-[#34434f] p-3">
-            <div className="flex items-center gap-2">
-              <Clock3 className="h-4 w-4 text-[#b8e0e4]" />
-              <p className="text-xs font-semibold text-[#dbe7eb]">Estimated arrival</p>
-            </div>
-            <p className="mt-1 font-semibold text-white">
-              {request.etaMinutes ? `${request.etaMinutes} min` : "Pending"}
-            </p>
-          </div>
-          <div className="rounded-xl bg-[#34434f] p-3">
-            <div className="flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-[#b8e0e4]" />
-              <p className="text-xs font-semibold text-[#dbe7eb]">Location</p>
-            </div>
-            <p className="mt-1 truncate font-semibold text-white">{request.location.method}</p>
-          </div>
-        </div>
 
         <div className="hidden content-start gap-4 md:grid">
           <Panel>
             <PanelHeader
-              title="Request status"
-              description="LIVE will show changes to your emergency request here."
+              title={requesterText(uiLanguage, "Request status")}
+              description={requesterText(uiLanguage, "LIVE will show changes to your emergency request here.")}
+              action={canCallRequester ? (
+                <Button type="button" size="sm" disabled={call.status !== "idle"} onClick={callRequester}>
+                  <PhoneCall className="h-4 w-4" />{requesterText(uiLanguage, "Call requester")}
+                </Button>
+              ) : undefined}
             />
 
             <div className="grid gap-3 p-5">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-[#f2f6f8] p-3">
-                  <Clock3 className="h-4 w-4 text-[#0f5b67]" />
-
-                  <p className="mt-2 text-xs font-semibold text-[#748693]">
-                    Estimated arrival
-                  </p>
-
-                  <p className="mt-1 font-semibold text-[#102b3f]">
-                    {request.etaMinutes
-                      ? `${request.etaMinutes} min`
-                      : "Pending"}
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-[#f2f6f8] p-3">
-                  <MapPin className="h-4 w-4 text-[#0f5b67]" />
-
-                  <p className="mt-2 text-xs font-semibold text-[#748693]">
-                    Location
-                  </p>
-
-                  <p className="mt-1 truncate font-semibold text-[#102b3f]">
-                    {request.location.method}
-                  </p>
-                </div>
-              </div>
-
               <div className="border-t border-[#e2e8ed] pt-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                  Incident
+                  {requesterText(uiLanguage, "Incident")}
                 </p>
 
                 <p className="mt-1 font-semibold text-[#102b3f]">
-                  {request.category}
+                  {requesterText(uiLanguage, request.category)}
                 </p>
 
                 <p className="mt-2 text-sm leading-6 text-[#5f7482]">
-                  {request.note}
+                  {request.note === "No incident note provided." ? requesterText(uiLanguage, request.note) : request.note}
                 </p>
               </div>
 
               <div className="border-t border-[#e2e8ed] pt-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                  Confirmed location
+                  {requesterText(uiLanguage, "Confirmed location")}
                 </p>
 
                 <p className="mt-1 text-sm font-semibold text-[#102b3f]">
@@ -1175,101 +1269,38 @@ export default function RequestTrackingPage() {
               </div>
 
               <div className="border-t border-[#e2e8ed] pt-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                  Submitted
+                <div className="flex items-center justify-between gap-3">
+                  <div key={activityIndex} className="activity-status-transition">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[#798994]">{requesterText(uiLanguage, "Activity")}</p>
+                    <p className="mt-1 font-semibold capitalize text-[#102b3f]">
+                      {requesterText(uiLanguage, (request.history[activityIndex]?.status ?? request.status).replace(/_/g, " "))}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button type="button" aria-label={requesterText(uiLanguage, "View newer status")} disabled={activityIndex === 0} onClick={() => setActivityIndex((index) => Math.max(0, index - 1))} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce5ea] text-[#0f5b67] disabled:opacity-40"><ChevronLeft className="h-4 w-4" /></button>
+                    <button type="button" aria-label={requesterText(uiLanguage, "View older status")} disabled={activityIndex >= request.history.length - 1} onClick={() => setActivityIndex((index) => Math.min(request.history.length - 1, index + 1))} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce5ea] text-[#0f5b67] disabled:opacity-40"><ChevronRight className="h-4 w-4" /></button>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-[#84949d]">
+                  {request.history[activityIndex] ? formatDateTime(request.history[activityIndex].createdAt, uiLanguage) : formatDateTime(request.createdAt, uiLanguage)}
                 </p>
-
-                <p className="mt-1 text-sm text-[#5f7482]">
-                  {formatDateTime(
-                    request.createdAt,
-                  )}
-                </p>
+                {request.history[activityIndex]?.note ? <p className="mt-2 text-sm leading-5 text-[#5f7482]">{requesterText(uiLanguage, request.history[activityIndex].note)}</p> : null}
               </div>
 
-              <div className="flex gap-2 pt-1">
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() =>
-                    void loadRequest()
-                  }
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Refresh
-                </Button>
-
-                <Link
-                  href="/app/requester/history"
-                  className="flex-1"
-                >
-                  <Button
-                    className="w-full"
-                  >
-                    <History className="h-4 w-4" />
-                    History
-                  </Button>
-                </Link>
-              </div>
             </div>
           </Panel>
 
-          <Panel>
-            <PanelHeader
-              title="Activity"
-              description="Latest request updates."
+          {isRequester ? (
+            <CancelRequestButton
+              key={request.id}
+              requestId={request.id}
+              status={request.status}
+              language={uiLanguage}
+              requestedAlready={Boolean(request.cancellationRequestedAt)}
+              onRequested={() => void loadRequest(true)}
             />
+          ) : null}
 
-            <div className="p-5">
-              {request.history.length >
-              0 ? (
-                <div className="grid gap-4">
-                  {request.history.map(
-                    (
-                      item,
-                    ) => (
-                      <div
-                        key={
-                          item.id
-                        }
-                        className="flex gap-3"
-                      >
-                        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#e7f3f4] text-[#0f5b67]">
-                          <Siren className="h-4 w-4" />
-                        </span>
-
-                        <div className="min-w-0">
-                          <p className="font-semibold capitalize text-[#102b3f]">
-                            {item.status.replace(
-                              /_/g,
-                              " ",
-                            )}
-                          </p>
-
-                          {item.note ? (
-                            <p className="mt-1 text-sm text-[#607581]">
-                              {
-                                item.note
-                              }
-                            </p>
-                          ) : null}
-
-                          <p className="mt-1 text-xs text-[#84949d]">
-                            {formatDateTime(
-                              item.createdAt,
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                    ),
-                  )}
-                </div>
-              ) : (
-                <div className="py-3 text-sm text-[#687b89]">
-                  Your request has been submitted. New status updates will appear here.
-                </div>
-              )}
-            </div>
-          </Panel>
         </div>
       </div>
     </div>

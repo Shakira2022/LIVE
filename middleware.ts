@@ -43,6 +43,7 @@ const EVERYONE: UserRole[] = [
   'admin',
   'auditor',
   'support',
+  'manager',
 ];
 
 /** Route prefix -> roles allowed to render it. Longest prefix wins. */
@@ -52,6 +53,7 @@ const PAGE_GUARDS: Array<{ prefix: string; roles: UserRole[] }> = [
   { prefix: '/app/responder', roles: ['responder', 'dispatcher', 'admin'] },
   { prefix: '/app/admin', roles: ['admin'] },
   { prefix: '/app/auditor', roles: ['auditor', 'admin'] },
+  { prefix: '/app/manager', roles: ['manager', 'admin'] },
   { prefix: '/app', roles: EVERYONE },
 ];
 
@@ -68,6 +70,8 @@ export function homeFor(role: UserRole): string {
       return '/app/admin';
     case 'auditor':
       return '/app/auditor';
+    case 'manager':
+      return '/app/manager';
     default:
       return '/app/requester';
   }

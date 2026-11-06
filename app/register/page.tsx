@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { PublicHeader } from "@/components/layout/public-header";
+import { TopValidationAlert } from "@/components/ui/top-validation-alert";
 import { Button } from "@/components/ui/button";
 import {
   FieldLabel,
@@ -27,32 +28,50 @@ export default function Register() {
     setEmergencyContactPhone,
   ] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState<{
+    listLabel: string;
+    items: string[];
+    message?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
 
     setBusy(true);
-    setError("");
+    setFeedback(null);
 
     const cleanName = name.trim();
-    if (cleanName.length < 2) {
-      setError("Please enter your full name.");
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone.trim();
+    const cleanEmergencyName = emergencyContactName.trim();
+    const cleanEmergencyPhone = emergencyContactPhone.trim();
+    const requiredFields: Array<[string, string]> = [
+      [cleanName, "Full name"],
+      [cleanEmail, "Email"],
+      [cleanPhone, "Phone"],
+      [cleanEmergencyName, "Emergency contact name"],
+      [cleanEmergencyPhone, "Emergency contact phone"],
+      [password, "Password"],
+    ];
+    const missingFields = requiredFields
+      .filter(([value]) => !value)
+      .map(([, label]) => label);
+
+    if (missingFields.length > 0) {
+      setFeedback({
+        listLabel: "Please check these fields:",
+        items: missingFields,
+      });
       setBusy(false);
       return;
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPhone = phone.trim();
-    const cleanEmergencyName =
-    emergencyContactName.trim();
-      const cleanEmergencyPhone =
-      emergencyContactPhone.trim();
-
-    // Name validation
     if (cleanName.length < 2) {
-      setError("Please enter your full name.");
+      setFeedback({
+        listLabel: "Please check these fields:",
+        items: ["Enter your full name."],
+      });
       setBusy(false);
       return;
     }
@@ -62,7 +81,7 @@ export default function Register() {
       /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!emailPattern.test(cleanEmail)) {
-      setError("Please enter a valid email address.");
+      setFeedback({ listLabel: "Please check these fields:", items: ["Enter a valid email address."] });
       setBusy(false);
       return;
     }
@@ -72,40 +91,38 @@ export default function Register() {
       /^0\d{9}$/;
 
     if (!phonePattern.test(cleanPhone)) {
-      setError("Please enter a valid phone number.");
+      setFeedback({ listLabel: "Please check these fields:", items: ["Enter a valid phone number."] });
+      setBusy(false);
+      return;
+    }
+
+    if (cleanEmergencyName.length < 2) {
+      setFeedback({ listLabel: "Please check these fields:", items: ["Enter your emergency contact's name."] });
       setBusy(false);
       return;
     }
 
     if (!phonePattern.test(cleanEmergencyPhone)) {
-      setError(
-        "Please enter a valid emergency contact phone number."
-      );
+      setFeedback({ listLabel: "Please check these fields:", items: ["Enter a valid emergency contact phone number."] });
       setBusy(false);
       return;
     }
 
     // Password validation
-    if (password.length < 8) {
-      setError(
-        "Password must be at least 8 characters long."
-      );
+    if (password.length < 10 || password.length > 128) {
+      setFeedback({ listLabel: "Please check these fields:", items: ["Password must be 10 to 128 characters long."] });
       setBusy(false);
       return;
     }
 
-    if (!/[A-Za-z]/.test(password)) {
-      setError(
-        "Password must contain at least one letter."
-      );
+    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password)) {
+      setFeedback({ listLabel: "Please check these fields:", items: ["Password must contain an uppercase and a lowercase letter."] });
       setBusy(false);
       return;
     }
 
     if (!/[0-9]/.test(password)) {
-      setError(
-        "Password must contain at least one number."
-      );
+      setFeedback({ listLabel: "Please check these fields:", items: ["Password must contain at least one number."] });
       setBusy(false);
       return;
     }
@@ -122,9 +139,11 @@ export default function Register() {
     setBusy(false);
 
     if (!result.ok) {
-      setError(
-        result.message || "Unable to register"
-      );
+      setFeedback({
+        listLabel: "Please check these fields:",
+        items: [],
+        message: result.message || "Unable to register.",
+      });
       return;
     }
 
@@ -134,7 +153,7 @@ export default function Register() {
   return (
     <div className="min-h-dvh bg-[#f6f8fb]">
       <PublicHeader />
-      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+      <main className="grid min-h-[calc(100dvh-4rem)] items-start justify-items-center px-5 pb-8 pt-8 sm:place-items-center sm:px-6 sm:pt-10">
       <div className="w-full max-w-2xl">
         <div className="mb-6 text-center">
           <h1 className="text-3xl font-bold tracking-[-0.025em] text-[#102b3f] sm:text-5xl">
@@ -148,6 +167,7 @@ export default function Register() {
 
         <form
           onSubmit={submit}
+          noValidate
           className="grid gap-5 border-y border-[#dce5ea] py-5 sm:grid-cols-2 sm:py-6"
         >
           <label className="sm:col-span-2">
@@ -186,6 +206,10 @@ export default function Register() {
               </FieldLabel>
 
               <Input
+                type="tel"
+                inputMode="numeric"
+                maxLength={10}
+                placeholder="0123456789"
                 value={phone}
                 onChange={(event) =>
                   setPhone(event.target.value)
@@ -236,7 +260,8 @@ export default function Register() {
 
             <Input
               type="password"
-              minLength={8}
+              minLength={10}
+              maxLength={128}
               value={password}
               onChange={(event) =>
                 setPassword(event.target.value)
@@ -244,12 +269,6 @@ export default function Register() {
               required
             />
           </label>
-
-          {error ? (
-            <p className="border-l-2 border-[#d53f3d] bg-[#ffefee] px-3 py-2 text-sm font-medium text-[#a93331] sm:col-span-2">
-              {error}
-            </p>
-          ) : null}
 
           <Button
             type="submit"
@@ -274,6 +293,14 @@ export default function Register() {
         </p>
       </div>
     </main>
+    <TopValidationAlert
+      open={Boolean(feedback)}
+      onClose={() => setFeedback(null)}
+      items={feedback?.items}
+      listHeading={feedback?.listLabel}
+      message={feedback?.message}
+      autoDismissMs={6000}
+    />
     </div>
   );
 }

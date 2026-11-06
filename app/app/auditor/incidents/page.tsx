@@ -1,16 +1,19 @@
 "use client";
 
 import {
-  MapPin,
-  PhoneCall,
+  LoaderCircle,
   RefreshCw,
+  UserRound,
 } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from "react";
 
+import { AuditorListControls, auditorFilterOptions, filterAuditorRows } from "@/components/auditor/auditor-list-controls";
 import { useAuth } from "@/components/auth/auth-provider";
 import { RequestListItem } from "@/components/requests/request-list-item";
 import { StatusTimeline } from "@/components/requests/status-timeline";
@@ -24,6 +27,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { Sheet } from "@/components/ui/sheet";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { requestStatusTone } from "@/lib/utils";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type Incident = {
   id: string;
@@ -185,11 +189,16 @@ export default function AuditorIncidents() {
     refresh,
   } = useAuth();
 
+  const cacheKey = user?.id ? `auditor-incidents:${user.id}` : null;
+  const cachedIncidents = cacheKey
+    ? readCached<Incident[]>(cacheKey)
+    : null;
+
   const [
     incidents,
     setIncidents,
   ] =
-    useState<Incident[]>([]);
+    useState<Incident[]>(() => cachedIncidents ?? []);
 
   const [
     openId,
@@ -203,13 +212,19 @@ export default function AuditorIncidents() {
     loading,
     setLoading,
   ] =
-    useState(true);
+    useState(() => !cachedIncidents);
+  const [refreshing, setRefreshing] = useState(false);
+  const hasLoadedIncidents = useRef(Boolean(cachedIncidents));
 
   const [
     error,
     setError,
   ] =
     useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const loadIncidents =
     useCallback(async () => {
@@ -220,7 +235,8 @@ export default function AuditorIncidents() {
       }
 
       try {
-        setLoading(true);
+        if (!hasLoadedIncidents.current) setLoading(true);
+        else setRefreshing(true);
         setError("");
 
         const response =
@@ -247,7 +263,7 @@ export default function AuditorIncidents() {
             await refresh();
           }
 
-          setIncidents([]);
+          if (!hasLoadedIncidents.current) setIncidents([]);
 
           setError(
             getApiMessage(
@@ -271,6 +287,13 @@ export default function AuditorIncidents() {
             ? nextIncidents
             : [],
         );
+        if (cacheKey) {
+          writeFreshCache(
+            cacheKey,
+            Array.isArray(nextIncidents) ? nextIncidents : [],
+            5 * 60_000,
+          );
+        }
       } catch (loadError) {
         console.warn(
           "Unable to load auditor incidents:",
@@ -282,15 +305,18 @@ export default function AuditorIncidents() {
               ),
         );
 
-        setIncidents([]);
+        if (!hasLoadedIncidents.current) setIncidents([]);
 
         setError(
           "Unable to connect to the incident service.",
         );
       } finally {
+        hasLoadedIncidents.current = true;
         setLoading(false);
+        setRefreshing(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -317,9 +343,25 @@ export default function AuditorIncidents() {
     user?.id,
   ]);
 
+  const incidentStatuses = useMemo(
+    () => auditorFilterOptions(incidents.map((incident) => incident.status)),
+    [incidents],
+  );
+  const filteredIncidents = useMemo(
+    () => filterAuditorRows(incidents, {
+      search,
+      type: statusFilter,
+      fromDate,
+      toDate,
+      getType: (incident) => incident.status,
+      getDate: (incident) => incident.createdAt,
+    }),
+    [incidents, search, statusFilter, fromDate, toDate],
+  );
+
   if (
     authLoading ||
-    loading ||
+    (loading && incidents.length === 0) ||
     !user
   ) {
     return (
@@ -339,16 +381,17 @@ export default function AuditorIncidents() {
       <PageHeading
         eyebrow="Read-only review"
         title="Incident records"
-        description="Open a record to review its location and lifecycle history."
+        description="Open a record to review requester details and lifecycle history."
         action={
           <Button
             variant="outline"
+            disabled={refreshing}
             onClick={() =>
               void loadIncidents()
             }
           >
-            <RefreshCw className="h-4 w-4" />
-            Refresh
+            {refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {refreshing ? "Refreshing…" : "Refresh"}
           </Button>
         }
       />
@@ -362,40 +405,38 @@ export default function AuditorIncidents() {
       ) : null}
 
       <Panel>
-        <PanelHeader
-          title={`${incidents.length} record${
-            incidents.length ===
-            1
-              ? ""
-              : "s"
-          }`}
+        <PanelHeader title="Incident records" />
+        <AuditorListControls
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Reference, requester, or category"
+          typeLabel="Status"
+          typeValue={statusFilter}
+          onTypeChange={setStatusFilter}
+          typeOptions={incidentStatuses}
+          fromDate={fromDate}
+          onFromDateChange={setFromDate}
+          toDate={toDate}
+          onToDateChange={setToDate}
+          visibleCount={filteredIncidents.length}
+          totalCount={incidents.length}
         />
 
-        {incidents.map(
-          (incident) => (
-            <RequestListItem
-              key={
-                incident.id
-              }
-              request={
-                incident as any
-              }
-              onClick={() =>
-                setOpenId(
-                  incident.id,
-                )
-              }
-            />
-          ),
-        )}
-
-        {incidents.length ===
-          0 &&
-        !error ? (
-          <div className="p-5 text-sm text-[#617582]">
-            No incident records were found.
+        {filteredIncidents.length > 0 ? (
+          <div role="region" aria-label="Incident record results" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto">
+            {filteredIncidents.map((incident) => (
+              <RequestListItem
+                key={incident.id}
+                request={incident as any}
+                onClick={() => setOpenId(incident.id)}
+              />
+            ))}
           </div>
-        ) : null}
+        ) : incidents.length === 0 ? (
+          <div className="p-5 text-sm text-[#617582]">No incident records were found.</div>
+        ) : (
+          <div className="p-5 text-sm text-[#617582]">No incident records match these filters.</div>
+        )}
       </Panel>
 
       <Sheet
@@ -451,7 +492,7 @@ export default function AuditorIncidents() {
 
               <dl className="mt-5 divide-y divide-[#e2e8ed] border-y border-[#e2e8ed]">
                 <div className="flex gap-3 py-4">
-                  <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
+                  <UserRound className="h-5 w-5 text-[#0f5b67]" />
 
                   <div>
                     <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
@@ -464,28 +505,6 @@ export default function AuditorIncidents() {
                       }
                     </dd>
 
-                    <dd className="mt-1 text-sm text-[#617582]">
-                      {
-                        selected.callbackNumber
-                      }
-                    </dd>
-                  </div>
-                </div>
-
-                <div className="flex gap-3 py-4">
-                  <MapPin className="h-5 w-5 text-[#0f5b67]" />
-
-                  <div>
-                    <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
-                      Location
-                    </dt>
-
-                    <dd className="mt-1 font-semibold">
-                      {
-                        selected.location
-                          .address
-                      }
-                    </dd>
                   </div>
                 </div>
 

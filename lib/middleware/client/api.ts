@@ -82,6 +82,7 @@ export async function api<T>(path: string, options: CallOptions = {}): Promise<T
     const refreshed = await fetch('/api/auth/refresh', {
       method: 'POST',
       credentials: 'same-origin',
+      signal,
     });
     if (refreshed.ok) {
       return api<T>(path, { ...options, retryOnExpiry: false });

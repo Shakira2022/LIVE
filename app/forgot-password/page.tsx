@@ -66,7 +66,7 @@ export default function ForgotPasswordPage() {
     <div className="min-h-dvh bg-[#f6f8fb]">
       <PublicHeader />
 
-      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+      <main className="grid min-h-[calc(100dvh-4rem)] content-start justify-items-center px-5 pb-8 pt-6 sm:px-6 sm:pt-8">
         <div className="w-full max-w-md">
 
           {sent ? (

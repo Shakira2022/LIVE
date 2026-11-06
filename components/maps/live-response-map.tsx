@@ -42,8 +42,9 @@ import type {
   EmergencyRequest,
   Responder,
 } from "@/lib/types";
-import { readCached, writeFreshCache } from "@/lib/client-cache";
 import { cn } from "@/lib/utils";
+import { requesterText } from "@/lib/requester-ui";
+import type { RequesterLanguage } from "@/lib/requester-language";
 
 type PreviewLocation = {
   lat: number;
@@ -54,6 +55,7 @@ type PreviewLocation = {
 
 type LiveResponseMapProps = {
   request?: EmergencyRequest;
+  uiLanguage?: RequesterLanguage;
   responder?: Pick<Responder, "location"> &
     Partial<Pick<Responder, "name" | "team" | "vehicle">>;
   responderAssigned?: boolean;
@@ -64,30 +66,48 @@ type LiveResponseMapProps = {
   requesterName?: string;
   emptyMapMessage?: string;
   responderMode?: boolean;
+  onResponderLocationChange?: (location: LatLng) => void;
   immersive?: boolean;
   showAll?: boolean;
   requests?: EmergencyRequest[];
+  onIncidentSelect?: (request: EmergencyRequest) => void;
+  responders?: Array<Pick<Responder, "location"> &
+    Partial<Pick<Responder, "id" | "name" | "team" | "vehicle" | "availability">>>;
+  operationalRoutes?: Array<{
+    requestId: string;
+    responder: Pick<Responder, "location"> &
+      Partial<Pick<Responder, "id" | "name" | "team" | "vehicle">>;
+  }>;
   mobileAction?: ReactNode;
   landingPreview?: boolean;
   previewLocation?: PreviewLocation;
+  previewLocationLabel?: string;
+  previewLocationMarker?: "requester" | "responder";
   compactRequestDetails?: boolean;
+  hideActiveRequestDetails?: boolean;
+  hideActiveRequestDetailsMobile?: boolean;
   mobileBottomOffset?: boolean;
   hideMapStatus?: boolean;
+  mapStatusOffsetClassName?: string;
+  mapControlsOffsetClassName?: string;
+  fallbackCenter?: LatLng | null;
   className?: string;
 };
 
 type LatLng = { lat: number; lng: number };
 type BaseLayer = "map" | "satellite";
 
+function responderIdentity(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
 /* ------------------------------------------------------------------------ */
 /* Configuration                                                             */
 /* ------------------------------------------------------------------------ */
 
-/** Johannesburg CBD - used when nothing on the map has coordinates yet. */
+/** Last resort only. Staff maps supply an organisation-specific fallback centre. */
 const DEFAULT_CENTER: LatLng = { lat: -26.2041, lng: 28.0473 };
 const DEFAULT_ZOOM = 12;
-const RESPONDER_LOCATION_CACHE_KEY = "responder-location";
-const RESPONDER_LOCATION_CACHE_TTL_MS = 5 * 60_000;
 
 const TILES = {
   // Street view: OpenStreetMap standard tiles - free, no API key.
@@ -218,14 +238,19 @@ async function fetchRoute(
 
 /* Marker HTML (Leaflet divIcons, styled inline so no image assets needed). */
 
-const incidentIconHtml = (large: boolean, bouncing = false) => {
+const incidentIconHtml = (large: boolean, bouncing = false, cancellationRequested = false) => {
   const size = large ? 46 : 38;
+  const color = cancellationRequested ? "#b97018" : "#d53f3d";
+  const ring = cancellationRequested ? "rgba(185,112,24,.35)" : "rgba(213,63,61,.35)";
+  const center = cancellationRequested
+    ? '<text x="12" y="16" text-anchor="middle" font-size="13" font-weight="800" font-family="system-ui,sans-serif" fill="#ffffff">!</text>'
+    : '<circle cx="12" cy="11.5" r="4.4" fill="#ffffff"/>';
   return `
   <div class="${bouncing ? "map-pin-bounce" : ""}" style="position:relative;width:${size}px;height:${size + 10}px;">
-    <span class="pulse-ring" style="position:absolute;left:${size / 2 - 14}px;bottom:-4px;width:28px;height:28px;border-radius:9999px;background:rgba(213,63,61,.35);"></span>
+    <span class="pulse-ring" style="position:absolute;left:${size / 2 - 14}px;bottom:-4px;width:28px;height:28px;border-radius:9999px;background:${ring};"></span>
     <svg width="${size}" height="${size + 10}" viewBox="0 0 24 30" style="position:relative;filter:drop-shadow(0 6px 8px rgba(120,20,20,.35));">
-      <path d="M12 0C5.4 0 0 5.2 0 11.7 0 20.4 12 30 12 30s12-9.6 12-18.3C24 5.2 18.6 0 12 0z" fill="#d53f3d" stroke="#ffffff" stroke-width="1.6"/>
-      <circle cx="12" cy="11.5" r="4.4" fill="#ffffff"/>
+      <path d="M12 0C5.4 0 0 5.2 0 11.7 0 20.4 12 30 12 30s12-9.6 12-18.3C24 5.2 18.6 0 12 0z" fill="${color}" stroke="#ffffff" stroke-width="1.6"/>
+      ${center}
     </svg>
   </div>`;
 };
@@ -236,12 +261,20 @@ const userIconHtml = `
     <span style="position:absolute;inset:0;border-radius:9999px;background:#1a73e8;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);"></span>
   </div>`;
 
+const availableResponderIconHtml = `
+  <div style="position:relative;width:30px;height:30px;">
+    <span style="position:absolute;inset:-5px;border-radius:9999px;background:rgba(31,132,91,.20);"></span>
+    <span style="position:absolute;inset:3px;border-radius:9999px;background:#1f845b;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);"></span>
+    <span style="position:absolute;left:10px;top:10px;width:6px;height:6px;border-radius:9999px;background:#fff;"></span>
+  </div>`;
+
 /* ------------------------------------------------------------------------ */
 /* Component                                                                 */
 /* ------------------------------------------------------------------------ */
 
 export function LiveResponseMap({
   request,
+  uiLanguage,
   responder,
   responderAssigned = false,
   responderName,
@@ -251,13 +284,24 @@ export function LiveResponseMap({
   requesterName,
   emptyMapMessage,
   responderMode = false,
+  onResponderLocationChange,
   immersive = false,
   showAll = false,
   requests = [],
+  onIncidentSelect,
+  responders = [],
+  operationalRoutes = [],
   mobileAction,
   landingPreview = false,
   previewLocation,
+  previewLocationLabel,
+  previewLocationMarker = "requester",
+  hideActiveRequestDetails = false,
+  hideActiveRequestDetailsMobile = false,
   hideMapStatus = false,
+  mapStatusOffsetClassName,
+  mapControlsOffsetClassName,
+  fallbackCenter,
   className,
 }: LiveResponseMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -266,14 +310,22 @@ export function LiveResponseMap({
   const baseLayerRef = useRef<Leaflet.Layer[]>([]);
   const dataLayerRef = useRef<Leaflet.LayerGroup | null>(null);
   const routeLayerRef = useRef<Leaflet.LayerGroup | null>(null);
+  const operationalRouteLayerRef = useRef<Leaflet.LayerGroup | null>(null);
+  const operationalRouteCacheRef = useRef(
+    new Map<string, { points: LatLng[]; metres: number; seconds: number }>(),
+  );
   const userLayerRef = useRef<Leaflet.LayerGroup | null>(null);
   const responderMarkerRef = useRef<Leaflet.Marker | null>(null);
   const lastFitKeyRef = useRef<string>("");
+  const locationUpdateInFlightRef = useRef(false);
+  const lastLocationUpdateAtRef = useRef(0);
 
   const [ready, setReady] = useState(false);
   const [mapLoading, setMapLoading] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("map");
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
+  const [selectedOperationalRouteId, setSelectedOperationalRouteId] = useState<string | null>(null);
+  const [selectedOperationalEta, setSelectedOperationalEta] = useState<{ metres: number; seconds: number } | null>(null);
   const [route, setRoute] = useState<{
     points: LatLng[];
     metres: number;
@@ -281,28 +333,7 @@ export function LiveResponseMap({
     exact: boolean;
   } | null>(null);
   const [locating, setLocating] = useState(false);
-  const [userPosition, setUserPosition] = useState<LatLng | null>(() =>
-    responderMode ? readCached<LatLng>(RESPONDER_LOCATION_CACHE_KEY) : null,
-  );
-
-  // Keep the last confirmed position warm while this map is open. This is a
-  // cache heartbeat only; it does not request fresh GPS and therefore does
-  // not change the active-request manual-location rule.
-  useEffect(() => {
-    if (!responderMode || !userPosition) return;
-
-    const cacheLocation = () => {
-      writeFreshCache(
-        RESPONDER_LOCATION_CACHE_KEY,
-        userPosition,
-        RESPONDER_LOCATION_CACHE_TTL_MS,
-      );
-    };
-
-    cacheLocation();
-    const timer = window.setInterval(cacheLocation, 3_000);
-    return () => window.clearInterval(timer);
-  }, [responderMode, userPosition]);
+  const [userPosition, setUserPosition] = useState<LatLng | null>(null);
 
   /* ---------------------------------------------------------------- */
   /* Work out what needs to be shown                                    */
@@ -327,11 +358,19 @@ export function LiveResponseMap({
     // Selecting a request should open its popup, not remove the other
     // requests and force the map to zoom into the incident.
     return available;
-  }, [landingPreview, showAll, requests, request, selectedIncidentId]);
+  }, [landingPreview, showAll, requests, request, selectedIncidentId, uiLanguage]);
 
   useEffect(() => {
     setSelectedIncidentId(null);
   }, [request?.id]);
+
+  useEffect(() => {
+    if (!selectedOperationalRouteId) return;
+    if (!operationalRoutes.some((entry) => entry.requestId === selectedOperationalRouteId)) {
+      setSelectedOperationalRouteId(null);
+      setSelectedOperationalEta(null);
+    }
+  }, [operationalRoutes, selectedOperationalRouteId]);
 
   const previewPos = useMemo(
     () => toLatLng(previewLocation),
@@ -349,15 +388,30 @@ export function LiveResponseMap({
   /** Responder position (landing page invents one nearby if needed). */
   const responderPos: LatLng | null = useMemo(() => {
     const real = toLatLng(responder?.location);
-    // A responder's database coordinate is only a last-known position. Do not
-    // present it as "You" or draw a route from it before browser GPS succeeds.
-    if (responderMode) return userPosition;
+    // Use the live browser GPS when available, but keep the last known mission
+    // position as the route origin while mobile GPS permission/location loads.
+    if (responderMode) return userPosition ?? real;
     if (!showAll && request && real) return real;
     if (landingPreview && target) {
       return real ?? { lat: target.lat + 0.018, lng: target.lng + 0.022 };
     }
     return null;
   }, [responder, responderMode, userPosition, request, showAll, landingPreview, target]);
+
+  const lastKnownResponderPos = useMemo(
+    () => toLatLng(responder?.location),
+    [responder],
+  );
+
+  const responderPositions = useMemo(() => {
+    const assignedResponderIds = new Set(
+      operationalRoutes.map((entry) => responderIdentity(entry.responder.id)).filter(Boolean),
+    );
+    return responders
+      .filter((item) => !assignedResponderIds.has(responderIdentity(item.id)))
+      .map((item) => ({ item, pos: toLatLng(item.location) }))
+      .filter((entry): entry is { item: (typeof responders)[number]; pos: LatLng } => entry.pos !== null);
+  }, [operationalRoutes, responders]);
 
   /* ---------------------------------------------------------------- */
   /* Create the map once                                                */
@@ -374,13 +428,13 @@ export function LiveResponseMap({
 
       LRef.current = L;
 
-      const cachedLocation = responderMode
-        ? readCached<LatLng>(RESPONDER_LOCATION_CACHE_KEY)
-        : null;
-      const initialCenter = cachedLocation ?? DEFAULT_CENTER;
+      // When the map opens on an existing incident, start at that known point.
+      // The organisation centre is only the initial fallback if no request pin
+      // is available yet.
+      const initialCenter = incidents[0]?.pos ?? previewPos ?? fallbackCenter ?? DEFAULT_CENTER;
       const map = L.map(containerRef.current, {
         center: [initialCenter.lat, initialCenter.lng],
-        zoom: cachedLocation ? 15 : DEFAULT_ZOOM,
+        zoom: DEFAULT_ZOOM,
         zoomControl: false,
         attributionControl: true,
         scrollWheelZoom: !landingPreview,
@@ -399,13 +453,16 @@ export function LiveResponseMap({
 
       dataLayerRef.current = L.layerGroup().addTo(map);
       routeLayerRef.current = L.layerGroup().addTo(map);
+      operationalRouteLayerRef.current = L.layerGroup().addTo(map);
       userLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
       setMapLoading(true);
 
       // Leaflet needs a size recalculation when its container is resized
       // (mobile sheets, responsive grids, etc).
-      const observer = new ResizeObserver(() => map.invalidateSize());
+      const observer = new ResizeObserver(() => {
+        if (mapRef.current === map && map.getContainer()?.isConnected) map.invalidateSize();
+      });
       observer.observe(containerRef.current);
       (map as unknown as { _liveObserver: ResizeObserver })._liveObserver =
         observer;
@@ -416,14 +473,17 @@ export function LiveResponseMap({
     return () => {
       cancelled = true;
       const map = mapRef.current;
+      mapRef.current = null;
       if (map) {
         (
           map as unknown as { _liveObserver?: ResizeObserver }
         )._liveObserver?.disconnect();
+        map.stop();
         map.remove();
       }
       mapRef.current = null;
       responderMarkerRef.current = null;
+      operationalRouteLayerRef.current = null;
       baseLayerRef.current = [];
       lastFitKeyRef.current = "";
       setReady(false);
@@ -496,10 +556,11 @@ export function LiveResponseMap({
     }
 
     incidents.forEach(({ item, pos }) => {
+      const cancellationRequested = Boolean(item.cancellationRequestedAt || (item as any).cancellation_requested_at);
       const marker = L.marker([pos.lat, pos.lng], {
         icon: L.divIcon({
           className: "",
-          html: incidentIconHtml(!showAll, showAll && !selectedIncidentId),
+          html: incidentIconHtml(!showAll, showAll && !selectedIncidentId, cancellationRequested),
           iconSize: [46, 56],
           iconAnchor: [showAll ? 19 : 23, showAll ? 48 : 56],
           popupAnchor: [0, -50],
@@ -509,6 +570,11 @@ export function LiveResponseMap({
 
       marker.on("click", () => {
         setSelectedIncidentId(item.id);
+        onIncidentSelect?.(item);
+        if (showAll && operationalRoutes.some((entry) => entry.requestId === item.id)) {
+          setSelectedOperationalRouteId((current) => current === item.id ? null : item.id);
+          setSelectedOperationalEta(null);
+        }
         if (!isLiveLeafletMap(map)) return;
         try {
           map.flyTo([pos.lat, pos.lng], Math.max(map.getZoom(), 15), {
@@ -524,8 +590,8 @@ export function LiveResponseMap({
 
       if (landingPreview) {
         marker.bindTooltip(
-          `<p style="margin:0;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:#a33a38">Requester located</p>
-           <p style="margin:4px 0 0;font-size:12px;font-weight:600;color:#102b3f">Location attached to request</p>`,
+          `<p style="margin:0;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:#a33a38">${escapeHtml(requesterText(uiLanguage ?? "English", "Requester located"))}</p>
+           <p style="margin:4px 0 0;font-size:12px;font-weight:600;color:#102b3f">${escapeHtml(requesterText(uiLanguage ?? "English", "Location attached to request"))}</p>`,
           {
             permanent: true,
             direction: "bottom",
@@ -538,13 +604,14 @@ export function LiveResponseMap({
         const address = requestLocationAddress(item) ?? `${formatCoordinate(pos.lat, 5)}, ${formatCoordinate(pos.lng, 5)}`;
         marker.bindPopup(
           `<div style="font:600 12px/1.4 system-ui,sans-serif;color:#102b3f;min-width:160px">
-             <div style="color:#a33a38;text-transform:uppercase;font-size:10px;letter-spacing:.08em">${escapeHtml(String(item.status ?? ""))}</div>
-             <div style="margin-top:2px">${escapeHtml(String(item.category ?? "Emergency request"))}</div>
+             <div style="color:#a33a38;text-transform:uppercase;font-size:10px;letter-spacing:.08em">${escapeHtml(requesterText(uiLanguage ?? "English", String((item as any).current_status ?? (item as any).currentStatus ?? item.status ?? "").replace(/_/g, " ")))}</div>
+             ${cancellationRequested ? '<div style="margin-top:3px;color:#9a5c0d;text-transform:uppercase;font-size:10px;font-weight:700;letter-spacing:.05em">Cancellation requested · dispatcher approval</div>' : ""}
+             <div style="margin-top:2px">${escapeHtml(requesterText(uiLanguage ?? "English", String(item.category ?? "Emergency request")))}</div>
              <div style="margin-top:4px;font-weight:400;color:#5d7080">${escapeHtml(address)}</div>
              <div style="margin-top:4px;font-weight:400;color:#8a9aa4;font-size:11px">${escapeHtml(String(item.id ?? ""))}</div>
            </div>`
         );
-        if (!showAll) marker.bindTooltip(responderMode ? "Request location" : "Requester", {
+        if (!showAll) marker.bindTooltip(responderMode ? requesterText(uiLanguage ?? "English", "Request location") : requesterText(uiLanguage ?? "English", "Requester"), {
           permanent: true,
           direction: "top",
           offset: [0, -48],
@@ -568,24 +635,66 @@ export function LiveResponseMap({
       }
     });
 
+    if (showAll && !landingPreview) {
+      responderPositions.forEach(({ item, pos }) => {
+        const marker = L.marker([pos.lat, pos.lng], {
+          icon: L.divIcon({
+            className: "",
+            html: availableResponderIconHtml,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+            popupAnchor: [0, -15],
+          }),
+          zIndexOffset: 700,
+        });
+        const responderLabel = item.name ?? "Available responder";
+        marker.bindPopup(
+          `<div style="font:600 12px/1.4 system-ui,sans-serif;color:#102b3f;min-width:150px">
+             <div style="color:#1f845b;text-transform:uppercase;font-size:10px;letter-spacing:.08em">Available responder</div>
+             <div style="margin-top:2px">${escapeHtml(responderLabel)}</div>
+             <div style="margin-top:4px;font-weight:400;color:#5d7080">${escapeHtml([item.team, item.vehicle].filter(Boolean).join(" · ") || "Ready for assignment")}</div>
+           </div>`
+        );
+        marker.bindTooltip(responderLabel, {
+          permanent: true,
+          direction: "top",
+          offset: [0, -16],
+          className: "live-map-marker-label",
+          interactive: false,
+        });
+        marker.addTo(group);
+      });
+    }
+
     if (previewPos && !request) {
-      L.marker([previewPos.lat, previewPos.lng], {
+      const isResponderPreview = previewLocationMarker === "responder";
+      const marker = L.marker([previewPos.lat, previewPos.lng], {
         icon: L.divIcon({
           className: "",
-          html: incidentIconHtml(true),
-          iconSize: [46, 56],
-          iconAnchor: [23, 56],
+          html: isResponderPreview ? userIconHtml : incidentIconHtml(true),
+          iconSize: isResponderPreview ? [22, 22] : [46, 56],
+          iconAnchor: isResponderPreview ? [11, 11] : [23, 56],
         }),
         zIndexOffset: 500,
-      }).addTo(group);
+      });
+      if (previewLocationLabel) {
+        marker.bindTooltip(previewLocationLabel, {
+          permanent: true,
+          direction: "top",
+          offset: [0, isResponderPreview ? -12 : -48],
+          className: "live-map-marker-label",
+          interactive: false,
+        });
+      }
+      marker.addTo(group);
 
       const accuracy = Number(previewLocation?.accuracy);
       if (Number.isFinite(accuracy) && accuracy > 0 && accuracy < 5000) {
         L.circle([previewPos.lat, previewPos.lng], {
           radius: accuracy,
-          color: "#1a73e8",
+          color: isResponderPreview ? "#1a73e8" : "#d53f3d",
           weight: 1,
-          fillColor: "#1a73e8",
+          fillColor: isResponderPreview ? "#1a73e8" : "#d53f3d",
           fillOpacity: 0.1,
           interactive: false,
         }).addTo(group);
@@ -594,23 +703,55 @@ export function LiveResponseMap({
 
     // Re-fit only when the *set* of things on the map changes, so live
     // position updates don't keep yanking the view away from the user.
+    // Keep the incident as the initial anchor while responder GPS resolves.
+    // On mobile, fit both route endpoints after GPS is available so the route
+    // itself stays in the narrow viewport. Desktop keeps its existing request
+    // anchor and can use the recenter control to show both locations.
+    const mapWidth = map.getSize().x;
+    const isMobileViewport = mapWidth > 0
+      ? mapWidth < 768
+      : typeof window !== "undefined" && window.innerWidth < 768;
+    const fitResponderRouteOnMobile = responderMode && !showAll && responderAssigned && isMobileViewport && Boolean(responderPos);
+    const shouldAnchorResponderMapToRequests = responderMode && incidents.length > 0 && !fitResponderRouteOnMobile;
     const points: LatLng[] = [
       ...incidents.map((entry) => entry.pos),
+      ...(showAll ? responderPositions.map((entry) => entry.pos) : []),
+      ...(showAll
+        ? operationalRoutes
+            .map((entry) => toLatLng(entry.responder.location))
+            .filter((point): point is LatLng => point !== null)
+        : []),
       ...(previewPos && !request ? [previewPos] : []),
-      ...(responderPos ? [responderPos] : []),
+      ...(!shouldAnchorResponderMapToRequests && responderPos ? [responderPos] : []),
     ];
+    // Track coarse coordinate changes as well as identities. This recentres
+    // the board when an admin moves an organisation's responders or request
+    // locations to another city, while ignoring routine GPS jitter within a
+    // small area so the map does not fight the dispatcher during live work.
     const fitKey = [
-      incidents.map((e) => e.item.id).join(","),
+      incidents.map((entry) => `${entry.item.id}:${entry.pos.lat.toFixed(2)},${entry.pos.lng.toFixed(2)}`).join(","),
+      fallbackCenter ? `${fallbackCenter.lat.toFixed(3)},${fallbackCenter.lng.toFixed(3)}` : "",
       previewPos ? `${previewPos.lat.toFixed(4)},${previewPos.lng.toFixed(4)}` : "",
-      responderPos ? "r" : "",
+      !shouldAnchorResponderMapToRequests && responderPos
+        ? `${responderPos.lat.toFixed(2)},${responderPos.lng.toFixed(2)}`
+        : "",
+      responderPositions.map((entry) => `${entry.item.id ?? "responder"}:${entry.pos.lat.toFixed(2)},${entry.pos.lng.toFixed(2)}`).join(","),
+      operationalRoutes.map((entry) => {
+        const point = toLatLng(entry.responder.location);
+        return point ? `${entry.requestId}:${point.lat.toFixed(2)},${point.lng.toFixed(2)}` : "";
+      }).join(","),
     ].join("|");
 
     if (fitKey !== lastFitKeyRef.current) {
       lastFitKeyRef.current = fitKey;
       if (points.length === 0) {
-        map.setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lng], DEFAULT_ZOOM);
+        const center = toLatLng(fallbackCenter) ?? DEFAULT_CENTER;
+        map.flyTo([center.lat, center.lng], DEFAULT_ZOOM, { animate: true, duration: 1.1 });
       } else if (points.length === 1) {
-        map.setView([points[0].lat, points[0].lng], previewPos ? 17 : 15);
+        map.flyTo([points[0].lat, points[0].lng], previewPos ? 17 : 15, {
+          animate: true,
+          duration: 1.1,
+        });
       } else {
         map.fitBounds(
           L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])),
@@ -627,20 +768,156 @@ export function LiveResponseMap({
   }, [
     ready,
     incidents,
+    fallbackCenter,
     previewPos,
     previewLocation?.accuracy,
+    previewLocationLabel,
+    previewLocationMarker,
     request,
     responderPos,
+    responderPositions,
+    operationalRoutes,
     showAll,
+    responderMode,
     landingPreview,
+    onIncidentSelect,
   ]);
+
+  /* ---------------------------------------------------------------- */
+  /* Dispatcher routes: one blue route for each assigned active request */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    const L = LRef.current;
+    const group = operationalRouteLayerRef.current;
+    if (!ready || !L || !group) return;
+
+    group.clearLayers();
+    if (!showAll || landingPreview || operationalRoutes.length === 0) return;
+
+    const controller = new AbortController();
+    const incidentById = new Map(incidents.map((entry) => [entry.item.id, entry.pos]));
+    const visibleRoutes = selectedOperationalRouteId
+      ? operationalRoutes.filter((entry) => entry.requestId === selectedOperationalRouteId)
+      : operationalRoutes;
+
+    const driverMarkerPosition = (requestId: string, actual: LatLng): LatLng => {
+      const nearby = visibleRoutes
+        .map((entry) => ({ requestId: entry.requestId, position: toLatLng(entry.responder.location) }))
+        .filter((entry): entry is { requestId: string; position: LatLng } => Boolean(entry.position))
+        .filter((entry) =>
+          Math.abs(entry.position.lat - actual.lat) < 0.0005 &&
+          Math.abs(entry.position.lng - actual.lng) < 0.0005,
+        );
+      if (nearby.length < 2) return actual;
+
+      const index = nearby.findIndex((entry) => entry.requestId === requestId);
+      const angle = -Math.PI / 2 + (Math.max(0, index) * (Math.PI * 2)) / nearby.length;
+      const offset = 0.00035;
+      return {
+        lat: actual.lat + Math.sin(angle) * offset,
+        lng: actual.lng + Math.cos(angle) * offset,
+      };
+    };
+
+    const drawRoute = (requestId: string, from: LatLng, to: LatLng, exactPoints?: LatLng[]) => {
+      const points = exactPoints ?? [];
+      if (points.length < 2) return;
+      const latlngs = points.map((point) => [point.lat, point.lng] as [number, number]);
+      const casing = L.polyline(latlngs, {
+        color: "#ffffff",
+        weight: 9,
+        opacity: 0.95,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: true,
+      }).addTo(group);
+      const routeLine = L.polyline(latlngs, {
+        color: "#1a73e8",
+        weight: 5,
+        opacity: 0.95,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: true,
+      }).addTo(group);
+      const selectRoute = () => {
+        setSelectedOperationalRouteId((current) => current === requestId ? null : requestId);
+        setSelectedOperationalEta(null);
+      };
+      casing.on("click", selectRoute);
+      routeLine.on("click", selectRoute);
+    };
+
+    visibleRoutes.forEach(({ requestId, responder: assignedResponder }) => {
+      const target = incidentById.get(requestId);
+      const from = toLatLng(assignedResponder.location);
+      if (!target || !from) return;
+
+      const markerPosition = driverMarkerPosition(requestId, from);
+      L.marker([from.lat, from.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: userIconHtml,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+          popupAnchor: [0, -12],
+        }),
+        zIndexOffset: 900,
+      })
+        .bindPopup(
+          `<div style="font:600 12px/1.4 system-ui,sans-serif;color:#102b3f;min-width:150px">
+             <div style="color:#1a73e8;text-transform:uppercase;font-size:10px;letter-spacing:.08em">${escapeHtml(requesterText(uiLanguage ?? "English", "Assigned responder"))}</div>
+             <div style="margin-top:2px">${escapeHtml(assignedResponder.name ?? "Assigned responder")}</div>
+             <div style="margin-top:4px;font-weight:400;color:#5d7080">${escapeHtml(requesterText(uiLanguage ?? "English", "Route for request {id}", { id: requestId }))}</div>
+           </div>`
+        )
+        .addTo(group);
+      L.marker([markerPosition.lat, markerPosition.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<span style="display:inline-block;white-space:nowrap;border-radius:9999px;background:#167a86;color:#fff;padding:4px 8px;font:700 11px/1.1 system-ui,sans-serif;box-shadow:0 2px 6px rgba(16,43,63,.25);">${escapeHtml(assignedResponder.name ?? "Responder")}</span>`,
+          iconSize: [160, 24],
+          iconAnchor: [80, 12],
+        }),
+        interactive: false,
+        zIndexOffset: 950,
+      }).addTo(group);
+      const routeCacheKey = `${requestId}:${from.lat.toFixed(5)},${from.lng.toFixed(5)}>${target.lat.toFixed(5)},${target.lng.toFixed(5)}`;
+      const cachedRoute = operationalRouteCacheRef.current.get(routeCacheKey);
+      if (cachedRoute) {
+        if (selectedOperationalRouteId === requestId) {
+          setSelectedOperationalEta({ metres: cachedRoute.metres, seconds: cachedRoute.seconds });
+        }
+        drawRoute(requestId, from, target, cachedRoute.points);
+        return;
+      }
+
+      void fetchRoute(from, target, controller.signal).then((routeResult) => {
+        if (controller.signal.aborted || !routeResult) return;
+        operationalRouteCacheRef.current.set(routeCacheKey, routeResult);
+        if (selectedOperationalRouteId === requestId) {
+          setSelectedOperationalEta({ metres: routeResult.metres, seconds: routeResult.seconds });
+        }
+        // Dispatcher routes only use the real road-following geometry. Do not
+        // draw a straight horizontal placeholder while routing is pending.
+        drawRoute(requestId, from, target, routeResult.points);
+      });
+    });
+
+    return () => controller.abort();
+  }, [ready, showAll, landingPreview, operationalRoutes, incidents, selectedOperationalRouteId]);
 
   /* ---------------------------------------------------------------- */
   /* Route between responder and incident                               */
   /* ---------------------------------------------------------------- */
 
+  // An active responder page passes its assigned request even if an older or
+  // partial mission payload omits the responder ID. Keep route rendering
+  // available for that mission; queued requests on the no-mission map do not
+  // pass `request` and therefore still have no responder route.
+  const hasAssignedResponderRoute = responderAssigned || Boolean(request?.id);
   const routeKey =
-    (!responderMode || responderAssigned) && responderPos && target
+    (!responderMode || hasAssignedResponderRoute) && responderPos && target
       ? `${responderPos.lat.toFixed(4)},${responderPos.lng.toFixed(4)}>${target.lat.toFixed(4)},${target.lng.toFixed(4)}`
       : "";
 
@@ -732,7 +1009,7 @@ export function LiveResponseMap({
            )}</div>
          </div>`
       );
-      marker.bindTooltip(responderMode ? "You" : "Driver", {
+      marker.bindTooltip(responderMode ? "You" : "Responder", {
         permanent: true,
         direction: "top",
         offset: [0, -24],
@@ -835,27 +1112,27 @@ export function LiveResponseMap({
         }
 
         setUserPosition({ lat: here[0], lng: here[1] });
-        if (responderMode) {
-          writeFreshCache(
-            RESPONDER_LOCATION_CACHE_KEY,
-            { lat: here[0], lng: here[1] },
-            RESPONDER_LOCATION_CACHE_TTL_MS,
-          );
-        }
+        if (responderMode) onResponderLocationChange?.({ lat: here[0], lng: here[1] });
 
         if (responderMode) {
-          void fetch("/api/responder/location", {
-            method: "PATCH",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracyMeters: pos.coords.accuracy,
-            }),
-          }).catch(() => {
-            // The map still uses the fresh browser position if persistence fails.
-          });
+          if (!locationUpdateInFlightRef.current && Date.now() - lastLocationUpdateAtRef.current >= 3_000) {
+            locationUpdateInFlightRef.current = true;
+            lastLocationUpdateAtRef.current = Date.now();
+            void fetch("/api/responder/location", {
+              method: "PATCH",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracyMeters: pos.coords.accuracy,
+              }),
+            }).catch(() => {
+              // The map still uses the fresh browser position if persistence fails.
+            }).finally(() => {
+              locationUpdateInFlightRef.current = false;
+            });
+          }
         }
 
         try {
@@ -885,21 +1162,42 @@ export function LiveResponseMap({
           })
             .addTo(currentGroup);
         }
-        try {
-          currentMap.flyTo(here, Math.max(currentMap.getZoom(), 16), { duration: 0.8 });
-        } catch {
-          // The map may have been removed between the connection check and
-          // Leaflet's animation call. The location itself remains persisted.
-        }
+        // Camera changes are handled by the shared fit effect so GPS arrival
+        // produces one smooth transition instead of a flyTo followed by a
+        // second fitBounds animation.
       },
       () => setLocating(false),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
-  }, [responderMode, request]);
+  }, [responderMode, request, onResponderLocationChange]);
 
-  // Draw the cached/current responder position immediately, including after
-  // returning from another responder page. This is separate from the request
-  // marker and must remain visible as the blue "you are here" dot.
+  // Show the cached responder point while browser GPS resolves. It is only a
+  // marker; it never moves the camera away from a request or org fallback.
+  useEffect(() => {
+    const L = LRef.current;
+    const map = mapRef.current;
+    const group = userLayerRef.current;
+    if (!ready || !responderMode || userPosition || !lastKnownResponderPos || !L || !map || !group) return;
+    if (!map.getContainer()?.isConnected) return;
+
+    try {
+      group.clearLayers();
+      L.marker([lastKnownResponderPos.lat, lastKnownResponderPos.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: userIconHtml,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        }),
+        zIndexOffset: 900,
+      })
+        .bindPopup("Last known responder location")
+        .addTo(group);
+    } catch {
+      // The map may be removed during a responsive rerender.
+    }
+  }, [ready, responderMode, userPosition, lastKnownResponderPos]);
+
   useEffect(() => {
     const L = LRef.current;
     const map = mapRef.current;
@@ -918,7 +1216,7 @@ export function LiveResponseMap({
         }),
         zIndexOffset: 1000,
       })
-        .bindPopup("You are here")
+        .bindPopup("Current device location")
         .bindTooltip("You", {
           permanent: true,
           direction: "top",
@@ -940,12 +1238,59 @@ export function LiveResponseMap({
     void locateMe();
   }, [responderMode, landingPreview, ready, userPosition, request, locateMe]);
 
+  // Once the responder has granted location access, keep the operational
+  // position current while they move. Dispatchers read this value from the
+  // responder profile on their next live-operations refresh.
+  useEffect(() => {
+    if (!responderMode || landingPreview || !ready || !userPosition || !navigator.geolocation) return;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const nextPosition = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        };
+        setUserPosition(nextPosition);
+        onResponderLocationChange?.(nextPosition);
+        if (locationUpdateInFlightRef.current || Date.now() - lastLocationUpdateAtRef.current < 3_000) return;
+        locationUpdateInFlightRef.current = true;
+        lastLocationUpdateAtRef.current = Date.now();
+        void fetch("/api/responder/location", {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracyMeters: position.coords.accuracy,
+          }),
+        }).catch(() => {
+          // Keep the local map position even if a transient save fails.
+        }).finally(() => {
+          locationUpdateInFlightRef.current = false;
+        });
+      },
+      () => {
+        // The last confirmed location remains visible if GPS temporarily drops.
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 5_000 },
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [responderMode, landingPreview, ready, Boolean(userPosition), onResponderLocationChange]);
+
   const recenter = () => {
     const L = LRef.current;
     const map = mapRef.current;
     if (!L || !isLiveLeafletMap(map)) return;
     const points: LatLng[] = [
       ...incidents.map((e) => e.pos),
+      ...(showAll ? responderPositions.map((entry) => entry.pos) : []),
+      ...(showAll
+        ? operationalRoutes
+            .map((entry) => toLatLng(entry.responder.location))
+            .filter((point): point is LatLng => point !== null)
+        : []),
       ...(previewPos ? [previewPos] : []),
       ...(responderPos ? [responderPos] : []),
     ];
@@ -973,6 +1318,26 @@ export function LiveResponseMap({
   const hasResponderAssignment = Boolean(responderAssigned || responder || request?.assignedResponderId);
   const responderHasArrived = responderStatus === "arrived";
   const responderIsNear = !responderHasArrived && responderDistanceMetres != null && responderDistanceMetres <= 1_000;
+  const selectedOperationalRequest = selectedOperationalRouteId
+    ? requests.find((item) => item.id === selectedOperationalRouteId)
+    : null;
+  const selectedOperationalRoute = selectedOperationalRouteId
+    ? operationalRoutes.find((entry) => entry.requestId === selectedOperationalRouteId)
+    : null;
+  const selectedOperationalRecord = selectedOperationalRequest as (EmergencyRequest & Record<string, unknown>) | undefined;
+  const selectedOperationalLocation = selectedOperationalRequest
+    ? toLatLng(requestLocationValue(selectedOperationalRequest))
+    : null;
+  const selectedOperationalStatus = String(
+    selectedOperationalRecord?.current_status ?? selectedOperationalRecord?.currentStatus ?? selectedOperationalRequest?.status ?? "",
+  ).toLowerCase();
+  const selectedOperationalStatusText = selectedOperationalStatus === "arrived"
+    ? "Responder has arrived"
+    : selectedOperationalStatus === "en_route"
+      ? "Responder en route"
+      : selectedOperationalStatus === "assigned"
+        ? "Responder assigned"
+        : "Emergency request";
 
   /* ---------------------------------------------------------------- */
   /* Render                                                             */
@@ -1009,14 +1374,14 @@ export function LiveResponseMap({
       ) : null}
 
       {/* Map labels */}
-      {!hideMapStatus ? <div className="pointer-events-none absolute left-3 top-3 z-[1000] flex flex-wrap gap-2 sm:left-4 sm:top-4">
+      {!hideMapStatus ? <div className={cn("pointer-events-none absolute left-3 right-16 top-3 z-[1000] flex flex-wrap gap-2 sm:left-4 sm:right-16 sm:top-4", mapStatusOffsetClassName)}>
         <Badge tone="success" className="bg-white/95 shadow-sm">
           <span className="mr-1.5 h-2 w-2 rounded-full bg-[#1f845b]" />
           {landingPreview
             ? "Location preview"
             : showAll
               ? `${incidents.length} on map`
-              : "Live map"}
+              : requesterText(uiLanguage ?? "English", "Live map")}
         </Badge>
 
         {request && !landingPreview ? (
@@ -1027,8 +1392,32 @@ export function LiveResponseMap({
 
         {route?.exact && route.metres > 0 && !landingPreview ? (
           <Badge tone="blue" className="bg-white/95 shadow-sm">
-            {formatDistance(route.metres)} · {Math.max(1, Math.round(route.seconds / 60))} min drive
+            {formatDistance(route.metres)} · {requesterText(uiLanguage ?? "English", "{count} min drive", { count: Math.max(1, Math.round(route.seconds / 60)) })}
           </Badge>
+        ) : null}
+        {selectedOperationalEta && selectedOperationalRouteId ? (
+          <Badge tone="blue" className="bg-white/95 shadow-sm">
+            {formatDistance(selectedOperationalEta.metres)} · {requesterText(uiLanguage ?? "English", "{count} min drive", { count: Math.max(1, Math.round(selectedOperationalEta.seconds / 60)) })}
+          </Badge>
+        ) : null}
+
+        {selectedOperationalRequest && selectedOperationalRouteId ? (
+          <Badge tone="slate" className="bg-white/95 shadow-sm">
+            Selected request · {selectedOperationalRequest.id}
+          </Badge>
+        ) : null}
+
+        {selectedOperationalRouteId ? (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedOperationalRouteId(null);
+              setSelectedOperationalEta(null);
+            }}
+            className="pointer-events-auto rounded-full border border-[#cbd8df] bg-white/95 px-3 py-1.5 text-xs font-bold text-[#315464] shadow-sm transition hover:bg-white"
+          >
+            Clear selection
+          </button>
         ) : null}
       </div> : null}
 
@@ -1039,7 +1428,7 @@ export function LiveResponseMap({
       </div> : null}
 
       {/* Map controls (same look as before) */}
-      <div className="absolute right-3 top-3 z-[1000] grid gap-2 sm:right-4 sm:top-4">
+      <div className={cn("absolute right-3 top-3 z-[1000] grid gap-2 sm:right-4 sm:top-4", mapControlsOffsetClassName)}>
         <Button
           variant="outline"
           size="icon"
@@ -1108,7 +1497,7 @@ export function LiveResponseMap({
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#7b8b96]">
-                Location confirmed
+                {previewLocationLabel ?? "Location confirmed"}
               </p>
               <p className="mt-1 truncate text-sm font-semibold">
                 {previewLocation.address &&
@@ -1129,40 +1518,67 @@ export function LiveResponseMap({
       ) : null}
 
       {/* Active-request information */}
-      {request && !landingPreview ? (
-        <div className="absolute inset-x-0 bottom-0 z-[1000] border-t border-white/70 bg-white/94 p-3.5 shadow-[0_-10px_30px_rgba(16,43,63,.10)] backdrop-blur-lg sm:inset-x-auto sm:bottom-4 sm:left-4 sm:w-[390px] sm:rounded-2xl sm:border sm:p-4 sm:shadow-xl">
+      {request && !landingPreview && !hideActiveRequestDetails ? (
+        <div className={cn("absolute inset-x-0 bottom-0 z-[1000] border-t border-white/70 bg-white/94 p-3.5 shadow-[0_-10px_30px_rgba(16,43,63,.10)] backdrop-blur-lg sm:inset-x-auto sm:bottom-4 sm:left-4 sm:w-[390px] sm:rounded-2xl sm:border sm:p-4 sm:shadow-xl", hideActiveRequestDetailsMobile && "hidden md:block")}>
           <div className="min-w-0">
             <div className="mb-3 animate-pulse text-center">
               {responderMode ? (
                 <p className="text-sm font-semibold text-[#102b3f]">
-                  {hasResponderAssignment ? "Assigned to an emergency request" : "Searching for an emergency request"}
+                  {requesterText(uiLanguage ?? "English", hasResponderAssignment ? "Assigned to an emergency request" : "Searching for an emergency request")}
                 </p>
               ) : responderHasArrived ? (
                 <p className="rounded-lg bg-[#d53f3d] px-3 py-2 text-sm font-bold text-white">
-                  <span>Driver has arrived</span>
+                  <span>{requesterText(uiLanguage ?? "English", "Responder has arrived")}</span>
                 </p>
               ) : responderIsNear ? (
                 <p className="rounded-lg bg-[#f2c94c] px-3 py-2 text-sm font-bold text-[#4d3a00]">
-                  <span>Driver is arriving soon</span>
+                  <span style={{ color: "#3f2e00" }}>{requesterText(uiLanguage ?? "English", "Responder is arriving soon")}</span>
                 </p>
               ) : hasResponderAssignment ? (
                 <p className="text-sm font-semibold text-[#102b3f]">
-                  {responder?.name ?? responderName ?? "Responder"} on the way
+                  {requesterText(uiLanguage ?? "English", "{name} on the way", { name: responder?.name ?? responderName ?? "Responder" })}
                 </p>
               ) : (
-                <p className="text-sm font-semibold text-[#102b3f]">Emergency sent</p>
+                <p className="text-sm font-semibold text-[#102b3f]">{requesterText(uiLanguage ?? "English", "Emergency sent")}</p>
               )}
             </div>
-            {requesterName ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">Requester: {requesterName}</p> : null}
-            {!responderMode && hasResponderAssignment ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">Driver: {responder?.name ?? responderName ?? "Responder"}</p> : null}
+            {requesterName ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">{requesterText(uiLanguage ?? "English", "Requester")}: {requesterName}</p> : null}
+            {!responderMode && hasResponderAssignment ? <p className="mb-1 truncate text-sm font-semibold text-[#102b3f]">{requesterText(uiLanguage ?? "English", "Responder")}: {responder?.name ?? responderName ?? "Responder"}</p> : null}
               <p className="mt-1 truncate text-sm font-semibold">
                 {displayLocation}
               </p>
               <p className="mt-1 text-xs text-[#687b89]">
-                Emergency request location
+                {requesterText(uiLanguage ?? "English", "Emergency request location")}
               </p>
           </div>
           {mobileAction ? <div className="mt-3 md:hidden">{mobileAction}</div> : null}
+        </div>
+      ) : null}
+
+      {selectedOperationalRequest && selectedOperationalRoute && !landingPreview ? (
+        <div className="absolute inset-x-0 bottom-0 z-[1000] border-t border-white/70 bg-[#f7f4ef]/95 p-3.5 shadow-[0_-10px_30px_rgba(16,43,63,.12)] backdrop-blur-lg sm:inset-x-auto sm:bottom-4 sm:left-4 sm:w-[390px] sm:rounded-2xl sm:border sm:p-4 sm:shadow-xl">
+          <div className="overflow-hidden rounded-xl border border-[#ded8ce] bg-[#f7f4ef]">
+            <p className="bg-[#df6664] px-3 py-2 text-center text-sm font-bold text-white">
+              {requesterText(uiLanguage ?? "English", selectedOperationalStatusText)}
+            </p>
+            <div className="p-3">
+              <p className="text-sm font-semibold text-[#102b3f]">
+                {requesterText(uiLanguage ?? "English", "Requester")}: {selectedOperationalRequest.requesterName ?? String(selectedOperationalRecord?.requester_name ?? requesterText(uiLanguage ?? "English", "Requester"))}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-[#102b3f]">
+                {requesterText(uiLanguage ?? "English", "Responder")}: {selectedOperationalRoute.responder.name ?? requesterText(uiLanguage ?? "English", "Assigned responder")}
+              </p>
+              <p className="mt-1 text-sm text-[#536b78]">
+                {requesterText(uiLanguage ?? "English", selectedOperationalRequest.category ?? "Emergency request")}
+              </p>
+              {selectedOperationalLocation ? (
+                <p className="mt-1 text-sm font-semibold text-[#102b3f]">
+                  {formatCoordinate(selectedOperationalLocation.lat)}, {formatCoordinate(selectedOperationalLocation.lng)}
+                </p>
+              ) : null}
+              <p className="mt-1 text-xs text-[#687b89]">{requesterText(uiLanguage ?? "English", "Emergency request location")}</p>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

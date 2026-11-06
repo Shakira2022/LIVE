@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/

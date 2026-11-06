@@ -19,10 +19,7 @@ export const GET = createHandler(
     },
   },
   async (ctx) => {
-    const {
-      count,
-      error,
-    } = await db()
+    const unreadQuery = db()
       .from("notifications")
       .select("id", {
         count: "exact",
@@ -36,6 +33,10 @@ export const GET = createHandler(
         "read_at",
         null,
       );
+    const scopedQuery = ctx.user.role === "admin"
+      ? unreadQuery.like("notification_type", "responder_report%")
+      : unreadQuery;
+    const { count, error } = await scopedQuery;
 
     if (error) {
       throw ApiError.internal(

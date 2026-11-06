@@ -1,9 +1,8 @@
 /**
  * POST /api/requests/[id]/cancel   (Block 6, Person 11)
  *
- * A requester whose request has already been assigned cannot cancel it
- * outright - they ASK, and staff confirm with a status change. This route
- * records the ask by stamping cancellation_requested_at.
+ * Requests without an active assignment are cancelled immediately. If a
+ * responder is assigned, the request stays active until dispatch approves.
  */
 
 import { createHandler } from '@/lib/middleware/api/handler';

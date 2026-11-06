@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type Incident = {
   id: string;
@@ -79,6 +80,12 @@ type AuditResponse = {
 
   count?: number;
   logs?: unknown[];
+};
+
+type AuditorDashboardCache = {
+  incidents: Incident[];
+  auditCount: number;
+  organisationCount: number;
 };
 
 async function readJson<T>(
@@ -141,29 +148,34 @@ export default function AuditorHome() {
     refresh,
   } = useAuth();
 
+  const cacheKey = user?.id ? `auditor-dashboard:${user.id}` : null;
+  const cachedDashboard = cacheKey
+    ? readCached<AuditorDashboardCache>(cacheKey)
+    : null;
+
   const [
     incidents,
     setIncidents,
   ] =
-    useState<Incident[]>([]);
+    useState<Incident[]>(() => cachedDashboard?.incidents ?? []);
 
   const [
     auditCount,
     setAuditCount,
   ] =
-    useState(0);
+    useState(() => cachedDashboard?.auditCount ?? 0);
 
   const [
     organisationCount,
     setOrganisationCount,
   ] =
-    useState(0);
+    useState(() => cachedDashboard?.organisationCount ?? 0);
 
   const [
     loading,
     setLoading,
   ] =
-    useState(true);
+    useState(() => !cachedDashboard);
 
   const loadDashboard =
     useCallback(async () => {
@@ -176,7 +188,7 @@ export default function AuditorHome() {
       }
 
       try {
-        setLoading(true);
+        if (!cacheKey || !readCached(cacheKey)) setLoading(true);
 
         const [
           incidentsResponse,
@@ -223,38 +235,38 @@ export default function AuditorHome() {
             auditResponse,
           );
 
-        if (
-          incidentsResponse.ok
-        ) {
-          const nextIncidents =
+        const currentCache = (cacheKey
+          ? readCached<AuditorDashboardCache>(cacheKey)
+          : null) ?? {
+          incidents: [],
+          auditCount: 0,
+          organisationCount: 0,
+        };
+        let nextIncidents = currentCache.incidents;
+        let nextOrganisationCount = currentCache.organisationCount;
+        let nextAuditCount = currentCache.auditCount;
+
+        if (incidentsResponse.ok) {
+          const responseIncidents =
             incidentResult?.data
               ?.incidents ??
             incidentResult?.incidents ??
             [];
 
-          setIncidents(
-            Array.isArray(
-              nextIncidents,
-            )
-              ? nextIncidents
-              : [],
-          );
-
-          setOrganisationCount(
+          nextIncidents = Array.isArray(responseIncidents)
+            ? responseIncidents
+            : [];
+          nextOrganisationCount =
             incidentResult?.data
               ?.organisationCount ??
               incidentResult?.organisationCount ??
-              0,
-          );
-        } else {
-          setIncidents([]);
-          setOrganisationCount(0);
+            nextOrganisationCount;
+          setIncidents(nextIncidents);
+          setOrganisationCount(nextOrganisationCount);
         }
 
-        if (
-          auditResponse.ok
-        ) {
-          setAuditCount(
+        if (auditResponse.ok) {
+          nextAuditCount =
             auditResult?.data
               ?.count ??
               auditResult?.count ??
@@ -262,10 +274,16 @@ export default function AuditorHome() {
                 ?.logs?.length ??
               auditResult?.logs
                 ?.length ??
-              0,
-          );
-        } else {
-          setAuditCount(0);
+              nextAuditCount;
+          setAuditCount(nextAuditCount);
+        }
+
+        if (cacheKey && (incidentsResponse.ok || auditResponse.ok)) {
+          writeFreshCache(cacheKey, {
+            incidents: nextIncidents,
+            auditCount: nextAuditCount,
+            organisationCount: nextOrganisationCount,
+          }, 5 * 60_000);
         }
       } catch (error) {
         console.warn(
@@ -278,13 +296,11 @@ export default function AuditorHome() {
               ),
         );
 
-        setIncidents([]);
-        setAuditCount(0);
-        setOrganisationCount(0);
       } finally {
         setLoading(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -315,7 +331,7 @@ export default function AuditorHome() {
 
   if (
     authLoading ||
-    loading ||
+    (loading && incidents.length === 0 && auditCount === 0 && organisationCount === 0) ||
     !user
   ) {
     return (
@@ -379,27 +395,29 @@ export default function AuditorHome() {
           }
         />
 
-        {incidents
-          .slice(
-            0,
-            6,
-          )
-          .map(
-            (incident) => (
-              <RequestListItem
-                key={
-                  incident.id
-                }
-                request={
-                  incident as any
-                }
-                href={`/app/auditor/incidents?request=${encodeURIComponent(
-                  incident.id,
-                )}`}
-                compact
-              />
-            ),
-          )}
+        <div role="region" aria-label="Recent incidents list" tabIndex={0} className="max-h-[45vh] touch-pan-y overscroll-contain overflow-y-auto">
+          {incidents
+            .slice(
+              0,
+              6,
+            )
+            .map(
+              (incident) => (
+                <RequestListItem
+                  key={
+                    incident.id
+                  }
+                  request={
+                    incident as any
+                  }
+                  href={`/app/auditor/incidents?request=${encodeURIComponent(
+                    incident.id,
+                  )}`}
+                  compact
+                />
+              ),
+            )}
+        </div>
 
         {incidents.length ===
         0 ? (

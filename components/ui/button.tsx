@@ -31,6 +31,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     <button
       ref={ref}
       type={type}
+      data-live-button-variant={variant}
       className={cn(
         "inline-flex select-none items-center justify-center gap-2 rounded-xl border font-bold transition duration-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#0f5b67]/15 disabled:pointer-events-none disabled:opacity-50 active:scale-[.985]",
         variantStyles[variant],

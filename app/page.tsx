@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   LocateFixed,
   MapPin,
+  PhoneCall,
   Play,
   Radio,
   ShieldCheck,
@@ -83,6 +84,21 @@ const featureDetails = [
       "Keeps the auditor workspace read-only.",
     ],
   },
+  {
+    id: "calling",
+    icon: PhoneCall,
+    number: "05",
+    title: "In-app response calling",
+    summary: "Authorised teams can speak directly through LIVE while an incident is active.",
+    description:
+      "LIVE includes secure browser-based audio calling inside the operational workflow. A dispatcher or responder can call the requester from the relevant incident, and incoming calls can be accepted or declined without leaving the app.",
+    points: [
+      "Connects authorised requesters, dispatchers and responders in the incident room.",
+      "Shows incoming, connecting and connected call states clearly.",
+      "Includes mute, end-call and microphone recovery controls.",
+      "Keeps the call available while the user continues working in the app.",
+    ],
+  },
 ] as const;
 
 type Feature = (typeof featureDetails)[number];
@@ -99,7 +115,7 @@ export default function LandingPage() {
     <div className="min-h-dvh bg-[#f5f7f9]">
       <PublicHeader />
 
-      <main className="pt-16">
+      <main>
         <section className="border-b border-[#dfe6ea] bg-white">
           <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:px-6 sm:py-16 lg:grid-cols-[0.84fr_1.16fr] lg:items-center lg:py-20">
             <motion.div
@@ -254,15 +270,15 @@ export default function LandingPage() {
                       key={item.id}
                       type="button"
                       onClick={() => setSelectedFeature(item)}
-                      className="group grid w-full gap-4 border-b border-[#d9e2e7] py-6 text-left transition hover:bg-[#f7fafb] sm:grid-cols-[52px_54px_1fr_36px] sm:items-center sm:px-3"
+                      className="public-feature-row group grid w-full gap-4 border-b border-[#d9e2e7] py-6 text-left transition hover:bg-[#f7fafb] sm:grid-cols-[52px_54px_1fr_36px] sm:items-center sm:px-3"
                     >
                       <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f6872]">
                         <Icon className="h-5 w-5" />
                       </span>
                       <span className="text-xs font-semibold text-[#8c9aa4]">{item.number}</span>
                       <span>
-                        <span className="block text-base font-semibold text-[#102b3f]">{item.title}</span>
-                        <span className="mt-1 block text-sm leading-6 text-[#657985]">{item.summary}</span>
+                        <span className="public-feature-title block text-base font-semibold text-[#102b3f]">{item.title}</span>
+                        <span className="public-feature-summary mt-1 block text-sm leading-6 text-[#657985]">{item.summary}</span>
                       </span>
                       <ChevronRight className="hidden h-5 w-5 text-[#8a9aa4] transition group-hover:translate-x-1 group-hover:text-[#0f6872] sm:block" />
                     </button>
@@ -390,6 +406,21 @@ export default function LandingPage() {
                   <p className="mt-2 text-sm leading-6 text-[#657985]">
                     Users can understand what is happening from request
                     submission through to response.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-[#d9e2e7] bg-white p-6 shadow-sm">
+                  <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#e7f3f4] text-[#0f6872]">
+                    <PhoneCall className="h-5 w-5" />
+                  </span>
+
+                  <h3 className="mt-5 text-lg font-semibold text-[#102b3f]">
+                    In-app calling
+                  </h3>
+
+                  <p className="mt-2 text-sm leading-6 text-[#657985]">
+                    Authorised requesters and response teams can connect by
+                    voice without leaving the active incident workflow.
                   </p>
                 </div>
 

@@ -33,7 +33,7 @@ import type { AccountStatus, PublicUser, UserRole } from '@/types';
 
 const USER_COLUMNS =
   'id, email, phone, password_hash, role, status, first_name, last_name, display_name, ' +
-  'failed_login_attempts, locked_until, last_login_at, created_at, deleted_at';
+  'failed_login_attempts, locked_until, last_login_at, created_at, deleted_at, terms_accepted_at, terms_accepted_version, settings_setup_completed_at';
 
 export interface UserRow {
   id: string;
@@ -50,6 +50,9 @@ export interface UserRow {
   last_login_at: string | null;
   created_at: string;
   deleted_at: string | null;
+  terms_accepted_at: string | null;
+  terms_accepted_version: string | null;
+  settings_setup_completed_at: string | null;
 }
 
 export function jwtSettings(): JwtConfig {
@@ -88,14 +91,36 @@ function initialsOf(row: UserRow): string {
 }
 
 /**
- * Staff belong to an organisation through organisation_members, not through a
- * column on users. This is the single place that resolves it, so the JWT `org`
- * claim and the API responses can never disagree.
+ * Dispatchers belong to an organisation through organisation_members, while
+ * responders are assigned through responder_profiles. Resolve the role's
+ * authoritative relationship so the session profile and dispatcher scope
+ * show the same organisation the database uses for operations.
  */
 export async function resolveOrganisation(
   userId: string,
+  role?: UserRow['role'],
 ): Promise<{ organisationId: string | null; organisationName: string | null }> {
-  const { data, error } = await db()
+  const client = db();
+  if (role === 'responder') {
+    const { data, error } = await client
+      .from('responder_profiles')
+      .select('organisation_id, organisations(name)')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) throw ApiError.internal('Could not resolve responder organisation.', error.message);
+    const row = data as unknown as {
+      organisation_id: string | null;
+      organisations: { name: string } | { name: string }[] | null;
+    } | null;
+    const organisation = Array.isArray(row?.organisations) ? row.organisations[0] : row?.organisations;
+    return {
+      organisationId: row?.organisation_id ?? null,
+      organisationName: organisation?.name ?? null,
+    };
+  }
+
+  const { data, error } = await client
     .from('organisation_members')
     .select('organisation_id, organisations(name)')
     .eq('user_id', userId)
@@ -134,10 +159,24 @@ async function primaryEmergencyContact(
 }
 
 export async function toPublicUser(row: UserRow): Promise<PublicUser> {
-  const [{ organisationId, organisationName }, contact] = await Promise.all([
-    resolveOrganisation(row.id),
+  const [{ organisationId, organisationName }, contact, preferenceResult] = await Promise.all([
+    resolveOrganisation(row.id, row.role),
     primaryEmergencyContact(row.id),
+    db()
+      .from('user_display_preferences')
+      .select('theme')
+      .eq('user_id', row.id)
+      .maybeSingle(),
   ]);
+
+  // Keep sign-in usable if the preference migration has not been applied yet;
+  // the client will use its regional default until the table is available.
+  if (preferenceResult.error && preferenceResult.error.code !== '42P01') {
+    throw ApiError.internal('Could not load your display preference.', preferenceResult.error.message);
+  }
+
+  const savedTheme = preferenceResult.error ? null : preferenceResult.data?.theme;
+  const displayTheme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : null;
 
   return {
     id: row.id,
@@ -153,6 +192,10 @@ export async function toPublicUser(row: UserRow): Promise<PublicUser> {
     organisationName,
     emergencyContactName: contact.name,
     emergencyContactPhone: contact.phone,
+    displayTheme,
+    termsAcceptedAt: row.terms_accepted_at,
+    termsAcceptedVersion: row.terms_accepted_version,
+    settingsSetupCompletedAt: row.settings_setup_completed_at,
     createdAt: row.created_at,
   };
 }
@@ -203,7 +246,7 @@ export async function issueSession(
   meta: { userAgent: string; ipHash: string; deviceLabel?: string },
 ): Promise<IssuedSession> {
   const config = jwtSettings();
-  const { organisationId } = await resolveOrganisation(user.id);
+  const { organisationId } = await resolveOrganisation(user.id, user.role);
 
   const access = await signAccessToken(config, {
     userId: user.id,
@@ -340,12 +383,21 @@ export async function recordFailedLogin(user: UserRow): Promise<void> {
 }
 
 export async function recordSuccessfulLogin(user: UserRow): Promise<void> {
-  await db()
+  let query = db()
     .from('users')
     .update({
       failed_login_attempts: 0,
       locked_until: null,
       last_login_at: new Date().toISOString(),
+      ...(user.status === 'locked' ? { status: 'active' } : {}),
     })
     .eq('id', user.id);
+
+  if (user.status === 'locked' && user.locked_until) {
+    query = query
+      .eq('status', 'locked')
+      .eq('locked_until', user.locked_until);
+  }
+
+  await query;
 }

@@ -28,6 +28,12 @@ export const phoneSchema = trimmed(32).regex(
   'Enter a phone number with 7 to 19 digits, optionally starting with +.',
 );
 
+/** South African user registration/contact phones are stored as ten digits. */
+export const southAfricanPhoneSchema = trimmed(32)
+  .regex(/^[0-9\s()-]+$/, 'Use digits only, with optional spaces or hyphens.')
+  .transform((value) => value.replace(/[\s()-]/g, ''))
+  .pipe(z.string().regex(/^0\d{9}$/, 'Enter exactly 10 digits, starting with 0.'));
+
 export const passwordSchema = z
   .string()
   .min(10, 'Use at least 10 characters.')
@@ -51,10 +57,10 @@ export const registerSchema = z
   .object({
     name: trimmed(160).min(2, 'Enter your full name.'),
     email: emailSchema.optional(),
-    phone: phoneSchema.optional(),
+    phone: southAfricanPhoneSchema.optional(),
     password: passwordSchema,
     emergencyContactName: trimmed(160).optional(),
-    emergencyContactPhone: phoneSchema.optional(),
+    emergencyContactPhone: southAfricanPhoneSchema.optional(),
   })
   .refine((v) => Boolean(v.email || v.phone), {
     message: 'Enter an email address or a phone number.',
@@ -214,6 +220,8 @@ export const listQuerySchema = z.object({
   status: z.string().optional(),
   scope: z.enum(['new', 'active', 'completed', 'mine', 'all']).default('all'),
   search: trimmed(80).optional(),
+  dateFrom: z.string().datetime({ offset: true }).optional(),
+  dateTo: z.string().datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).max(10_000).default(0),
 });

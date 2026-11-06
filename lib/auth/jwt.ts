@@ -55,6 +55,7 @@ export async function verifyAccessToken(
             "responder",
             "admin",
             "auditor",
+            "manager",
         ];
 
         if (!validRoles.includes(payload.role as UserRole)) {

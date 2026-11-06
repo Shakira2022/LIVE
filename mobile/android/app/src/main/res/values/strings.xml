@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LIVE</string>
+    <string name="title_activity_main">LIVE</string>
+    <string name="package_name">org.live.response.mobile</string>
+    <string name="custom_url_scheme">org.live.response.mobile</string>
+</resources>

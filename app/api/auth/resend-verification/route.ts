@@ -4,6 +4,15 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { generateResetToken } from "@/lib/reset-token";
 import { logApplicationEvent } from "@/lib/application-logger";
 import { logIntegrationEvent } from "@/lib/integration-logger";
+import { escapeEmailHtml, liveEmailButton, liveEmailLayout } from "@/lib/email-template";
+
+function getApplicationOrigin(request: NextRequest) {
+  const configured = process.env.APP_URL?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const protocol = request.headers.get("x-forwarded-proto") || (host?.includes("localhost") ? "http" : "https");
+  return host ? `${protocol}://${host}` : new URL(request.url).origin;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -108,15 +117,13 @@ export async function POST(req: NextRequest) {
     const { rawToken, tokenHash } =
       generateResetToken();
 
-    const expiryMinutes = Number(
-      process.env.EMAIL_VERIFICATION_EXPIRY_MINUTES ??
-        30
-    );
+    const expiryMinutes = Number(process.env.EMAIL_VERIFICATION_EXPIRY_MINUTES ?? 30);
 
     const expiresAt = new Date(
       Date.now() +
         expiryMinutes * 60 * 1000
     );
+    const verificationUrl = `${getApplicationOrigin(req)}/verify-email?token=${encodeURIComponent(rawToken)}`;
 
     // ---------------------------------------------------------
     // Store hashed token
@@ -252,151 +259,9 @@ export async function POST(req: NextRequest) {
         subject:
           "Your LIVE verification code",
 
-        text: `
-Hello ${displayName},
+        text: `Hello ${displayName},\n\nYou requested a new LIVE email verification code.\n\nYour verification code is:\n${rawToken}\n\nThis code expires in ${expiryMinutes} minutes.\n\nVerify your email using this link: ${verificationUrl}\n\nIf you did not request this verification email, you can safely ignore it.\n\nThank you,\nThe LIVE Team`,
 
-You requested a new LIVE email verification code.
-
-Your verification code is:
-
-${rawToken}
-
-This code expires in ${expiryMinutes} minutes.
-
-If you did not request this verification email, you can safely ignore it.
-
-Thank you,
-The LIVE Team
-        `,
-
-        html: `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>LIVE Email Verification</title>
-</head>
-
-<body
-  style="
-    margin:0;
-    padding:0;
-    background:#f4f7f9;
-    font-family:Arial, sans-serif;
-  "
->
-  <table
-    width="100%"
-    cellpadding="0"
-    cellspacing="0"
-    style="padding:40px 0;"
-  >
-    <tr>
-      <td align="center">
-
-        <table
-          width="600"
-          cellpadding="0"
-          cellspacing="0"
-          style="
-            background:#ffffff;
-            border-radius:10px;
-            overflow:hidden;
-          "
-        >
-
-          <tr>
-            <td
-              style="
-                background:#102b3f;
-                color:#ffffff;
-                padding:25px;
-                text-align:center;
-              "
-            >
-              <h1 style="margin:0;">
-                LIVE
-              </h1>
-            </td>
-          </tr>
-
-          <tr>
-            <td
-              style="
-                padding:40px;
-                color:#333333;
-              "
-            >
-
-              <h2>
-                Verify Your Email
-              </h2>
-
-              <p>
-                Hello ${displayName},
-              </p>
-
-              <p>
-                You requested a new verification
-                code for your LIVE account.
-              </p>
-
-              <p>
-                Your verification code is:
-              </p>
-
-              <div
-                style="
-                  margin:25px 0;
-                  padding:20px;
-                  background:#eef3f6;
-                  border-radius:8px;
-                  text-align:center;
-                  font-size:28px;
-                  font-weight:bold;
-                  letter-spacing:3px;
-                  color:#102b3f;
-                  word-break:break-all;
-                "
-              >
-                ${rawToken}
-              </div>
-
-              <p>
-                This code expires in
-                ${expiryMinutes} minutes.
-              </p>
-
-              <p>
-                If you did not request this verification
-                email, you can safely ignore it.
-              </p>
-
-            </td>
-          </tr>
-
-          <tr>
-            <td
-              style="
-                padding:20px;
-                text-align:center;
-                color:#9aa7b0;
-                font-size:12px;
-              "
-            >
-              &copy; ${new Date().getFullYear()}
-              LIVE. All rights reserved.
-            </td>
-          </tr>
-
-        </table>
-
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-        `,
+        html: liveEmailLayout(`<div style="margin-bottom:20px;border-left:3px solid #0f6872;padding-left:12px;font-size:10px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#0f6872">Email verification</div><h1 style="margin:0;font-size:30px;line-height:1.15;color:#102b3f">Verify your email</h1><p style="margin:18px 0 0;font-size:15px;line-height:1.7;color:#607482">Hello ${escapeEmailHtml(displayName)},<br><br>You requested a new LIVE email verification code.</p><div style="margin-top:24px;padding:18px 20px;background:#f5f7f9;text-align:center;font-size:18px;font-weight:700;letter-spacing:1px;color:#102b3f;word-break:break-all">${escapeEmailHtml(rawToken)}</div>${liveEmailButton(verificationUrl, "Verify email")}<p style="margin:24px 0 0;font-size:13px;line-height:1.7;color:#71838e">This code and link expire in ${expiryMinutes} minutes.</p><p style="margin:18px 0 0;font-size:12px;line-height:1.7;color:#71838e">If the button does not work, copy this link into your browser:<br><a href="${escapeEmailHtml(verificationUrl)}" style="color:#0f6872;word-break:break-all">${escapeEmailHtml(verificationUrl)}</a></p><div style="margin-top:24px;padding-top:16px;border-top:1px solid #dfe6ea;font-size:12px;line-height:1.7;color:#71838e">If you did not request this verification email, you can safely ignore it.</div>`, "Your LIVE verification code"),
       });
 
       // -------------------------------------------------------

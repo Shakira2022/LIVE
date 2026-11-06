@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { CalendarClock, CarFront, CheckCircle2, Clock3, MapPin, UserRound } from "lucide-react";
 import { Sheet } from "@/components/ui/sheet";
+import { requesterText } from "@/lib/requester-ui";
+import type { RequesterLanguage } from "@/lib/requester-language";
 
 type RequestDetail = {
   id: string;
@@ -12,6 +14,7 @@ type RequestDetail = {
   severity?: string | null;
   currentStatus?: string | null;
   note?: string | null;
+  requesterName?: string | null;
   submittedAt?: string | null;
   receivedAt?: string | null;
   assignedAt?: string | null;
@@ -21,6 +24,7 @@ type RequestDetail = {
   assignments?: Array<{
     responderName?: string | null;
     responderEmployeeNumber?: string | null;
+    assignedByName?: string | null;
     vehicleCallSign?: string | null;
     vehicleRegistrationNumber?: string | null;
     status?: string | null;
@@ -41,7 +45,7 @@ function timeToArrive(submittedAt?: string | null, arrivedAt?: string | null) {
   return minutes < 60 ? `${minutes} minutes` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function RequestDetailsSheet({ requestId, open, onOpenChange, showTrackingButton = false }: { requestId: string | null; open: boolean; onOpenChange: (open: boolean) => void; showTrackingButton?: boolean }) {
+export function RequestDetailsSheet({ requestId, open, onOpenChange, showTrackingButton = false, uiLanguage = "English" }: { requestId: string | null; open: boolean; onOpenChange: (open: boolean) => void; showTrackingButton?: boolean; uiLanguage?: RequesterLanguage }) {
   const [request, setRequest] = useState<RequestDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -65,43 +69,45 @@ export function RequestDetailsSheet({ requestId, open, onOpenChange, showTrackin
   }, [open, requestId]);
 
   const assignment = request?.assignments?.[request.assignments.length - 1];
+  const t = (text: string) => requesterText(uiLanguage, text);
   return (
-    <Sheet open={open} onOpenChange={onOpenChange} title="Request details" description="A summary of this emergency request." side="bottom" className="!h-dvh !max-h-dvh rounded-none">
+    <Sheet open={open} onOpenChange={onOpenChange} title={t("Request details")} description={t("A summary of this emergency request.")} side="bottom" className="!h-dvh !max-h-dvh rounded-none">
       <div className="flex h-full flex-col">
         <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-        {loading ? <p className="py-8 text-center text-sm text-[#687b89]">Loading request details...</p> : null}
+        {loading ? <p className="py-8 text-center text-sm text-[#687b89]">{t("Loading request details...")}</p> : null}
         {error ? <div className="border border-[#efc9c7] bg-[#fff5f4] p-4 text-sm text-[#a93331]">{error}</div> : null}
         {request && !loading ? (
-          <>
+          <div className="space-y-6">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#0f6872]">{request.reference || request.id}</p>
-              <h2 className="mt-1 text-xl font-bold text-[#102b3f]">{request.category || "Emergency request"}</h2>
-              <p className="mt-1 text-sm text-[#687b89]">{request.severity || "Standard"} priority · {request.currentStatus || "submitted"}</p>
+              <h2 className="text-xl font-bold text-[#102b3f]">{t(request.category || "Emergency request")}</h2>
+              <p className="mt-1 text-sm text-[#687b89]">{t(request.severity || "Standard")} {t("priority")} · {t(request.currentStatus || "submitted")}</p>
             </div>
 
-            <div className="grid gap-3 text-sm sm:grid-cols-2">
-              <div className="flex gap-3"><CalendarClock className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">Request date and time</p><p className="mt-1 text-[#687b89]">{formatDate(request.submittedAt)}</p></div></div>
-              <div className="flex gap-3"><MapPin className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">Location</p><p className="mt-1 text-[#687b89]">{request.location?.addressText || request.location?.landmark || "Location confirmed"}</p></div></div>
-              <div className="flex gap-3"><Clock3 className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">Time to reach location</p><p className="mt-1 text-[#687b89]">{timeToArrive(request.submittedAt, request.arrivedAt)}</p></div></div>
-              <div className="flex gap-3"><CheckCircle2 className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">Reached location</p><p className="mt-1 text-[#687b89]">{request.arrivedAt ? formatDate(request.arrivedAt) : "Not reached yet"}</p></div></div>
+            <div className="grid gap-5 text-sm sm:grid-cols-2">
+              <div className="flex gap-3"><CalendarClock className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">{t("Request date and time")}</p><p className="mt-1 text-[#687b89]">{formatDate(request.submittedAt)}</p></div></div>
+              <div className="flex gap-3"><MapPin className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">{t("Destination")}</p><p className="mt-1 text-[#687b89]">{request.location?.addressText || request.location?.landmark || t("Location confirmed")}</p></div></div>
+              <div className="flex gap-3"><Clock3 className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">{t("Time to reach location")}</p><p className="mt-1 text-[#687b89]">{timeToArrive(request.submittedAt, request.arrivedAt)}</p></div></div>
+              <div className="flex gap-3"><CheckCircle2 className="h-5 w-5 shrink-0 text-[#0f5b67]" /><div><p className="font-semibold text-[#102b3f]">{t("Reached location")}</p><p className="mt-1 text-[#687b89]">{request.arrivedAt ? formatDate(request.arrivedAt) : t("Not arrived yet")}</p></div></div>
             </div>
 
-            <div className="border-t border-[#dce5ea] pt-4">
-              <h3 className="font-semibold text-[#102b3f]">Response details</h3>
-              <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-                <div className="flex gap-2"><UserRound className="h-4 w-4 text-[#0f5b67]" /><span><b>Driver:</b> {assignment?.responderName || "Not assigned"}</span></div>
-                <div className="flex gap-2"><CarFront className="h-4 w-4 text-[#0f5b67]" /><span><b>Vehicle:</b> {assignment?.vehicleRegistrationNumber || assignment?.vehicleCallSign || "Not assigned"}</span></div>
-                <div className="flex gap-2"><span className="text-[#0f5b67]">#</span><span><b>Responder ID:</b> {assignment?.responderEmployeeNumber || "Not assigned"}</span></div>
+            <div className="border-t border-[#dce5ea] pt-6">
+              <h3 className="font-semibold text-[#102b3f]">{t("Response details")}</h3>
+              <div className="mt-5 grid gap-5 text-sm sm:grid-cols-3">
+                <div className="flex gap-2"><UserRound className="h-4 w-4 text-[#0f5b67]" /><span><b>{t("Requested by:")}</b> {request.requesterName || t("Not available")}</span></div>
+                <div className="flex gap-2"><UserRound className="h-4 w-4 text-[#0f5b67]" /><span><b>{t("Responder:")}</b> {assignment?.responderName || t("Not assigned")}</span></div>
+                <div className="flex gap-2"><CarFront className="h-4 w-4 text-[#0f5b67]" /><span><b>{t("Vehicle:")}</b> {assignment?.vehicleRegistrationNumber || assignment?.vehicleCallSign || t("Not assigned")}</span></div>
+                <div className="flex gap-2"><span className="text-[#0f5b67]">#</span><span><b>{t("Responder ID:")}</b> {assignment?.responderEmployeeNumber || t("Not assigned")}</span></div>
+                <div className="flex gap-2"><span className="text-[#0f5b67]">↗</span><span><b>{t("Assigned by:")}</b> {assignment?.assignedByName || t("Not available")}</span></div>
               </div>
             </div>
 
-            {request.note ? <p className="border-t border-[#dce5ea] pt-4 text-sm leading-6 text-[#687b89]"><b className="text-[#102b3f]">Incident note:</b> {request.note}</p> : null}
-          </>
+            {request.note ? <p className="border-t border-[#dce5ea] pt-6 text-sm leading-6 text-[#687b89]"><b className="text-[#102b3f]">{t("Incident note:")}</b> {request.note}</p> : null}
+          </div>
         ) : null}
         </div>
         {request && !loading && showTrackingButton ? (
           <div className="shrink-0 border-t border-[#dce5ea] bg-white p-5 sm:p-6">
-            <Link href={`/app/requester/track/${request.id}`} onClick={() => onOpenChange(false)} className="inline-flex min-h-[52px] w-full items-center justify-center rounded-xl border border-transparent bg-[#0f5b67] px-5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(15,91,103,.16)] transition hover:bg-[#0b4b55]">Open current tracking</Link>
+            <Link href={`/app/requester/track/${request.id}`} onClick={() => onOpenChange(false)} className="inline-flex min-h-[52px] w-full items-center justify-center rounded-xl border border-transparent bg-[#0f5b67] px-5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(15,91,103,.16)] transition hover:bg-[#0b4b55]">{t("Open current tracking")}</Link>
           </div>
         ) : null}
       </div>

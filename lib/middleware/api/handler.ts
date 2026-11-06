@@ -29,6 +29,7 @@ import { applySecurityHeaders, jsonError, jsonOk } from '@/lib/middleware/api/re
 import { checkRateLimit, type RateLimitRule } from '@/lib/middleware/api/rate-limit';
 import { clientIp, hashIp, resolveRequestId, userAgent } from '@/lib/middleware/api/context';
 import { writeAudit, type AuditEvent } from '@/lib/middleware/api/audit';
+import { db } from '@/lib/middleware/server/db';
 
 export function jwtConfig(): JwtConfig {
   return {
@@ -64,6 +65,8 @@ export interface RouteConfig<B extends MaybeSchema, Q extends MaybeSchema, P ext
   auth?: 'required' | 'optional' | 'none';
   roles?: UserRole[];
   rateLimit?: RateLimitRule;
+  /** Override the generic rate-limit copy for routes with a specific retry window. */
+  rateLimitMessage?: string;
   body?: B;
   query?: Q;
   params?: P;
@@ -117,10 +120,24 @@ async function authenticate(req: NextRequest): Promise<AuthPrincipal> {
   const outcome = await verifyAccessToken(jwtConfig(), token);
   if (!outcome.valid) throw tokenError(outcome.reason);
 
+  let organisationId = outcome.claims.org ?? null;
+  if (outcome.claims.role === 'dispatcher') {
+    const { data: membership, error } = await db()
+      .from('organisation_members')
+      .select('organisation_id')
+      .eq('user_id', outcome.claims.sub)
+      .eq('status', 'active')
+      .order('joined_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw ApiError.internal('Unable to verify dispatcher organisation.', error.message);
+    organisationId = membership?.organisation_id ?? null;
+  }
+
   return {
     userId: outcome.claims.sub,
     role: outcome.claims.role,
-    organisationId: outcome.claims.org ?? null,
+    organisationId,
     tokenId: outcome.claims.jti,
     expiresAt: outcome.claims.exp,
   };
@@ -196,7 +213,7 @@ export function createHandler<
           const res = jsonError(
             429,
             'RATE_LIMITED',
-            'Too many attempts. Wait a moment and try again.',
+            config.rateLimitMessage ?? 'Too many attempts. Wait a moment and try again.',
             requestId,
           );
           res.headers.set('Retry-After', String(verdict.retryAfterSeconds));

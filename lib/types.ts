@@ -1,4 +1,4 @@
-export type UserRole = "requester" | "dispatcher" | "responder" | "admin" | "auditor";
+export type UserRole = "requester" | "dispatcher" | "responder" | "admin" | "auditor" | "manager";
 
 export type RequestStatus =
   | "Submitted"
@@ -82,6 +82,7 @@ export interface EmergencyRequest {
   organisationId?: string;
   assignedResponderId?: string;
   etaMinutes?: number;
+  cancellationRequestedAt?: string | null;
   statusHistory: StatusHistoryEntry[];
   operationalNotes: string[];
 }

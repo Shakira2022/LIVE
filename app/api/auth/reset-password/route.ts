@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { hashToken } from "@/lib/reset-token";
+import { passwordSchema } from "@/lib/middleware/validation";
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,12 +19,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Password requirement
-    if (newPassword.length < 8) {
+    const passwordResult = passwordSchema.safeParse(newPassword);
+    if (!passwordResult.success) {
       return NextResponse.json(
         {
-          error:
-            "Password must be at least 8 characters.",
+          error: passwordResult.error.issues[0]?.message ?? "Choose a stronger password.",
         },
         { status: 400 }
       );

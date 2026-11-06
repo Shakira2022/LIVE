@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { generateResetToken } from "@/lib/reset-token";
+import { escapeEmailHtml, liveEmailButton, liveEmailLayout } from "@/lib/email-template";
 
 function getApplicationOrigin(request: NextRequest) {
   const configured = process.env.APP_URL?.trim();
@@ -118,7 +119,7 @@ export async function POST(req: NextRequest) {
         to: cleanEmail,
         subject: "Reset your LIVE password",
         text: `Hello ${displayName},\n\nWe received a request to reset your LIVE password.\n\nReset your password: ${resetUrl}\n\nThis link expires in ${expiryMinutes} minutes. If you did not request this, you can safely ignore this email.\n\nThe LIVE Team`,
-        html: `<!doctype html><html lang="en"><body style="margin:0;background:#f4f7f9;font-family:Arial,sans-serif;color:#102b3f"><div style="max-width:560px;margin:40px auto;padding:32px;background:#fff;border:1px solid #dce5ea;border-radius:16px"><p style="color:#0f6872;font-weight:700;letter-spacing:2px">LIVE</p><h1>Reset your password</h1><p>Hello ${displayName},</p><p>We received a request to reset your LIVE password.</p><p style="margin:28px 0"><a href="${resetUrl}" style="display:inline-block;padding:14px 22px;border-radius:10px;background:#0f5b67;color:#fff;text-decoration:none;font-weight:700">Reset password</a></p><p style="color:#667b89;font-size:14px">This link expires in ${expiryMinutes} minutes. If you did not request this, you can safely ignore this email.</p><p>The LIVE Team</p></div></body></html>`,
+        html: liveEmailLayout(`<div style="margin-bottom:20px;border-left:3px solid #0f6872;padding-left:12px;font-size:10px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#0f6872">Account security</div><h1 style="margin:0;font-size:30px;line-height:1.15;color:#102b3f">Reset your password</h1><p style="margin:18px 0 0;font-size:15px;line-height:1.7;color:#607482">Hello ${escapeEmailHtml(displayName)},<br><br>We received a request to reset your LIVE password.</p>${liveEmailButton(resetUrl, "Reset password")}<p style="margin:24px 0 0;font-size:13px;line-height:1.7;color:#71838e">This link expires in ${expiryMinutes} minutes. If you did not request this, you can safely ignore this email.</p><p style="margin:18px 0 0;font-size:12px;line-height:1.7;color:#71838e">If the button does not work, copy this link into your browser:<br><a href="${escapeEmailHtml(resetUrl)}" style="color:#0f6872;word-break:break-all">${escapeEmailHtml(resetUrl)}</a></p>`, "Reset your LIVE password"),
       });
     } catch (emailError) {
       await supabaseAdmin.from("password_recovery_tokens").delete().eq("token_hash", tokenHash);

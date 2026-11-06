@@ -28,10 +28,15 @@ export default function ResetPasswordPage() {
 
     setError("");
 
-    if (newPassword.length < 8) {
+    if (newPassword.length < 10 || newPassword.length > 128) {
       setError(
-        "Password must be at least 8 characters."
+        "Password must be between 10 and 128 characters."
       );
+      return;
+    }
+
+    if (!/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setError("Include an uppercase letter, a lowercase letter and a number.");
       return;
     }
 
@@ -86,7 +91,7 @@ export default function ResetPasswordPage() {
     <div className="min-h-dvh bg-[#f6f8fb]">
       <PublicHeader />
 
-      <main className="grid min-h-dvh place-items-center px-5 pb-8 pt-20 sm:px-6">
+      <main className="grid min-h-[calc(100dvh-4rem)] place-items-center px-5 pb-8 pt-8 sm:px-6 sm:pt-10">
         <div className="w-full max-w-md">
 
           {success ? (

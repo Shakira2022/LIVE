@@ -45,10 +45,24 @@ async function getAuthenticatedUser() {
     return null;
   }
 
+  let organisationId = outcome.claims.org ?? null;
+  if (outcome.claims.role === "dispatcher") {
+    const { data: membership, error } = await supabaseServer
+      .from("organisation_members")
+      .select("organisation_id")
+      .eq("user_id", outcome.claims.sub)
+      .eq("status", "active")
+      .order("joined_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    organisationId = membership?.organisation_id ?? null;
+  }
+
   return {
     userId: outcome.claims.sub,
     role: outcome.claims.role,
-    organisationId: outcome.claims.org ?? null,
+    organisationId,
   };
 }
 
@@ -175,6 +189,13 @@ export async function POST(
           message: "organisation_id is required.",
         },
         { status: 400 }
+      );
+    }
+
+    if (authUser.role === "dispatcher" && organisation_id !== authUser.organisationId) {
+      return NextResponse.json(
+        { ok: false, message: "You can only assign resources from your organisation." },
+        { status: 403 },
       );
     }
 
@@ -313,6 +334,17 @@ export async function POST(
           message: "Emergency request not found.",
         },
         { status: 404 }
+      );
+    }
+
+    if (
+      authUser.role === "dispatcher" &&
+      emergencyRequest.routed_organisation_id &&
+      emergencyRequest.routed_organisation_id !== authUser.organisationId
+    ) {
+      return NextResponse.json(
+        { ok: false, message: "You can only view requests routed to your organisation." },
+        { status: 404 },
       );
     }
 
@@ -481,6 +513,61 @@ export async function POST(
 
       responder = responderData;
 
+      const { data: responderAssignments, error: activeResponderAssignmentError } =
+        await supabaseServer
+          .from("request_assignments")
+          .select("id, request_id")
+          .eq("responder_user_id", responder_user_id)
+          .in("status", ["assigned", "acknowledged", "en_route", "arrived"]);
+
+      if (activeResponderAssignmentError) {
+        console.error(
+          "Active responder assignment lookup error:",
+          activeResponderAssignmentError,
+        );
+        return NextResponse.json(
+          {
+            ok: false,
+            message: "Unable to verify whether the responder is already assigned.",
+          },
+          { status: 500 },
+        );
+      }
+
+      const activeRequestIds = [...new Set((responderAssignments ?? []).map((item) => item.request_id))];
+      let activeResponderAssignment: { id: string; request_id: string } | undefined;
+      if (activeRequestIds.length) {
+        const { data: assignedRequests, error: assignedRequestsError } = await supabaseServer
+          .from("emergency_requests")
+          .select("id, current_status")
+          .in("id", activeRequestIds);
+
+        if (assignedRequestsError) {
+          console.error("Active responder request lookup error:", assignedRequestsError);
+          return NextResponse.json(
+            { ok: false, message: "Unable to verify whether the responder is already assigned." },
+            { status: 500 },
+          );
+        }
+
+        const openRequestIds = new Set(
+          (assignedRequests ?? [])
+            .filter((item) => ["submitted", "received", "assigned", "en_route", "arrived"].includes(String(item.current_status).toLowerCase()))
+            .map((item) => item.id),
+        );
+        activeResponderAssignment = (responderAssignments ?? []).find((item) => openRequestIds.has(item.request_id));
+      }
+
+      if (activeResponderAssignment) {
+        return NextResponse.json(
+          {
+            ok: false,
+            message: "This responder is already assigned to another active request.",
+          },
+          { status: 409 },
+        );
+      }
+
       if (
         responder.organisation_id !==
         organisation_id
@@ -495,7 +582,8 @@ export async function POST(
         );
       }
 
-      if (responder.availability !== "available") {
+      const staleBusyAvailability = ["assigned", "en_route", "on_scene"].includes(responder.availability);
+      if (responder.availability !== "available" && !(staleBusyAvailability && !activeResponderAssignment)) {
         return NextResponse.json(
           {
             ok: false,
@@ -797,6 +885,22 @@ export async function POST(
         assignmentError
       );
 
+      if (
+        assignmentError.code === "23505" &&
+        (assignmentError.message?.includes("request_assignments_one_active_per_responder") ||
+          assignmentError.message?.includes("request_assignments_one_active_per_request"))
+      ) {
+        return NextResponse.json(
+          {
+            ok: false,
+            message: assignmentError.message?.includes("request_assignments_one_active_per_request")
+              ? "This request already has an active assignment."
+              : "This responder is already assigned to another active request.",
+          },
+          { status: 409 },
+        );
+      }
+
       return NextResponse.json(
         {
           ok: false,
@@ -954,6 +1058,7 @@ export async function POST(
     // ============================================================
 
     const {
+      data: updatedRequest,
       error: requestUpdateError,
     } = await supabaseServer
       .from("emergency_requests")
@@ -971,12 +1076,14 @@ export async function POST(
       .in("current_status", [
         "submitted",
         "received",
-      ]);
+      ])
+      .select("id")
+      .maybeSingle();
 
-    if (requestUpdateError) {
+    if (requestUpdateError || !updatedRequest) {
       console.error(
         "Emergency request update failed:",
-        requestUpdateError
+        requestUpdateError ?? "Request status changed before assignment completed."
       );
 
       // Best-effort rollback.
@@ -1019,9 +1126,11 @@ export async function POST(
         {
           ok: false,
           message:
-            "Assignment could not be completed because the emergency request status could not be updated.",
+            requestUpdateError
+              ? "Assignment could not be completed because the emergency request status could not be updated."
+              : "This request changed before assignment completed. Refresh and try again.",
         },
-        { status: 500 }
+        { status: requestUpdateError ? 500 : 409 }
       );
     }
 
@@ -1260,6 +1369,17 @@ export async function GET(
       );
     }
 
+    if (
+      authUser.role === "dispatcher" &&
+      emergencyRequestRow.routed_organisation_id &&
+      emergencyRequestRow.routed_organisation_id !== authUser.organisationId
+    ) {
+      return NextResponse.json(
+        { ok: false, message: "You can only view requests routed to your organisation." },
+        { status: 404 },
+      );
+    }
+
     const { data: requestLocations } = await supabaseServer
       .from("request_locations")
       .select("*")
@@ -1350,13 +1470,26 @@ export async function GET(
       }
     }
 
-    const { data: currentAssignmentRow } = await supabaseServer
+    let currentAssignmentQuery = supabaseServer
       .from("request_assignments")
       .select("id, responder_user_id, status")
       .eq("request_id", emergencyRequest.id)
+      .in("status", ["assigned", "acknowledged", "en_route", "arrived"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (authUser.role === "dispatcher" && authUser.organisationId) {
+      currentAssignmentQuery = supabaseServer
+        .from("request_assignments")
+        .select("id, responder_user_id, status")
+        .eq("request_id", emergencyRequest.id)
+        .eq("organisation_id", authUser.organisationId)
+        .in("status", ["assigned", "acknowledged", "en_route", "arrived"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    }
+    const { data: currentAssignmentRow } = await currentAssignmentQuery;
 
     let currentAssignment: any = currentAssignmentRow;
 
@@ -1366,9 +1499,19 @@ export async function GET(
     if (currentAssignmentRow?.responder_user_id) {
       const { data: responderProfile } = await supabaseServer
         .from("responder_profiles")
-        .select("current_latitude, current_longitude")
+        .select("organisation_id, availability, current_latitude, current_longitude")
         .eq("user_id", currentAssignmentRow.responder_user_id)
         .maybeSingle();
+
+      if (
+        authUser.role === "dispatcher" &&
+        responderProfile?.organisation_id !== authUser.organisationId
+      ) {
+        return NextResponse.json(
+          { ok: false, message: "You can only view responders in your organisation." },
+          { status: 404 },
+        );
+      }
 
       const { data: responderUser } = await supabaseServer
         .from("users")

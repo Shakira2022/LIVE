@@ -12,65 +12,44 @@ export const GET = createHandler(
     rateLimit: { limit: 120, windowMs: 60_000, by: "user" },
   },
   async () => {
-    const [
-      usersResult,
-      organisationsResult,
-      activeRequestsResult,
-      deniedEventsResult,
-      auditResult,
-    ] = await Promise.all([
+    const [usersResult, organisationsResult, activeRequestsResult, supportResult, reportsResult] = await Promise.all([
       db().from("users").select("*", { count: "exact", head: true }).is("deleted_at", null),
       db().from("organisations").select("*", { count: "exact", head: true }),
       db().from("emergency_requests").select("*", { count: "exact", head: true }).eq("is_active", true),
-      db().from("audit_logs").select("*", { count: "exact", head: true }).eq("result", "denied"),
       db()
-        .from("audit_logs")
-        .select("id,actor_user_id,actor_role,action,target_type,target_id,result,created_at")
+        .from("support_requests")
+        .select("id, requester_name, subject, status, updated_at", { count: "exact" })
+        .in("status", ["open", "in_progress", "waiting_on_user"])
+        .order("updated_at", { ascending: false })
+        .limit(5),
+      db()
+        .from("responder_reports")
+        .select("id, responder_user_id, subject, status, created_at", { count: "exact" })
+        .eq("status", "open")
         .order("created_at", { ascending: false })
-        .limit(6),
+        .limit(5),
     ]);
 
-    const firstError =
-      usersResult.error ||
-      organisationsResult.error ||
-      activeRequestsResult.error ||
-      deniedEventsResult.error ||
-      auditResult.error;
-
+    const firstError = usersResult.error || organisationsResult.error || activeRequestsResult.error || supportResult.error || reportsResult.error;
     if (firstError) {
-      throw ApiError.internal(
-        "Unable to retrieve dashboard information.",
-        firstError.message,
-      );
+      throw ApiError.internal("Unable to retrieve dashboard information.", firstError.message);
     }
 
-    const actorIds = [
-      ...new Set(
-        (auditResult.data ?? [])
-          .map((log) => log.actor_user_id)
-          .filter(Boolean),
-      ),
-    ] as string[];
-
-    let actorNames = new Map<string, string>();
-
-    if (actorIds.length > 0) {
-      const { data: actors, error } = await db()
+    const responderIds = [...new Set((reportsResult.data ?? [])
+      .map((report) => report.responder_user_id)
+      .filter((id): id is string => Boolean(id)))];
+    let responderNames = new Map<string, string>();
+    if (responderIds.length) {
+      const { data: responders, error } = await db()
         .from("users")
-        .select("id,first_name,last_name,display_name,email")
-        .in("id", actorIds);
+        .select("id, first_name, last_name, display_name, email")
+        .in("id", responderIds);
 
-      if (!error) {
-        actorNames = new Map(
-          (actors ?? []).map((actor) => [
-            actor.id,
-            actor.display_name ||
-              [actor.first_name, actor.last_name].filter(Boolean).join(" ") ||
-              actor.email ||
-              "Unknown user",
-          ]),
-        );
-      }
+      if (error) throw ApiError.internal("Unable to load responder report contacts.", error.message);
+      responderNames = new Map((responders ?? []).map((responder) => [
+        responder.id,
+        responder.display_name || [responder.first_name, responder.last_name].filter(Boolean).join(" ") || responder.email || "Responder",
+      ]));
     }
 
     return {
@@ -78,18 +57,21 @@ export const GET = createHandler(
         users: usersResult.count ?? 0,
         organisations: organisationsResult.count ?? 0,
         activeRequests: activeRequestsResult.count ?? 0,
-        deniedEvents: deniedEventsResult.count ?? 0,
+        openSupportRequests: supportResult.count ?? 0,
+        openResponderReports: reportsResult.count ?? 0,
       },
-      auditLogs: (auditResult.data ?? []).map((log) => ({
-        id: log.id,
-        action: log.action,
-        actorName:
-          (log.actor_user_id && actorNames.get(log.actor_user_id)) ||
-          log.actor_role ||
-          "System",
-        target: log.target_id || log.target_type || "System",
-        result: log.result,
-        timestamp: log.created_at,
+      supportRequests: (supportResult.data ?? []).map((request) => ({
+        id: request.id,
+        requesterName: request.requester_name,
+        subject: request.subject,
+        status: request.status,
+        updatedAt: request.updated_at,
+      })),
+      responderReports: (reportsResult.data ?? []).map((report) => ({
+        id: report.id,
+        responderName: report.responder_user_id ? responderNames.get(report.responder_user_id) ?? "Responder" : "Responder",
+        subject: report.subject,
+        createdAt: report.created_at,
       })),
     };
   },

@@ -66,7 +66,7 @@ Two things in LIVE are deliberately **not** touched: the UI components, and the 
 | `devices_sessions` | `device_sessions` — and it stores **`jwt_id_hash`**, not the raw token id |
 | `request_status_history.changed_by` / `.changed_by_role` | `changed_by_user_id` / `actor_role` (+ `changed_by_system`, `correlation_id`) |
 | `request_assignments.assigned_to` / `team_label` / `vehicle_label` (free text) | `responder_user_id` / `team_id` / `vehicle_id` — **all foreign keys**. You cannot type a team name any more; the team must exist. |
-| `request_assignments.assigned_by` nullable | `assigned_by_user_id` **NOT NULL** |
+| `request_assignments.assigned_by` nullable | `assigned_by_user_id` remains a user foreign key and is nullable for automatic system assignments |
 | `audit_logs` with a `log_type` column | **three tables**: `audit_logs`, `security_logs`, `application_logs` |
 | `audit_logs.ip_hash` (text) | `ip_address` is **`inet`** — a hash will not fit. The hash now goes in `safe_metadata.ipHash` |
 | `request_location_pings` (many per request) | **nothing equivalent.** `request_locations` is UNIQUE per request |

@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AuditorListControls, auditorFilterOptions, filterAuditorRows } from "@/components/auditor/auditor-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
+import { formatSecurityEvent } from "@/lib/audit-display";
+import { LogTechnicalDetails } from "@/components/auditor/log-technical-details";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type SecurityLog = {
   id: string;
@@ -145,9 +149,15 @@ export default function AuditorSecurity() {
     loading: authLoading,
     refresh,
   } = useAuth();
-  const [logs, setLogs] = useState<SecurityLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = user?.id ? `auditor-security-logs:${user.id}` : null;
+  const cachedLogs = cacheKey ? readCached<SecurityLog[]>(cacheKey) : null;
+  const [logs, setLogs] = useState<SecurityLog[]>(() => cachedLogs ?? []);
+  const [loading, setLoading] = useState(() => !cachedLogs);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [resultFilter, setResultFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const loadSecurityLogs =
     useCallback(async () => {
@@ -158,7 +168,7 @@ export default function AuditorSecurity() {
       }
 
       try {
-        setLoading(true);
+        if (!cacheKey || !readCached(cacheKey)) setLoading(true);
         setError("");
 
         const response =
@@ -180,7 +190,6 @@ export default function AuditorSecurity() {
             await refresh();
           }
 
-          setLogs([]);
           setError(
             getApiMessage(
               result,
@@ -191,9 +200,9 @@ export default function AuditorSecurity() {
           return;
         }
 
-        setLogs(
-          extractLogs(result),
-        );
+        const nextLogs = extractLogs(result);
+        setLogs(nextLogs);
+        if (cacheKey) writeFreshCache(cacheKey, nextLogs, 5 * 60_000);
       } catch (error) {
         console.warn(
           "Unable to load security logs.",
@@ -202,7 +211,6 @@ export default function AuditorSecurity() {
             : String(error),
         );
 
-        setLogs([]);
         setError(
           error instanceof Error
             ? error.message
@@ -212,6 +220,7 @@ export default function AuditorSecurity() {
         setLoading(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -234,6 +243,22 @@ export default function AuditorSecurity() {
     user?.id,
   ]);
 
+  const resultOptions = useMemo(
+    () => auditorFilterOptions(logs.map((log) => log.result)),
+    [logs],
+  );
+  const filteredLogs = useMemo(
+    () => filterAuditorRows(logs, {
+      search,
+      type: resultFilter,
+      fromDate,
+      toDate,
+      getType: (log) => log.result,
+      getDate: (log) => log.created_at,
+    }),
+    [logs, search, resultFilter, fromDate, toDate],
+  );
+
   if (authLoading || loading || !user) {
     return <PageSkeleton />;
   }
@@ -255,15 +280,31 @@ export default function AuditorSecurity() {
       )}
 
       <Panel>
-        <PanelHeader title={`${logs.length} events`} />
+        <PanelHeader title="Security event records" />
+        <AuditorListControls
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Event, user ID, IP address, correlation ID"
+          typeLabel="Result"
+          typeValue={resultFilter}
+          onTypeChange={setResultFilter}
+          typeOptions={resultOptions}
+          fromDate={fromDate}
+          onFromDateChange={setFromDate}
+          toDate={toDate}
+          onToDateChange={setToDate}
+          visibleCount={filteredLogs.length}
+          totalCount={logs.length}
+        />
 
-        {logs.length === 0 && !error ? (
+        {filteredLogs.length === 0 ? (
           <div className="p-5 text-sm text-[#617582]">
-            No security events were found.
+            {logs.length === 0 ? "No security events were found." : "No security events match these filters."}
           </div>
         ) : (
-          <div className="divide-y divide-[#e2e8ed]">
-            {logs.map((log) => (
+          <div role="region" aria-label="Security log results" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto">
+            <div className="divide-y divide-[#e2e8ed]">
+            {filteredLogs.map((log) => (
               <article
                 key={log.id}
                 className="p-4 sm:p-5"
@@ -271,7 +312,7 @@ export default function AuditorSecurity() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="font-semibold">
-                      {log.event_type}
+                      {formatSecurityEvent(log.event_type)}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
@@ -284,6 +325,16 @@ export default function AuditorSecurity() {
                       {log.correlation_id ||
                         "No correlation ID"}
                     </p>
+
+                    <LogTechnicalDetails
+                      details={[
+                        { label: "Original event type", value: log.event_type },
+                        { label: "User ID", value: log.user_id },
+                        { label: "IP address", value: log.ip_address },
+                        { label: "Correlation ID", value: log.correlation_id },
+                        { label: "User agent", value: log.user_agent },
+                      ]}
+                    />
                   </div>
 
                   <Badge
@@ -300,6 +351,7 @@ export default function AuditorSecurity() {
                 </div>
               </article>
             ))}
+            </div>
           </div>
         )}
       </Panel>

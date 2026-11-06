@@ -48,7 +48,7 @@ Stores hospitals, response organisations, administration and support organisatio
 
 - `id`: UUID primary key.
 - `name`: Organisation name.
-- `organisation_type`: Hospital, emergency response, administration or support.
+- `organisation_type`: Medical, firefighter or police. Existing legacy labels remain routable until an administrator edits and recategorises them.
 - `registration_number`: Optional official identifier.
 - `contact_email`, `contact_phone`: Operational contact details.
 - `address_line_1`, `address_line_2`, `suburb`, `city`, `province`, `postal_code`, `country_code`: Address.
@@ -172,7 +172,7 @@ Stores each responder, team or vehicle assignment. Reassignment creates a new re
 
 - `id`, `request_id`, `organisation_id`.
 - `team_id`, `responder_user_id`, `vehicle_id`.
-- `assigned_by_user_id`.
+- `assigned_by_user_id`: the dispatcher/admin for a manual assignment; `NULL` for an automatic system assignment.
 - `status`: Assigned, acknowledged, en route, arrived, completed, cancelled or rejected.
 - `eta_minutes`, `assignment_note`.
 - `assigned_at`, `acknowledged_at`, `route_started_at`, `arrived_at`, `completed_at`.
@@ -343,3 +343,13 @@ At minimum, index:
 ## Data that must never be logged
 
 Do not place plain passwords, raw JWTs, signing keys, database service keys, provider credentials, full secret tokens or unnecessary medical and personal details in any log table. Mask phone numbers, email addresses and identifiers where the complete value is not required for investigation.
+
+## Requester emergency intake and AI chats
+
+Migration `0009_requester_ai_and_intake.sql` adds three request-scoped tables:
+
+- `emergency_intake_answers`: one row per request and stable question key; stores the question, answer or skipped state, source surface and update time.
+- `requester_ai_conversations`: a requester-owned chat session linked to one emergency request.
+- `requester_ai_messages`: ordered user and assistant messages, including the provider/model identity for assistant output.
+
+The app accesses these tables through authenticated server routes. Row-level security is enabled and browser roles have no direct table grants because LIVE uses its own signed session JWTs rather than Supabase Auth.

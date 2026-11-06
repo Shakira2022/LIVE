@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AuditorListControls, auditorFilterOptions, filterAuditorRows } from "@/components/auditor/auditor-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
+import { formatApplicationEvent } from "@/lib/audit-display";
+import { LogTechnicalDetails } from "@/components/auditor/log-technical-details";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type ApplicationLog = {
   id: string;
@@ -147,9 +151,15 @@ export default function AuditorApplication() {
     loading: authLoading,
     refresh,
   } = useAuth();
-  const [logs, setLogs] = useState<ApplicationLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = user?.id ? `auditor-application-logs:${user.id}` : null;
+  const cachedLogs = cacheKey ? readCached<ApplicationLog[]>(cacheKey) : null;
+  const [logs, setLogs] = useState<ApplicationLog[]>(() => cachedLogs ?? []);
+  const [loading, setLoading] = useState(() => !cachedLogs);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [levelFilter, setLevelFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const loadApplicationLogs =
     useCallback(async () => {
@@ -160,7 +170,7 @@ export default function AuditorApplication() {
       }
 
       try {
-        setLoading(true);
+        if (!cacheKey || !readCached(cacheKey)) setLoading(true);
         setError("");
 
         const response =
@@ -182,7 +192,6 @@ export default function AuditorApplication() {
             await refresh();
           }
 
-          setLogs([]);
           setError(
             getApiMessage(
               result,
@@ -193,9 +202,9 @@ export default function AuditorApplication() {
           return;
         }
 
-        setLogs(
-          extractLogs(result),
-        );
+        const nextLogs = extractLogs(result);
+        setLogs(nextLogs);
+        if (cacheKey) writeFreshCache(cacheKey, nextLogs, 5 * 60_000);
       } catch (error) {
         console.warn(
           "Unable to load application logs.",
@@ -204,7 +213,6 @@ export default function AuditorApplication() {
             : String(error),
         );
 
-        setLogs([]);
         setError(
           error instanceof Error
             ? error.message
@@ -214,6 +222,7 @@ export default function AuditorApplication() {
         setLoading(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -235,6 +244,22 @@ export default function AuditorApplication() {
     loadApplicationLogs,
     user?.id,
   ]);
+
+  const levelOptions = useMemo(
+    () => auditorFilterOptions(logs.map((log) => log.level)),
+    [logs],
+  );
+  const filteredLogs = useMemo(
+    () => filterAuditorRows(logs, {
+      search,
+      type: levelFilter,
+      fromDate,
+      toDate,
+      getType: (log) => log.level,
+      getDate: (log) => log.created_at,
+    }),
+    [logs, search, levelFilter, fromDate, toDate],
+  );
 
   function getBadgeTone(level: string) {
     switch (level.toLowerCase()) {
@@ -277,15 +302,31 @@ export default function AuditorApplication() {
       )}
 
       <Panel>
-        <PanelHeader title={`${logs.length} events`} />
+        <PanelHeader title="Application event records" />
+        <AuditorListControls
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Event, service, message, request ID"
+          typeLabel="Level"
+          typeValue={levelFilter}
+          onTypeChange={setLevelFilter}
+          typeOptions={levelOptions}
+          fromDate={fromDate}
+          onFromDateChange={setFromDate}
+          toDate={toDate}
+          onToDateChange={setToDate}
+          visibleCount={filteredLogs.length}
+          totalCount={logs.length}
+        />
 
-        {logs.length === 0 && !error ? (
+        {filteredLogs.length === 0 ? (
           <div className="p-5 text-sm text-[#617582]">
-            No application events were found.
+            {logs.length === 0 ? "No application events were found." : "No application events match these filters."}
           </div>
         ) : (
-          <div className="divide-y divide-[#e2e8ed]">
-            {logs.map((log) => (
+          <div role="region" aria-label="Application log results" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto">
+            <div className="divide-y divide-[#e2e8ed]">
+            {filteredLogs.map((log) => (
               <article
                 key={log.id}
                 className="p-4 sm:p-5"
@@ -293,7 +334,7 @@ export default function AuditorApplication() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="font-semibold">
-                      {log.event_name}
+                      {formatApplicationEvent(log.event_name)}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
@@ -317,6 +358,16 @@ export default function AuditorApplication() {
                         Request ID: {log.request_id}
                       </p>
                     )}
+
+                    <LogTechnicalDetails
+                      details={[
+                        { label: "Original event", value: log.event_name },
+                        { label: "Request ID", value: log.request_id },
+                        { label: "Correlation ID", value: log.correlation_id },
+                        { label: "Error code", value: log.error_code },
+                        { label: "Safe technical context", value: log.safe_context },
+                      ]}
+                    />
                   </div>
 
                   <Badge tone={getBadgeTone(log.level)}>
@@ -325,6 +376,7 @@ export default function AuditorApplication() {
                 </div>
               </article>
             ))}
+            </div>
           </div>
         )}
       </Panel>

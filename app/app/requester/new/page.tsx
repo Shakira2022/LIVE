@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Search,
   Siren,
+  X,
 } from "lucide-react";
 
 import {
@@ -31,7 +32,10 @@ import {
 } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { requesterText, useRequesterLanguage } from "@/lib/requester-ui";
+import { SPOKEN_SKIP_INSTRUCTION, useBlindVoiceAnnouncement } from "@/components/requester/use-blind-voice-announcement";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
+import { RequesterPageHelpButton } from "@/components/requester/requester-page-help-button";
 
 import { Button } from "@/components/ui/button";
 
@@ -48,6 +52,8 @@ import { PageSkeleton } from "@/components/ui/skeleton";
 import { getAddressFromCoordinates } from "@/lib/location/reverseGeocode";
 import { readCached, readFreshCache, writeFreshCache } from "@/lib/client-cache";
 import { readRequesterPreferences } from "@/lib/requester-preferences";
+import { isRequestIntakeCannotAnswer, isRequestIntakeSkipCurrent, isRequestIntakeSkipRemaining, matchRequestIntakeOption, questionsForEmergency } from "@/lib/requester-intake";
+import { useRequestIntakeAnswers } from "@/lib/use-request-intake-answers";
 
 import type {
   Coordinates,
@@ -72,6 +78,7 @@ type SuggestionItem = {
 
 type ActiveRequestCache = {
   id: string | null;
+  category?: string | null;
 };
 
 const LOCATION_ATTEMPTS = 3;
@@ -79,6 +86,11 @@ const ATTEMPT_SECONDS = 15;
 const RETRY_DELAY_SECONDS = 5;
 const CONFIRM_REVIEW_SECONDS = 5;
 const MAX_NOTE_LENGTH = 200;
+const REQUEST_DESCRIPTION_PROMPTS: Record<string, string[]> = {
+  Medical: ["Person is unconscious", "Not breathing normally", "Heavy bleeding", "Chest pain", "Fell and cannot get up", "Child involved"],
+  Firefighting: ["Fire or smoke", "Person trapped", "Building at risk", "Hazardous materials", "Injuries reported"],
+  Police: ["Someone is in immediate danger", "Violence is happening", "Break-in in progress", "Weapon involved", "Person needs urgent protection"],
+};
 
 /* ---------------------------------------------------------------------- */
 /* Middleware API response helpers                                        */
@@ -86,6 +98,7 @@ const MAX_NOTE_LENGTH = 200;
 
 type RequestListItem = {
   id: string;
+  category?: string;
   currentStatus?: string;
   current_status?: string;
 };
@@ -180,6 +193,12 @@ const FIREFIGHTING_CATEGORIES = [
   "Other Fire Emergency",
 ];
 
+function defaultCategoryForService(service: string | null) {
+  if (service === "Police") return "Personal safety";
+  if (service === "Firefighting") return "Fire / smoke";
+  return "Medical emergency";
+}
+
 type ApiEmergencyCategory =
   | "medical"
   | "accident"
@@ -232,79 +251,6 @@ function wait(milliseconds: number) {
   );
 }
 
-type ActiveQuestion = {
-  question: string;
-  options: string[];
-};
-
-function activeQuestionsFor(category: string | null): ActiveQuestion[] {
-  if (category === "Police") {
-    return [
-      {
-        question: "What kind of situation is this?",
-        options: [
-          "Crime in progress",
-          "Suspicious activity",
-          "Personal safety",
-          "Other",
-        ],
-      },
-      {
-        question: "Is it happening right now?",
-        options: [
-          "Yes, right now",
-          "Just happened",
-          "Not currently",
-          "I am not sure",
-        ],
-      },
-    ];
-  }
-
-  if (category === "Firefighting") {
-    return [
-      {
-        question: "What kind of fire emergency is this?",
-        options: [
-          "Building or house fire",
-          "Vehicle fire",
-          "Smoke or suspected fire",
-          "Other",
-        ],
-      },
-      {
-        question: "Is anyone in immediate danger?",
-        options: [
-          "Yes",
-          "No",
-          "I am not sure",
-        ],
-      },
-    ];
-  }
-
-  return [
-    {
-      question: "What kind of medical emergency is this?",
-      options: [
-        "Vehicle accident",
-        "Injury or trauma",
-        "Breathing problem",
-        "Other",
-      ],
-    },
-    {
-      question: "How many people are involved?",
-      options: [
-        "One person",
-        "Two people",
-        "Three or more",
-        "I am not sure",
-      ],
-    },
-  ];
-}
-
 function ActiveRequestQuestions({
   category,
   requestId,
@@ -312,172 +258,176 @@ function ActiveRequestQuestions({
   category: string | null;
   requestId: string | null;
 }) {
-  const questions = activeQuestionsFor(category);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<string[]>([]);
-  const [additionalHelp, setAdditionalHelp] = useState<boolean | null>(null);
-  const [complete, setComplete] = useState(false);
+  const questions = questionsForEmergency(category ?? '');
+  const { user } = useAuth();
+  const uiLanguage = useRequesterLanguage(user?.id ?? "");
+  const { answers, saveAnswers, syncStatus } = useRequestIntakeAnswers(requestId);
+  const [voiceAnswerFeedback, setVoiceAnswerFeedback] = useState("");
+  const unanswered = questions.filter((item) => !answers[item.key]);
+  const currentQuestion = unanswered[0];
+  const questionNumber = questions.length - unanswered.length + 1;
+  const announcement = !requestId
+    ? null
+    : currentQuestion
+      ? `${requesterText(uiLanguage, "Optional details")}, ${questionNumber} of ${questions.length}. ${requesterText(uiLanguage, currentQuestion.question)}. ${requesterText(uiLanguage, "Answer")} by saying an option number or its words: ${currentQuestion.options.map((option, index) => `${index + 1}. ${requesterText(uiLanguage, option)}`).join(". ")}. ${requesterText(uiLanguage, "If you cannot answer now, say cannot answer now and dispatch will receive that response.")} ${SPOKEN_SKIP_INSTRUCTION[uiLanguage]}`
+      : requesterText(uiLanguage, "Emergency questions are complete for this request.");
+  useBlindVoiceAnnouncement(announcement, uiLanguage, true, user?.id);
 
-  function finish(nextAnswers: string[], extra?: string) {
-    setComplete(true);
-    writeFreshCache(
-      `requester-active-details:${requestId ?? "current"}`,
-      {
-        answers: nextAnswers,
-        additionalHelp: extra ?? null,
-      },
-      5 * 60_000,
-    );
+  useEffect(() => {
+    if (!requestId || !currentQuestion) return;
+    const handleVoiceAnswer = (event: Event) => {
+      const detail = (event as CustomEvent<{ transcript?: string; consumed?: boolean; isFinal?: boolean }>).detail;
+      if (!detail) return;
+      detail.consumed = true;
+      if (!detail.isFinal) return;
+      const transcript = detail?.transcript?.trim();
+      if (!transcript) return;
+      const skipCurrent = isRequestIntakeSkipCurrent(transcript, requesterText(uiLanguage, "Skip this question"));
+      if (skipCurrent) {
+        setVoiceAnswerFeedback("");
+        saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer: null, skipped: true, source: "request_help" }]);
+        return;
+      }
+      const skipRemaining = isRequestIntakeSkipRemaining(transcript, requesterText(uiLanguage, "Skip these questions"));
+      if (skipRemaining) {
+        setVoiceAnswerFeedback("");
+        saveAnswers(unanswered.map((item) => ({ question_key: item.key, question: item.question, answer: null, skipped: true, source: "request_help" })));
+        return;
+      }
+      if (isRequestIntakeCannotAnswer(transcript)) {
+        setVoiceAnswerFeedback("");
+        saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer: requesterText(uiLanguage, "Cannot answer now"), skipped: false, source: "request_help" }]);
+        return;
+      }
+      const answer = matchRequestIntakeOption(transcript, currentQuestion.options, (option) => requesterText(uiLanguage, option));
+      if (!answer) {
+        setVoiceAnswerFeedback(requesterText(uiLanguage, "I couldn't match that to an answer. Say one of the listed options."));
+        return;
+      }
+      setVoiceAnswerFeedback("");
+      saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer, skipped: false, source: "request_help" }]);
+    };
+    window.addEventListener("live:requester-voice-input", handleVoiceAnswer);
+    return () => window.removeEventListener("live:requester-voice-input", handleVoiceAnswer);
+  }, [currentQuestion, requestId, saveAnswers, uiLanguage, unanswered]);
+
+  if (!requestId) {
+    return <p className="mt-6 text-sm text-[#71838f]">{requesterText(uiLanguage, "Open the active request to add details.")}</p>;
   }
 
-  function chooseAnswer(answer: string) {
-    const nextAnswers = [
-      ...answers.slice(0, questionIndex),
-      answer,
-    ];
-    setAnswers(nextAnswers);
-
-    if (questionIndex >= questions.length - 1) {
-      finish(nextAnswers);
-      return;
-    }
-
-    setQuestionIndex((current) => current + 1);
-  }
-
-  if (complete) {
+  if (!currentQuestion) {
     return (
-      <div className="mt-6 px-1 text-center">
+      <div className="mt-6 px-1">
+        <div className="text-center">
         <CheckCircle2 className="mx-auto h-6 w-6 text-[#0f6872]" />
-        <p className="mt-2 text-sm font-semibold text-[#102b3f]">
-          Thanks. These details have been recorded on this device.
-        </p>
-      </div>
-    );
-  }
-
-  if (additionalHelp === null) {
-    return (
-      <div className="mt-6 px-1">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
-          Optional additional help
-        </p>
-        <h3 className="mt-4 font-semibold text-[#102b3f]">
-          Do you need another type of help with this active request?
-        </h3>
-        <p className="mt-2 text-sm leading-6 text-[#71838f]">
-          Choose an option below. This will not create a second emergency request.
-        </p>
-
-        <div className="mt-3 divide-y divide-[#dfe7ec]">
-          {[
-            { label: "Yes, I need additional help", value: true },
-            { label: "No, continue with this request", value: false },
-          ].map((option, optionIndex) => (
-            <button
-              key={option.label}
-              type="button"
-              onClick={() => setAdditionalHelp(option.value)}
-              className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
-            >
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
-                {optionIndex + 1}
-              </span>
-              <span>{option.label}</span>
-            </button>
-          ))}
+        <p className="mt-2 text-sm font-semibold text-[#102b3f]">{requesterText(uiLanguage, "Emergency questions are complete for this request.")}</p>
         </div>
+        <ol className="mt-4 divide-y divide-[#dce5ea] border-y border-[#dce5ea] bg-white">
+          {questions.map((item, index) => {
+            const saved = answers[item.key];
+            return (
+              <li key={item.key} className="px-3 py-4 text-left">
+                <div className="flex items-start gap-3">
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e7f3f4] text-xs font-bold text-[#0f6872]">{index + 1}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold leading-5 text-[#102b3f]">{requesterText(uiLanguage, item.question)}</p>
+                    <p className="mt-1 text-sm leading-5 text-[#526a78]">{saved?.skipped ? requesterText(uiLanguage, "Skipped") : requesterText(uiLanguage, saved?.answer ?? "")}</p>
+                    <div className="mt-3 grid gap-2">
+                      {item.options.map((option) => {
+                        const selected = !saved?.skipped && saved?.answer === option;
+                        return <button
+                          key={option}
+                          data-live-voice-option
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => saveAnswers([{ question_key: item.key, question: item.question, answer: option, skipped: false, source: "request_help" }])}
+                          className={`flex min-h-11 w-full items-center gap-3 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${selected ? "border-[#0f6872] bg-[#eef8f8] text-[#0f5b67]" : "border-[#dce5ea] bg-white text-[#526a78] hover:border-[#0f6872] hover:bg-[#f4fafb]"}`}
+                        >
+                          <span aria-hidden="true" className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${selected ? "border-[#0f6872]" : "border-[#9aabb5]"}`}>{selected ? <span className="h-2 w-2 rounded-full bg-[#0f6872]" /> : null}</span>
+                          {requesterText(uiLanguage, option)}
+                        </button>;
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => saveAnswers([{ question_key: item.key, question: item.question, answer: null, skipped: true, source: "request_help" }])}
+                        className="min-h-10 justify-self-start px-2 text-xs font-semibold text-[#71838f] underline underline-offset-2"
+                      >{requesterText(uiLanguage, "Skip this question")}</button>
+                      <button
+                        type="button"
+                        onClick={() => saveAnswers([{ question_key: item.key, question: item.question, answer: requesterText(uiLanguage, "Cannot answer now"), skipped: false, source: "request_help" }])}
+                        className="min-h-10 justify-self-start px-2 text-xs font-semibold text-[#71838f] underline underline-offset-2"
+                      >{requesterText(uiLanguage, "Cannot answer now")}</button>
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+        <p className="mt-3 text-center text-xs text-[#81909a]">{syncStatus === 'saving' ? requesterText(uiLanguage, 'Saving answers...') : syncStatus === 'error' ? requesterText(uiLanguage, 'Saved on this device. Database sync will retry when connected.') : requesterText(uiLanguage, 'These answers sync with LIVE AI and the dispatcher view.')}</p>
       </div>
     );
   }
-
-  if (additionalHelp) {
-    const additionalHelpOptions = [
-      "Medical assistance",
-      "Police assistance",
-      "Firefighting assistance",
-      "Rescue assistance",
-    ];
-
-    return (
-      <div className="mt-6 px-1">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
-          Additional help type
-        </p>
-        <h3 className="mt-4 font-semibold text-[#102b3f]">
-          What type of additional help do you need?
-        </h3>
-
-        <div className="mt-3 divide-y divide-[#dfe7ec]">
-          {additionalHelpOptions.map((option, optionIndex) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => finish(answers, option)}
-              className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
-            >
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
-                {optionIndex + 1}
-              </span>
-              <span>{option}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const currentQuestion = questions[questionIndex];
 
   return (
     <div className="mt-6 px-1">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">
-          Optional details
-        </p>
-        <span className="text-xs font-semibold text-[#758793]">
-          {questionIndex + 1} of {questions.length}
-        </span>
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#758793]">{requesterText(uiLanguage, "Optional details")}</p>
+        <span className="text-xs font-semibold text-[#758793]">{questionNumber} / {questions.length}</span>
       </div>
-
       <AnimatePresence mode="wait">
         <motion.div
-          key={questionIndex}
+          key={currentQuestion.key}
           initial={{ opacity: 0, x: 12 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -12 }}
           transition={{ duration: 0.2 }}
-          className="mt-4"
+          className="mt-4 border-y border-[#dce5ea] bg-white px-3 py-4"
         >
-          <h3 className="font-semibold text-[#102b3f]">
-            {currentQuestion.question}
-          </h3>
-
-          <div className="mt-3 divide-y divide-[#dfe7ec]">
-            {currentQuestion.options.map((option, optionIndex) => (
+          <div className="flex items-start gap-3">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0f6872] text-sm font-bold text-white">{questionNumber}</span>
+            <h3 className="pt-1 font-semibold leading-6 text-[#102b3f]">{requesterText(uiLanguage, currentQuestion.question)}</h3>
+          </div>
+          <div className="mt-4 grid gap-2">
+            {currentQuestion.options.map((option, index) => (
               <button
+                data-live-voice-option
                 key={option}
                 type="button"
-                onClick={() => chooseAnswer(option)}
-                className="group flex w-full items-center gap-3 px-1 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:text-[#0f6872]"
+                onClick={() => { setVoiceAnswerFeedback(""); saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer: option, skipped: false, source: 'request_help' }]); }}
+                className="group flex w-full items-center gap-3 rounded-xl border border-[#dce5ea] bg-white px-3 py-3 text-left text-sm font-semibold text-[#526a78] transition hover:border-[#0f6872] hover:bg-[#f4fafb] hover:text-[#0f6872]"
               >
-                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#e4eaee] text-xs font-semibold text-[#788a95] transition group-hover:bg-[#0f6872] group-hover:text-white">
-                  {optionIndex + 1}
-                </span>
-                <span>{option}</span>
+                <span aria-hidden="true" className="h-4 w-4 shrink-0 rounded-full border border-[#9aabb5] transition group-hover:border-[#0f6872]" />
+                <span>{requesterText(uiLanguage, option)}</span>
               </button>
             ))}
           </div>
+          <p className="mt-3 text-center text-xs text-[#71838f]">{requesterText(uiLanguage, "With voice commands on, say an option number, its words, cannot answer now, or skip this question.")}</p>
+          <button
+            type="button"
+            onClick={() => { setVoiceAnswerFeedback(""); saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer: null, skipped: true, source: 'request_help' }]); }}
+            className="mx-auto mt-4 block min-h-11 px-3 text-center text-xs font-semibold text-[#71838f] underline underline-offset-2"
+          >
+            {requesterText(uiLanguage, "Skip this question")}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setVoiceAnswerFeedback(""); saveAnswers([{ question_key: currentQuestion.key, question: currentQuestion.question, answer: requesterText(uiLanguage, "Cannot answer now"), skipped: false, source: "request_help" }]); }}
+            className="mx-auto mt-2 block min-h-11 px-3 text-center text-xs font-semibold text-[#71838f] underline underline-offset-2"
+          >
+            {requesterText(uiLanguage, "Cannot answer now")}
+          </button>
         </motion.div>
       </AnimatePresence>
-
       <button
         type="button"
-        onClick={() => setComplete(true)}
+        onClick={() => { setVoiceAnswerFeedback(""); saveAnswers(unanswered.map((item) => ({ question_key: item.key, question: item.question, answer: null, skipped: true, source: 'request_help' }))); }}
         className="mx-auto mt-3 block text-center text-xs font-semibold text-[#71838f] underline underline-offset-2"
       >
-        Skip these questions
+        {requesterText(uiLanguage, "Skip these questions")}
       </button>
+      {voiceAnswerFeedback ? <p role="status" className="mt-2 text-center text-xs font-medium text-[#9b5b18]">{voiceAnswerFeedback}</p> : null}
+      <p className="mt-2 text-center text-xs text-[#81909a]">{syncStatus === 'saving' ? requesterText(uiLanguage, 'Saving answers...') : syncStatus === 'error' ? requesterText(uiLanguage, 'Saved on this device. Database sync will retry when connected.') : requesterText(uiLanguage, 'Answers save as you go and appear in LIVE AI and the dispatcher view.')}</p>
     </div>
   );
 }
@@ -540,9 +490,11 @@ export default function NewRequest() {
   const router = useRouter();
 
   const { user } = useAuth();
+  const uiLanguage = useRequesterLanguage(user?.id ?? "");
 
   const selectedMainCategory =
     searchParams.get("category");
+  const immediateFlow = searchParams.get("flow") === "immediate";
 
   const categoryOptions =
     selectedMainCategory === "Police"
@@ -554,13 +506,28 @@ export default function NewRequest() {
   const [step, setStep] = useState(0);
 
   const [category, setCategory] = useState(
-    categoryOptions[0]
+    defaultCategoryForService(selectedMainCategory)
   );
+  const categoryChosenByUser = useRef(false);
+  const [categorySelectionCountdown, setCategorySelectionCountdown] = useState(10);
+  const [categorySelectionWindowActive, setCategorySelectionWindowActive] = useState(false);
 
   const [severity, setSeverity] =
     useState<Severity>("High");
 
+  const [voiceFocusedField, setVoiceFocusedField] = useState<"service" | "category" | "priority" | null>(null);
+
   const [note, setNote] = useState("");
+
+  const toggleDescriptionPrompt = (prompt: string) => {
+    const existing = note.split(/(?<=[.!?])\s+/).filter((part) => part.trim());
+    const found = existing.some((part) => part.replace(/[.!?]+$/, "").toLocaleLowerCase() === prompt.toLocaleLowerCase());
+    const next = found
+      ? existing.filter((part) => part.replace(/[.!?]+$/, "").toLocaleLowerCase() !== prompt.toLocaleLowerCase()).join(" ")
+      : [...existing, `${prompt}.`].join(" ");
+    setNote(next.slice(0, MAX_NOTE_LENGTH));
+  };
+
 
   const [coordinates, setCoordinates] =
     useState<Coordinates | null>(null);
@@ -574,6 +541,28 @@ export default function NewRequest() {
   const [manualAddress, setManualAddress] = useState("");
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isSearchingSuggestions, setIsSearchingSuggestions] = useState(false);
+
+  const focusVoiceField = useCallback((field: "service" | "category" | "priority") => {
+    setVoiceFocusedField(field);
+    window.requestAnimationFrame(() => {
+      const controlId = field === "service"
+        ? "request-emergency-service"
+        : field === "category"
+          ? "request-emergency-category"
+          : "request-emergency-priority";
+      document.getElementById(controlId)?.focus();
+    });
+  }, []);
+
+  const setEmergencyService = useCallback((categoryGroup: "Medical" | "Firefighting" | "Police") => {
+    categoryChosenByUser.current = false;
+    setCategory(defaultCategoryForService(categoryGroup));
+    focusVoiceField("category");
+    const params = new URLSearchParams(window.location.search);
+    params.set("category", categoryGroup);
+    if (params.get("flow") !== "immediate") params.set("flow", "details");
+    router.replace(`/app/requester/new?${params.toString()}`);
+  }, [focusVoiceField, router]);
 
   const [address, setAddress] =
     useState("");
@@ -620,6 +609,7 @@ export default function NewRequest() {
     activeRequestId,
     setActiveRequestId,
   ] = useState<string | null>(() => initialActiveRequest?.id ?? null);
+  const [activeRequestCategory, setActiveRequestCategory] = useState<string | null>(() => initialActiveRequest?.category ?? null);
 
   const [activeRequestReady, setActiveRequestReady] =
     useState(() => Boolean(initialActiveRequest));
@@ -633,7 +623,6 @@ export default function NewRequest() {
   const autoSubmitRef =
     useRef(false);
 
-  const hasStartedExpressFlow = useRef(false);
 
   /*
    * One stable idempotency key is used for this logical submission.
@@ -642,6 +631,121 @@ export default function NewRequest() {
    */
   const idempotencyKeyRef =
     useRef<string | null>(null);
+
+  useEffect(() => {
+    const handleVoiceAction = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; category?: string }>).detail;
+      if (detail?.action !== "set-emergency-category") return;
+      if (!hasActiveRequest && (detail.category === "Medical" || detail.category === "Firefighting" || detail.category === "Police")) {
+        setEmergencyService(detail.category);
+      }
+    };
+    window.addEventListener("live:requester-voice-action", handleVoiceAction);
+    return () => window.removeEventListener("live:requester-voice-action", handleVoiceAction);
+  }, [hasActiveRequest, setEmergencyService]);
+
+  useEffect(() => {
+    if (step !== 0 || hasActiveRequest) return;
+    const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+    const handleVoiceInput = (event: Event) => {
+      const detail = (event as CustomEvent<{ transcript?: string; consumed?: boolean; isFinal?: boolean }>).detail;
+      if (!detail) return;
+      const spoken = normalize(detail.transcript ?? "");
+      if (!spoken) return;
+
+      if (/^(?:emergency )?(?:service|service type)$/.test(spoken)) {
+        detail.consumed = true;
+        if (detail.isFinal) focusVoiceField("service");
+        return;
+      }
+      if (/^(?:emergency )?category$/.test(spoken)) {
+        detail.consumed = true;
+        if (detail.isFinal) focusVoiceField("category");
+        return;
+      }
+      if (/^(?:request )?priority$/.test(spoken)) {
+        detail.consumed = true;
+        if (detail.isFinal) focusVoiceField("priority");
+        return;
+      }
+
+      const optionMatch = matchRequestIntakeOption(
+        detail.transcript ?? "",
+        categoryOptions,
+        (option) => requesterText(uiLanguage, option),
+      );
+      if (optionMatch) {
+        detail.consumed = true;
+        if (detail.isFinal) {
+          categoryChosenByUser.current = true;
+          setCategory(optionMatch);
+          focusVoiceField("category");
+        }
+        return;
+      }
+
+      const service = /\b(?:fire|firefighting|firefighter|fire fighter|fire department|smoke|burning|flames)\b/.test(spoken)
+        ? "Firefighting"
+        : /\b(?:police|law enforcement|police department|personal safety|unsafe|being followed)\b/.test(spoken)
+          ? "Police"
+          : /\b(?:medical|medicine|ambulance|doctor|health|injured|injury|not breathing|unconscious)\b/.test(spoken)
+            ? "Medical"
+            : null;
+      if (service) {
+        detail.consumed = true;
+        if (detail.isFinal) setEmergencyService(service);
+        return;
+      }
+
+      const priorityMatch = spoken.match(/\b(critical|high|moderate|medium)\b/);
+      if (priorityMatch) {
+        detail.consumed = true;
+        if (detail.isFinal) {
+          setSeverity(priorityMatch[1] === "medium" ? "Moderate" : priorityMatch[1] as Severity);
+          focusVoiceField("priority");
+        }
+        return;
+      }
+
+      const targetField = voiceFocusedField ?? (/^priority\b/.test(spoken) ? "priority" : "category");
+      const normalizedOptions = targetField === "priority"
+        ? (["Critical", "High", "Moderate"] as const)
+        : targetField === "service"
+          ? (["Medical", "Firefighting", "Police"] as const)
+          : categoryOptions;
+      const currentValue = targetField === "priority" ? severity : targetField === "service" ? (selectedMainCategory ?? "Medical") : category;
+      const currentIndex = normalizedOptions.findIndex((option) => option === currentValue);
+      const isNext = /^(?:next|next option|next choice|move down|move to next option)$/.test(spoken);
+      const isPrevious = /^(?:previous|previous option|previous choice|last option|move up|move to previous option)$/.test(spoken);
+      const optionSpeech = spoken.replace(/^(?:priority|emergency category|service(?: type)?) /, "");
+      const numberedOption = optionSpeech.match(/^(?:(?:select|choose|pick|click|press|open) )?(?:(?:button|option|choice) )?(?:number )?(one|first|two|second|three|third|four|fourth|five|fifth|six|sixth|seven|seventh|eight|eighth|nine|ninth|ten|tenth|[1-9]|10)$/);
+      if (isNext || isPrevious || numberedOption) {
+        detail.consumed = true;
+        const words: Record<string, number> = { one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4, five: 5, fifth: 5, six: 6, sixth: 6, seven: 7, seventh: 7, eight: 8, eighth: 8, nine: 9, ninth: 9, ten: 10, tenth: 10 };
+        const index = numberedOption
+          ? (words[numberedOption[1]] ?? Number(numberedOption[1])) - 1
+          : isNext
+            ? (currentIndex + 1 + normalizedOptions.length) % normalizedOptions.length
+            : (currentIndex - 1 + normalizedOptions.length) % normalizedOptions.length;
+        const selected = normalizedOptions[index];
+        if (!selected) return;
+        if (detail.isFinal) {
+          if (targetField === "priority") {
+            setSeverity(selected as Severity);
+            focusVoiceField("priority");
+          } else if (targetField === "service") {
+            setEmergencyService(selected as "Medical" | "Firefighting" | "Police");
+          } else {
+            categoryChosenByUser.current = true;
+            setCategory(selected);
+            focusVoiceField("category");
+          }
+        }
+      }
+    };
+    window.addEventListener("live:requester-voice-input", handleVoiceInput);
+    return () => window.removeEventListener("live:requester-voice-input", handleVoiceInput);
+  }, [category, categoryOptions, focusVoiceField, hasActiveRequest, searchParams, selectedMainCategory, severity, setEmergencyService, step, uiLanguage, voiceFocusedField]);
 
   /* ---------------------------------------------------------------------- */
   /* Clear location timer                                                   */
@@ -685,7 +789,7 @@ export default function NewRequest() {
       setLocationState("locating");
 
       setLocationMessage(
-        `Attempt ${attemptNumber} of ${LOCATION_ATTEMPTS}`
+        requesterText(uiLanguage, "Attempt {attempt} of {total}", { attempt: attemptNumber, total: LOCATION_ATTEMPTS })
       );
 
       setError("");
@@ -815,7 +919,7 @@ export default function NewRequest() {
           );
 
           setLocationMessage(
-            `Attempt ${attemptNumber} was unsuccessful`
+            requesterText(uiLanguage, "Attempt {attempt} was unsuccessful", { attempt: attemptNumber })
           );
 
           await wait(1100);
@@ -868,7 +972,7 @@ export default function NewRequest() {
         }
       }
     },
-    []
+    [uiLanguage]
   );
 
   /* ---------------------------------------------------------------------- */
@@ -914,16 +1018,35 @@ export default function NewRequest() {
     startLocationSequence,
   ]);
 
-  /* Ambulance and police buttons are designed for an express request: details
-   * are optional, so a user can go straight from the chosen service to location
-   * confirmation. The setting stays local to the device. */
+  /* Give the requester a visible category-choice window on express flows.
+   * Only after ten seconds do we use the service default and continue. */
   useEffect(() => {
-    if (!selectedMainCategory || step !== 0 || hasStartedExpressFlow.current) return;
-    const preferences = readRequesterPreferences();
-    if (!preferences.skipIncidentDetails) return;
-    hasStartedExpressFlow.current = true;
-    setStep(1);
-  }, [selectedMainCategory, step]);
+    if (!selectedMainCategory || step !== 0) {
+      setCategorySelectionWindowActive(false);
+      return;
+    }
+    const preferences = readRequesterPreferences(user?.id);
+    const shouldAutoAdvance = immediateFlow ||
+      (searchParams.get("flow") !== "details" && preferences.skipIncidentDetails);
+    setCategorySelectionWindowActive(shouldAutoAdvance);
+    setCategorySelectionCountdown(10);
+
+    const countdownInterval = window.setInterval(() => {
+      setCategorySelectionCountdown((current) => Math.max(0, current - 1));
+    }, 1000);
+    const fallbackTimeout = window.setTimeout(() => {
+      if (!categoryChosenByUser.current) {
+        setCategory(defaultCategoryForService(selectedMainCategory));
+      }
+      setCategorySelectionWindowActive(false);
+      if (shouldAutoAdvance) setStep(1);
+    }, 10_000);
+
+    return () => {
+      window.clearInterval(countdownInterval);
+      window.clearTimeout(fallbackTimeout);
+    };
+  }, [immediateFlow, searchParams, selectedMainCategory, step, user?.id]);
 
   /* ---------------------------------------------------------------------- */
   /* Check for an existing active request                                   */
@@ -941,6 +1064,7 @@ export default function NewRequest() {
     if (cached) {
       setHasActiveRequest(Boolean(cached.id));
       setActiveRequestId(cached.id);
+      setActiveRequestCategory(cached.category ?? null);
       return () => {
         cancelled = true;
       };
@@ -1019,10 +1143,12 @@ export default function NewRequest() {
         if (active) {
           setHasActiveRequest(true);
           setActiveRequestId(active.id);
-          writeFreshCache(cacheKey, { id: active.id }, 5 * 60_000);
+          setActiveRequestCategory(active.category ?? null);
+          writeFreshCache(cacheKey, { id: active.id, category: active.category ?? null }, 5 * 60_000);
         } else {
           setHasActiveRequest(false);
           setActiveRequestId(null);
+          setActiveRequestCategory(null);
           writeFreshCache(cacheKey, { id: null }, 30_000);
         }
       } catch (error) {
@@ -1364,61 +1490,52 @@ export default function NewRequest() {
 
   return (
     <div className="app-page grid gap-5">
-      {!hasActiveRequest ? (
-        <PageHeading
-          title="Request assistance"
-          description={
-            <>
-              <span className="md:hidden">
-                Complete only the essential incident information.
-              </span>
-              <span className="hidden md:inline">
-                Complete only the essential incident information. Contact details are taken from your profile.
-              </span>
-            </>
-          }
-        />
-      ) : null}
+      <PageHeading
+        title={requesterText(uiLanguage, "Request assistance")}
+        description={
+          <>
+            <span className="md:hidden">
+              {requesterText(uiLanguage, "Complete only the essential incident information.")}
+            </span>
+            <span className="hidden md:inline">
+              {requesterText(uiLanguage, "Complete only the essential incident information. Contact details are taken from your profile.")}
+            </span>
+          </>
+        }
+        action={<RequesterPageHelpButton page="request" language={uiLanguage} />}
+      />
 
       {hasActiveRequest ? (
-        <div>
+        <div className="grid gap-4">
           <Panel
             mobileCard={false}
             className="-mx-5 border-x-0 border-[#f0c8c7] bg-[#fff7f6] p-5 md:mx-0 md:rounded-[22px] md:border-x"
           >
-            <div className="flex gap-3">
-              <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
-
-              <div>
-                <h2 className="font-semibold">
-                  An active request already exists
-                </h2>
-
-                <p className="mt-1 text-sm text-[#6d6060]">
-                  Open your active request
-                  instead of creating a
-                  duplicate request.
-                </p>
-
-                {activeRequestId ? (
-                  <Button
-                    variant="danger"
-                    className="mt-4"
-                    onClick={() =>
-                      router.push(
-                        `/app/requester/track/${activeRequestId}`
-                      )
-                    }
-                  >
-                    Open active request
-                  </Button>
-                ) : null}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex min-w-0 gap-3">
+                <Siren className="h-5 w-5 shrink-0 text-[#d53f3d]" />
+                <div className="min-w-0">
+                  <h2 className="font-semibold">
+                    {requesterText(uiLanguage, "An active request already exists")}
+                  </h2>
+                  <p className="mt-1 text-sm text-[#6d6060]">
+                    {requesterText(uiLanguage, "Open your active request instead of creating a duplicate request.")}
+                  </p>
+                </div>
               </div>
+              {activeRequestId ? (
+                <Button
+                  variant="danger"
+                  className="shrink-0 self-end sm:self-start"
+                  onClick={() => router.push(`/app/requester/track/${activeRequestId}`)}
+                >
+                  {requesterText(uiLanguage, "Open active request")}
+                </Button>
+              ) : null}
             </div>
           </Panel>
-
           <ActiveRequestQuestions
-            category={selectedMainCategory}
+            category={activeRequestCategory ?? selectedMainCategory}
             requestId={activeRequestId}
           />
         </div>
@@ -1454,7 +1571,7 @@ export default function NewRequest() {
                         : "text-[#8a9aa5]"
                     }`}
                   >
-                    {label}
+                    {requesterText(uiLanguage, label)}
                   </span>
                 </div>
               )
@@ -1463,8 +1580,12 @@ export default function NewRequest() {
 
           <Panel
             mobileCard={false}
+          data-live-voice-form-focus={step === 0 && voiceFocusedField ? "true" : undefined}
           className="-mx-5 border-x-0 border-b-0 bg-transparent shadow-none md:mx-0 md:border-x md:bg-white"
           >
+            <div data-live-voice-focus-hint className="hidden shrink-0 items-center gap-2 border-b border-[#f1dfa9] bg-[#fff8df] px-5 py-2 text-xs font-semibold text-[#705400] md:mx-0">
+              {requesterText(uiLanguage, "Voice control is active. Say a listed answer or say the option number or category name. Priority already has a default.")}
+            </div>
             <AnimatePresence mode="wait">
               <motion.div
                 key={step}
@@ -1489,19 +1610,40 @@ export default function NewRequest() {
 
                 {step === 0 ? (
                   <div className="grid gap-4">
-                    <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                       <label>
                         <FieldLabel>
-                          Emergency category
+                          {requesterText(uiLanguage, "Emergency service")}
                         </FieldLabel>
 
                         <Select
+                          id="request-emergency-service"
+                          data-live-voice-option-focused={voiceFocusedField === "service" ? "true" : undefined}
+                          value={selectedMainCategory ?? "Medical"}
+                          onFocus={() => setVoiceFocusedField("service")}
+                          onChange={(event) => {
+                            if (event.target.value === "Medical" || event.target.value === "Firefighting" || event.target.value === "Police") {
+                              setEmergencyService(event.target.value);
+                            }
+                          }}
+                        >
+                          <option value="Medical">{requesterText(uiLanguage, "Medical")}</option>
+                          <option value="Firefighting">{requesterText(uiLanguage, "Fire")}</option>
+                          <option value="Police">{requesterText(uiLanguage, "Police")}</option>
+                        </Select>
+                      </label>
+
+                      <label>
+                        <FieldLabel>
+                          {requesterText(uiLanguage, "Emergency category")}
+                        </FieldLabel>
+
+                        <Select
+                          id="request-emergency-category"
+                          data-live-voice-option-focused={voiceFocusedField === "category" ? "true" : undefined}
                           value={category}
-                          onChange={(event) =>
-                            setCategory(
-                              event.target.value
-                            )
-                          }
+                          onFocus={() => setVoiceFocusedField("category")}
+                          onChange={(event) => { categoryChosenByUser.current = true; setCategory(event.target.value); setVoiceFocusedField("category"); }}
                         >
                           {categoryOptions.map(
                             (option) => (
@@ -1509,7 +1651,7 @@ export default function NewRequest() {
                                 key={option}
                                 value={option}
                               >
-                                {option}
+                                {requesterText(uiLanguage, option)}
                               </option>
                             )
                           )}
@@ -1518,43 +1660,48 @@ export default function NewRequest() {
 
                       <label>
                         <FieldLabel>
-                          Priority
+                          {requesterText(uiLanguage, "Priority")}
                         </FieldLabel>
 
                         <Select
+                          id="request-emergency-priority"
+                          data-live-voice-option-focused={voiceFocusedField === "priority" ? "true" : undefined}
                           value={severity}
-                          onChange={(event) =>
-                            setSeverity(
-                              event.target
-                                .value as Severity
-                            )
-                          }
+                          onFocus={() => setVoiceFocusedField("priority")}
+                          onChange={(event) => { setSeverity(event.target.value as Severity); setVoiceFocusedField("priority"); }}
                         >
                           <option value="Critical">
-                            Critical
+                            {requesterText(uiLanguage, "Critical")}
                           </option>
 
                           <option value="High">
-                            High
+                            {requesterText(uiLanguage, "High")}
                           </option>
 
                           <option value="Moderate">
-                            Moderate
+                            {requesterText(uiLanguage, "Moderate")}
                           </option>
                         </Select>
                       </label>
                     </div>
 
+                    {categorySelectionWindowActive ? (
+                      <p role="status" aria-live="polite" className="rounded-lg border border-[#dce8ed] bg-[#f3f8fa] px-3 py-2 text-sm text-[#31586b]">
+                        {categoryChosenByUser.current
+                          ? requesterText(uiLanguage, "Category {category} selected. Continue now, or this screen will continue in {seconds} seconds.", { category: requesterText(uiLanguage, category), seconds: categorySelectionCountdown })
+                          : requesterText(uiLanguage, "Choose an emergency category within {seconds} seconds. If you do not choose one, {category} will be used and the request will continue.", { category: requesterText(uiLanguage, defaultCategoryForService(selectedMainCategory)), seconds: categorySelectionCountdown })}
+                      </p>
+                    ) : null}
+
                     <label>
                       <div className="flex items-center justify-between">
                         <FieldLabel>
-                          Short description
+                          {requesterText(uiLanguage, "Short description")}
                         </FieldLabel>
-
-                        <span className="text-xs text-[#788a95]">
-                          {note.length}/
-                          {MAX_NOTE_LENGTH}
-                        </span>
+                        <div className="flex items-center gap-3">
+                          {note ? <button type="button" onClick={() => setNote("")} className="inline-flex items-center gap-1 text-xs font-medium text-[#617683] hover:text-[#a93331]" aria-label={requesterText(uiLanguage, "Clear description")}><X className="h-3.5 w-3.5" /> {requesterText(uiLanguage, "Clear")}</button> : null}
+                          <span className="text-xs text-[#788a95]">{note.length}/{MAX_NOTE_LENGTH}</span>
+                        </div>
                       </div>
 
                       <Textarea
@@ -1567,17 +1714,25 @@ export default function NewRequest() {
                             )
                           )
                         }
-                        placeholder="What happened and what help is needed?"
+                        placeholder={requesterText(uiLanguage, "What happened and what help is needed?")}
                       />
                     </label>
+
+                    <div className="mt-3">
+                      <p className="mb-2 text-xs font-medium text-[#788a95]">{requesterText(uiLanguage, "Tap what applies")}</p>
+                      <div className="flex flex-wrap gap-2">
+                        {(REQUEST_DESCRIPTION_PROMPTS[selectedMainCategory ?? "Medical"] ?? REQUEST_DESCRIPTION_PROMPTS.Medical).map((prompt) => {
+                          const displayedPrompt = requesterText(uiLanguage, prompt);
+                          const selected = note.toLocaleLowerCase().includes(displayedPrompt.toLocaleLowerCase());
+                          return <button key={prompt} type="button" aria-pressed={selected} onClick={() => toggleDescriptionPrompt(displayedPrompt)} className={`inline-flex min-h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition ${selected ? "border-[#0f6872] bg-[#0f6872] text-white" : "border-[#d7e1e7] bg-white text-[#31586b] hover:border-[#0f6872]"}`}><span aria-hidden="true">{selected ? "✓" : "+"}</span>{displayedPrompt}</button>;
+                        })}
+                      </div>
+                    </div>
 
                   <div className="hidden items-start gap-3 bg-[#f3f7f8] px-4 py-3.5 text-sm text-[#5f7480] md:flex">
                     <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[#1f845b]" />
                     <p className="leading-6">
-                      Your saved callback number is attached to this request:{" "}
-                      <span className="font-semibold text-[#102b3f]">
-                        {user.phone || "your registered contact number"}
-                      </span>.
+                      {requesterText(uiLanguage, "Your saved callback number is attached to this request: {phone}", { phone: user.phone || requesterText(uiLanguage, "your registered contact number") })}
                     </p>
                   </div>
 
@@ -1610,14 +1765,14 @@ export default function NewRequest() {
                             </span>
 
                             <h2 className="mt-4 text-base font-semibold text-[#102b3f]">
-                              Locating your device
+                              {requesterText(uiLanguage, "Locating your device")}
                             </h2>
 
                             <p className="mt-2 text-sm text-[#617683]">
                               {locationState ===
                               "retrying"
-                                ? locationMessage
-                                : `${locationMessage} · ${attemptCountdown}s`}
+                                ? requesterText(uiLanguage, locationMessage)
+                                : `${requesterText(uiLanguage, locationMessage)} · ${attemptCountdown}s`}
                             </p>
 
                           </div>
@@ -1629,10 +1784,10 @@ export default function NewRequest() {
                           <div className="max-w-sm">
                             <MapPin className="mx-auto h-7 w-7 text-[#c73937]" />
                             <h2 className="mt-3 font-semibold text-[#102b3f]">
-                              Location permission needed
+                              {requesterText(uiLanguage, "Location permission needed")}
                             </h2>
                             <p className="mt-2 text-sm leading-5 text-[#6f6767]">
-                              {locationMessage}
+                              {requesterText(uiLanguage, locationMessage)}
                             </p>
                           </div>
                         </div>
@@ -1648,15 +1803,15 @@ export default function NewRequest() {
                               </span>
 
                               <h2 className="mt-3 font-semibold text-[#102b3f]">
-                                Location could not be confirmed
+                                {requesterText(uiLanguage, "Location could not be confirmed")}
                               </h2>
 
                               <p className="mt-2 text-sm leading-5 text-[#6f6767]">
-                                {locationMessage}
+                                {requesterText(uiLanguage, locationMessage)}
                               </p>
 
                               <p className="mt-2 text-sm leading-5 text-[#6f6767]">
-                                Enter your address manually below, or retry GPS.
+                                {requesterText(uiLanguage, "Enter your address manually below, or retry GPS.")}
                               </p>
                             </div>
 
@@ -1675,7 +1830,7 @@ export default function NewRequest() {
                                   }
                                 >
                                   <RefreshCw className="h-4 w-4" />
-                                  Retry GPS
+                                  {requesterText(uiLanguage, "Retry GPS")}
                                 </Button>
 
                                 <Button
@@ -1796,12 +1951,12 @@ export default function NewRequest() {
                                   {isGeocoding ? (
                                     <>
                                       <Loader2 className="h-4 w-4 animate-spin" />
-                                      Searching…
+                                      {requesterText(uiLanguage, "Searching…")}
                                     </>
                                   ) : (
                                     <>
                                       <Check className="h-4 w-4" />
-                                      Confirm address
+                                      {requesterText(uiLanguage, "Confirm address")}
                                     </>
                                   )}
                                 </Button>
@@ -1823,7 +1978,7 @@ export default function NewRequest() {
 
                           <div className="min-w-0">
                             <p className="font-semibold">
-                              Location confirmed
+                              {requesterText(uiLanguage, "Location confirmed")}
                             </p>
 
                             <p className="mt-1 truncate text-xs">
@@ -1853,7 +2008,7 @@ export default function NewRequest() {
                           <LocateFixed className="h-5 w-5 shrink-0 text-[#0f6872]" />
 
                           <p>
-                            Keep location permission enabled while we confirm your device position.
+                            {requesterText(uiLanguage, "Keep location permission enabled while we confirm your device position.")}
                           </p>
                         </div>
                       )}
@@ -1865,43 +2020,43 @@ export default function NewRequest() {
                   <div className="grid gap-4 lg:grid-cols-[1fr_0.82fr] lg:gap-6">
                     <div>
                       <h2 className="text-xl font-semibold">
-                        Check before submitting
+                        {requesterText(uiLanguage, "Check before submitting")}
                       </h2>
 
                       <p className="mt-2 text-sm leading-6 text-[#687b89]">
-                        Your current position is confirmed and the request is ready to send.
+                        {requesterText(uiLanguage, "Your current position is confirmed and the request is ready to send.")}
                       </p>
 
                       <dl className="mt-4 divide-y divide-[#e2e8ed] border-y border-[#e2e8ed] text-sm">
                         <div className="py-3">
                           <dt className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                            Emergency
+                            {requesterText(uiLanguage, "Emergency")}
                           </dt>
 
                           <dd className="mt-1 font-semibold">
-                            {category} · {severity}
+                            {requesterText(uiLanguage, category)} · {requesterText(uiLanguage, severity)}
                           </dd>
                         </div>
 
                         <div className="py-3">
                           <dt className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                            Description
+                            {requesterText(uiLanguage, "Description")}
                           </dt>
 
                           <dd className="mt-1 line-clamp-2 leading-6">
                             {note ||
-                              "No additional description provided."}
+                              requesterText(uiLanguage, "No additional description provided.")}
                           </dd>
                         </div>
 
                         <div className="py-3">
                           <dt className="text-xs font-semibold uppercase tracking-wide text-[#798994]">
-                            Confirmed location
+                            {requesterText(uiLanguage, "Confirmed location")}
                           </dt>
 
                           <dd className="mt-1 font-semibold">
                             {address ||
-                              "Current device location"}
+                              requesterText(uiLanguage, "Current device location")}
                           </dd>
 
                           {coordinates ? (
@@ -1915,8 +2070,8 @@ export default function NewRequest() {
                               )}{" "}
                               ·{" "}
                               {manualAddress.trim()
-                                ? "Manual"
-                                : "GPS"}
+                                ? requesterText(uiLanguage, "Manual")
+                                : requesterText(uiLanguage, "GPS")}
                             </dd>
                           ) : null}
                         </div>
@@ -1927,11 +2082,11 @@ export default function NewRequest() {
                       <Siren className="h-6 w-6 text-[#d53f3d] md:h-7 md:w-7" />
 
                       <h3 className="mt-3 font-semibold">
-                        Confirm emergency request
+                        {requesterText(uiLanguage, "Confirm emergency request")}
                       </h3>
 
                       <p className="mt-2 text-sm leading-5 text-[#705f5f]">
-                        The request will be sent to the response coordination service.
+                        {requesterText(uiLanguage, "The request will be sent to the response coordination service.")}
                       </p>
 
                       <div className="mt-4 bg-white/75 px-4 py-3.5">
@@ -1943,18 +2098,18 @@ export default function NewRequest() {
 
                             <div>
                               <p className="text-sm font-semibold text-[#7b4746]">
-                                Submitting request
+                                {requesterText(uiLanguage, "Submitting request")}
                               </p>
 
                               <p className="mt-1 text-xs text-[#8a5b59]">
-                                Opening live tracking…
+                                {requesterText(uiLanguage, "Opening live tracking…")}
                               </p>
                             </div>
                           </div>
                         ) : (
                           <>
                             <p className="text-sm font-semibold text-[#7b4746]">
-                              Automatic submission
+                              {requesterText(uiLanguage, "Automatic submission")}
                             </p>
 
                             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f2d5d4]">
@@ -1978,9 +2133,7 @@ export default function NewRequest() {
                             </div>
 
                             <p className="mt-2 text-xs text-[#8a5b59]">
-                              Sending in{" "}
-                              {confirmCountdown}{" "}
-                              seconds.
+                              {requesterText(uiLanguage, "Sending in {seconds} seconds.", { seconds: confirmCountdown })}
                             </p>
                           </>
                         )}
@@ -1993,7 +2146,7 @@ export default function NewRequest() {
 
             {error ? (
               <p className="mx-5 mb-4 border-l-4 border-[#d53f3d] bg-[#ffefee] p-3 text-sm font-medium text-[#a93331] md:mx-6">
-                {error}
+                {requesterText(uiLanguage, error)}
               </p>
             ) : null}
 
@@ -2005,7 +2158,7 @@ export default function NewRequest() {
                     setStep(1);
                   }}
                 >
-                  Continue
+                  {requesterText(uiLanguage, "Continue")}
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -2019,14 +2172,14 @@ export default function NewRequest() {
                   }}
                 >
                   <ChevronLeft className="h-4 w-4" />
-                  Back
+                  {requesterText(uiLanguage, "Back")}
                 </Button>
 
                 <span className="text-xs font-medium text-[#71838f]">
                   {locationState ===
                   "success"
-                    ? "Opening confirmation…"
-                    : "Location required"}
+                    ? requesterText(uiLanguage, "Opening confirmation…")
+                    : requesterText(uiLanguage, "Location required")}
                 </span>
               </div>
             ) : null}

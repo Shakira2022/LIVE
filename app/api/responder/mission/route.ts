@@ -3,6 +3,12 @@ import { z } from "zod";
 import { createHandler } from "@/lib/middleware/api/handler";
 import { ApiError } from "@/lib/middleware/errors";
 import { db } from "@/lib/middleware/server/db";
+import { getOrganisationMapCenter, type MapCenter } from "@/lib/middleware/server/organisation-map-center";
+import { notifyOrganisationDispatchers } from "@/lib/notifications/service";
+import {
+  assignNextQueuedRequest,
+  reconcileResponderTerminalAssignments,
+} from "@/lib/middleware/server/requests-service";
 
 export const runtime = "nodejs";
 
@@ -79,31 +85,130 @@ export const GET = createHandler(
      */
     const responderUserId = ctx.user.userId;
 
-    const {
-      data: assignment,
-      error: assignmentError,
-    } = await db()
+    const { data: responderProfile, error: responderProfileError } = await db()
+      .from("responder_profiles")
+      .select("user_id, organisation_id, availability, go_offline_after_mission, current_latitude, current_longitude")
+      .eq("user_id", responderUserId)
+      .maybeSingle();
+
+    if (responderProfileError) {
+      throw ApiError.internal("Unable to load responder availability.", responderProfileError.message);
+    }
+    if (!responderProfile) {
+      throw ApiError.notFound("A responder profile was not found for this account.");
+    }
+    let currentResponderProfile = responderProfile;
+    let mapCenter: MapCenter | null = null;
+    const loadOrganisationMapCenter = async () => {
+      if (!currentResponderProfile.organisation_id) {
+        throw ApiError.internal(
+          "The responder account has no organisation location for its map fallback.",
+        );
+      }
+
+      try {
+        const organisationCenter = await getOrganisationMapCenter(currentResponderProfile.organisation_id);
+        if (!organisationCenter) {
+          throw ApiError.internal(
+            "Set coordinates, city, or province for this organisation before using its map fallback.",
+          );
+        }
+        return organisationCenter;
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw ApiError.internal(
+          "Unable to determine the responder organisation map area.",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    };
+
+    await reconcileResponderTerminalAssignments(responderUserId);
+
+    const { data: reconciledResponderProfile, error: reconciledResponderProfileError } = await db()
+      .from("responder_profiles")
+      .select("user_id, organisation_id, availability, go_offline_after_mission, current_latitude, current_longitude")
+      .eq("user_id", responderUserId)
+      .maybeSingle();
+
+    if (reconciledResponderProfileError) {
+      throw ApiError.internal("Unable to refresh responder availability after assignment cleanup.", reconciledResponderProfileError.message);
+    }
+    if (!reconciledResponderProfile) {
+      throw ApiError.notFound("A responder profile was not found for this account.");
+    }
+    currentResponderProfile = reconciledResponderProfile;
+
+    const readActiveAssignment = () => db()
       .from("request_assignments")
       .select("*")
-      .eq(
-        "responder_user_id",
-        responderUserId,
-      )
-      .in(
-        "status",
-        ACTIVE_ASSIGNMENT_STATUSES,
-      )
-      .order("created_at", {
-        ascending: false,
-      })
+      .eq("responder_user_id", responderUserId)
+      .in("status", ACTIVE_ASSIGNMENT_STATUSES)
+      .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    let { data: assignment, error: assignmentError } = await readActiveAssignment();
 
     if (assignmentError) {
       throw ApiError.internal(
         "Unable to load responder assignment.",
         assignmentError.message,
       );
+    }
+
+    // Direct SQL seeded requests do not run the normal request-submission
+    // assignment hook. If this responder is already online, offer them the
+    // oldest eligible queued request instead of leaving them available while
+    // the page incorrectly tells them to go online.
+    if (!assignment && currentResponderProfile.availability === "available" && currentResponderProfile.organisation_id) {
+      const assignmentAttempt = await assignNextQueuedRequest(
+        responderUserId,
+        currentResponderProfile.organisation_id,
+      );
+
+      if (assignmentAttempt.assigned) {
+        const refreshed = await readActiveAssignment();
+        assignment = refreshed.data;
+        assignmentError = refreshed.error;
+        if (assignmentError) {
+          throw ApiError.internal("Unable to load the newly assigned responder mission.", assignmentError.message);
+        }
+      }
+    }
+
+    const expectedAvailability = assignment
+      ? assignment.status === "en_route"
+        ? "en_route"
+        : assignment.status === "arrived"
+          ? "on_scene"
+          : "assigned"
+      : ["assigned", "en_route", "on_scene"].includes(currentResponderProfile.availability)
+        ? "available"
+        : currentResponderProfile.availability;
+    const goOfflineAfterMission = Boolean(assignment && (
+      currentResponderProfile.go_offline_after_mission || currentResponderProfile.availability === "offline"
+    ));
+
+    if (
+      currentResponderProfile.availability !== expectedAvailability ||
+      currentResponderProfile.go_offline_after_mission !== goOfflineAfterMission
+    ) {
+      const { data: repairedProfile, error: repairError } = await db()
+        .from("responder_profiles")
+        .update({
+          availability: expectedAvailability,
+          go_offline_after_mission: goOfflineAfterMission,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", responderUserId)
+        .select("user_id, organisation_id, availability, go_offline_after_mission, current_latitude, current_longitude")
+        .single();
+
+      if (repairError) {
+        throw ApiError.internal("Unable to reconcile responder availability.", repairError.message);
+      }
+      currentResponderProfile = repairedProfile;
     }
 
     if (!assignment) {
@@ -114,7 +219,8 @@ export const GET = createHandler(
           .from("emergency_requests")
           .select("*")
           .in("current_status", ["submitted", "received"])
-          .eq("is_active", true)
+          .is("cancellation_requested_at", null)
+          .or(`routed_organisation_id.eq.${currentResponderProfile.organisation_id},routed_organisation_id.is.null`)
           .order("submitted_at", { ascending: true })
           .limit(20);
 
@@ -125,7 +231,22 @@ export const GET = createHandler(
           );
         }
 
-        const requestIds = (queued ?? []).map((row) => row.id);
+        const queuedRequestIds = (queued ?? []).map((row) => row.id);
+        const { data: activeQueueAssignments, error: activeQueueAssignmentsError } = queuedRequestIds.length
+          ? await db()
+              .from("request_assignments")
+              .select("request_id")
+              .in("request_id", queuedRequestIds)
+              .in("status", ACTIVE_ASSIGNMENT_STATUSES)
+          : { data: [], error: null };
+
+        if (activeQueueAssignmentsError) {
+          throw ApiError.internal("Unable to check queued request assignments.", activeQueueAssignmentsError.message);
+        }
+
+        const assignedRequestIds = new Set((activeQueueAssignments ?? []).map((item) => item.request_id));
+        const unassignedQueue = (queued ?? []).filter((row) => !assignedRequestIds.has(row.id));
+        const requestIds = unassignedQueue.map((row) => row.id);
         const { data: locations, error: locationsError } = requestIds.length
           ? await db()
               .from("request_locations")
@@ -144,7 +265,7 @@ export const GET = createHandler(
           (locations ?? []).map((location) => [location.request_id, location]),
         );
 
-        queuedRequests = (queued ?? []).map((request) => {
+        queuedRequests = unassignedQueue.map((request) => {
           const location = locationByRequest.get(request.id);
           return {
             ...request,
@@ -162,9 +283,18 @@ export const GET = createHandler(
         });
       }
 
+      const hasRequestLocation = queuedRequests.some((request: any) =>
+        Number.isFinite(Number(request.location?.lat)) &&
+        Number.isFinite(Number(request.location?.lng)) &&
+        !(Number(request.location?.lat) === 0 && Number(request.location?.lng) === 0),
+      );
+      if (!hasRequestLocation) mapCenter = await loadOrganisationMapCenter();
+
       return {
         mission: null,
         queuedRequests,
+        responder: currentResponderProfile,
+        mapCenter,
       };
     }
 
@@ -229,7 +359,7 @@ export const GET = createHandler(
       db()
         .from("responder_profiles")
         .select(
-          "user_id, availability, current_latitude, current_longitude",
+          "user_id, availability, go_offline_after_mission, current_latitude, current_longitude",
         )
         .eq(
           "user_id",
@@ -268,6 +398,12 @@ export const GET = createHandler(
       );
     }
 
+    const hasRequestLocation = locationResult.data &&
+      Number.isFinite(Number(locationResult.data.latitude)) &&
+      Number.isFinite(Number(locationResult.data.longitude)) &&
+      !(Number(locationResult.data.latitude) === 0 && Number(locationResult.data.longitude) === 0);
+    if (!hasRequestLocation) mapCenter = await loadOrganisationMapCenter();
+
     return {
       mission: {
         assignment,
@@ -292,6 +428,7 @@ export const GET = createHandler(
           responderResult.data ??
           null,
       },
+      mapCenter,
     };
   },
 );
@@ -435,6 +572,29 @@ export const PATCH = createHandler(
       }
     }
 
+    let postMissionAvailability: string | null = null;
+    let finalResponderAvailability: string | null = null;
+    if (status === "completed") {
+      const { data: responderProfile, error: responderProfileError } = await db()
+        .from("responder_profiles")
+        .select("availability, go_offline_after_mission")
+        .eq("user_id", responderUserId)
+        .maybeSingle();
+
+      if (responderProfileError) {
+        throw ApiError.internal(
+          "Unable to load responder availability before completing the mission.",
+          responderProfileError.message,
+        );
+      }
+      if (!responderProfile) {
+        throw ApiError.notFound("A responder profile was not found for this account.");
+      }
+      postMissionAvailability = responderProfile.go_offline_after_mission || responderProfile.availability === "offline"
+        ? "offline"
+        : "available";
+    }
+
     const now =
       new Date().toISOString();
 
@@ -539,7 +699,7 @@ export const PATCH = createHandler(
     } = await db()
       .from("emergency_requests")
       .select(
-        "id, current_status",
+        "id, current_status, reference_code, routed_organisation_id",
       )
       .eq(
         "id",
@@ -597,16 +757,13 @@ export const PATCH = createHandler(
       status ===
       "completed"
     ) {
-      const {
-        error:
-          responderUpdateError,
-      } = await db()
+      let availabilityUpdate = db()
         .from(
           "responder_profiles",
         )
         .update({
-          availability:
-            "available",
+          availability: postMissionAvailability ?? "available",
+          go_offline_after_mission: false,
           updated_at:
             now,
         })
@@ -614,6 +771,12 @@ export const PATCH = createHandler(
           "user_id",
           responderUserId,
         );
+
+      if (postMissionAvailability !== "offline") {
+        availabilityUpdate = availabilityUpdate.neq("availability", "offline");
+      }
+
+      const { error: responderUpdateError } = await availabilityUpdate;
 
       if (
         responderUpdateError
@@ -625,6 +788,35 @@ export const PATCH = createHandler(
               responderUpdateError.message,
           },
         );
+      }
+
+      const { data: latestResponderProfile, error: latestResponderProfileError } = await db()
+        .from("responder_profiles")
+        .select("availability")
+        .eq("user_id", responderUserId)
+        .maybeSingle();
+
+      if (latestResponderProfileError) {
+        ctx.log.warn("responder_availability_confirmation_failed", {
+          dbError: latestResponderProfileError.message,
+        });
+      } else {
+        finalResponderAvailability = latestResponderProfile?.availability ?? postMissionAvailability;
+      }
+
+      try {
+        await notifyOrganisationDispatchers({
+          organisationId: assignment.organisation_id ?? emergencyRequest.routed_organisation_id,
+          requestId: assignment.request_id,
+          notificationType: "request_completed",
+          title: "Request completed",
+          message: `A responder completed request ${emergencyRequest.reference_code ?? assignment.request_id}.`,
+          sensitivity: "normal",
+        });
+      } catch (notificationError) {
+        ctx.log.warn("dispatcher_completion_notification_failed", {
+          error: notificationError instanceof Error ? notificationError.message : String(notificationError),
+        });
       }
     }
 
@@ -686,6 +878,8 @@ export const PATCH = createHandler(
 
       assignment:
         updatedAssignment,
+
+      responderAvailability: finalResponderAvailability,
 
       requestStatus,
     };

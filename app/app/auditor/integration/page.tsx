@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AuditorListControls, auditorFilterOptions, filterAuditorRows } from "@/components/auditor/auditor-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatDateTime } from "@/lib/utils";
+import { formatIntegrationOperation } from "@/lib/audit-display";
+import { LogTechnicalDetails } from "@/components/auditor/log-technical-details";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type IntegrationLog = {
   id: string;
@@ -147,9 +151,15 @@ export default function AuditorIntegration() {
     loading: authLoading,
     refresh,
   } = useAuth();
-  const [logs, setLogs] = useState<IntegrationLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = user?.id ? `auditor-integration-logs:${user.id}` : null;
+  const cachedLogs = cacheKey ? readCached<IntegrationLog[]>(cacheKey) : null;
+  const [logs, setLogs] = useState<IntegrationLog[]>(() => cachedLogs ?? []);
+  const [loading, setLoading] = useState(() => !cachedLogs);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [resultFilter, setResultFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const loadIntegrationLogs =
     useCallback(async () => {
@@ -160,7 +170,7 @@ export default function AuditorIntegration() {
       }
 
       try {
-        setLoading(true);
+        if (!cacheKey || !readCached(cacheKey)) setLoading(true);
         setError("");
 
         const response =
@@ -182,7 +192,6 @@ export default function AuditorIntegration() {
             await refresh();
           }
 
-          setLogs([]);
           setError(
             getApiMessage(
               result,
@@ -193,9 +202,9 @@ export default function AuditorIntegration() {
           return;
         }
 
-        setLogs(
-          extractLogs(result),
-        );
+        const nextLogs = extractLogs(result);
+        setLogs(nextLogs);
+        if (cacheKey) writeFreshCache(cacheKey, nextLogs, 5 * 60_000);
       } catch (error) {
         console.warn(
           "Unable to load integration logs.",
@@ -204,7 +213,6 @@ export default function AuditorIntegration() {
             : String(error),
         );
 
-        setLogs([]);
         setError(
           error instanceof Error
             ? error.message
@@ -214,6 +222,7 @@ export default function AuditorIntegration() {
         setLoading(false);
       }
     }, [
+      cacheKey,
       refresh,
       user?.id,
     ]);
@@ -236,6 +245,22 @@ export default function AuditorIntegration() {
     user?.id,
   ]);
 
+  const resultOptions = useMemo(
+    () => auditorFilterOptions(logs.map((log) => log.result)),
+    [logs],
+  );
+  const filteredLogs = useMemo(
+    () => filterAuditorRows(logs, {
+      search,
+      type: resultFilter,
+      fromDate,
+      toDate,
+      getType: (log) => log.result,
+      getDate: (log) => log.created_at,
+    }),
+    [logs, search, resultFilter, fromDate, toDate],
+  );
+
   if (authLoading || loading || !user) {
     return <PageSkeleton />;
   }
@@ -257,15 +282,31 @@ export default function AuditorIntegration() {
       )}
 
       <Panel>
-        <PanelHeader title={`${logs.length} events`} />
+        <PanelHeader title="Integration event records" />
+        <AuditorListControls
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Operation, provider, endpoint, request ID"
+          typeLabel="Result"
+          typeValue={resultFilter}
+          onTypeChange={setResultFilter}
+          typeOptions={resultOptions}
+          fromDate={fromDate}
+          onFromDateChange={setFromDate}
+          toDate={toDate}
+          onToDateChange={setToDate}
+          visibleCount={filteredLogs.length}
+          totalCount={logs.length}
+        />
 
-        {logs.length === 0 && !error ? (
+        {filteredLogs.length === 0 ? (
           <div className="p-5 text-sm text-[#617582]">
-            No integration events were found.
+            {logs.length === 0 ? "No integration events were found." : "No integration events match these filters."}
           </div>
         ) : (
-          <div className="divide-y divide-[#e2e8ed]">
-            {logs.map((log) => (
+          <div role="region" aria-label="Integration log results" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto">
+            <div className="divide-y divide-[#e2e8ed]">
+            {filteredLogs.map((log) => (
               <article
                 key={log.id}
                 className="p-4 sm:p-5"
@@ -273,7 +314,9 @@ export default function AuditorIntegration() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="font-semibold">
-                      {log.operation || "Integration event"}
+                      {log.operation
+                        ? formatIntegrationOperation(log.operation)
+                        : "Integration event"}
                     </h2>
 
                     <p className="mt-1 text-sm text-[#617582]">
@@ -301,6 +344,19 @@ export default function AuditorIntegration() {
                         {log.error_message}
                       </p>
                     )}
+
+                    <LogTechnicalDetails
+                      details={[
+                        { label: "Original operation", value: log.operation },
+                        { label: "Provider", value: log.provider_name },
+                        { label: "Endpoint", value: log.endpoint_name },
+                        { label: "Request ID", value: log.request_id },
+                        { label: "Correlation ID", value: log.correlation_id },
+                        { label: "HTTP status", value: log.http_status },
+                        { label: "Result", value: log.result },
+                        { label: "Error message", value: log.error_message },
+                      ]}
+                    />
                   </div>
 
                   <Badge
@@ -317,6 +373,7 @@ export default function AuditorIntegration() {
                 </div>
               </article>
             ))}
+            </div>
           </div>
         )}
       </Panel>

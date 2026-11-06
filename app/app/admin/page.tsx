@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import {
-    Activity,
     ArrowRight,
     Building2,
-    ShieldAlert,
+    Flag,
+    LifeBuoy,
     Siren,
     Users,
 } from "lucide-react";
@@ -26,26 +26,30 @@ import {
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/components/auth/auth-provider";
-import { formatDateTime } from "@/lib/utils";
+import { timeAgo } from "@/lib/utils";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 interface DashboardMetrics {
     users: number;
     organisations: number;
     activeRequests: number;
-    deniedEvents: number;
+    openSupportRequests: number;
+    openResponderReports: number;
 }
 
-interface DashboardAuditLog {
+interface DashboardSupportRequest {
     id: string;
-    action: string;
-    actorName: string;
-    target: string;
-    result:
-    | "success"
-    | "denied"
-    | "warning"
-    | "failure";
-    timestamp: string;
+    requesterName: string;
+    subject: string;
+    status: string;
+    updatedAt: string;
+}
+
+interface DashboardResponderReport {
+    id: string;
+    responderName: string;
+    subject: string;
+    createdAt: string;
 }
 
 
@@ -54,14 +58,16 @@ interface DashboardResponse {
 
     data?: {
         metrics?: DashboardMetrics;
-        auditLogs?: DashboardAuditLog[];
+        supportRequests?: DashboardSupportRequest[];
+        responderReports?: DashboardResponderReport[];
     };
 
     /*
      * Compatibility with the older non-middleware response.
      */
     metrics?: DashboardMetrics;
-    auditLogs?: DashboardAuditLog[];
+    supportRequests?: DashboardSupportRequest[];
+    responderReports?: DashboardResponderReport[];
 
     message?: string;
 
@@ -167,22 +173,31 @@ export default function AdminHome() {
         refresh,
     } = useAuth();
 
+    const dashboardCacheKey = user?.id ? `admin-dashboard:v2:${user.id}` : null;
+    const cachedDashboard = dashboardCacheKey
+        ? readCached<{ metrics: DashboardMetrics; supportRequests: DashboardSupportRequest[]; responderReports: DashboardResponderReport[] }>(dashboardCacheKey)
+        : null;
+
     const [loading, setLoading] =
-        useState(true);
+        useState(() => !cachedDashboard);
 
     const [error, setError] =
         useState("");
 
     const [metrics, setMetrics] =
-        useState<DashboardMetrics>({
+        useState<DashboardMetrics>(() => cachedDashboard?.metrics ?? {
             users: 0,
             organisations: 0,
             activeRequests: 0,
-            deniedEvents: 0,
+            openSupportRequests: 0,
+            openResponderReports: 0,
         });
 
-    const [auditLogs, setAuditLogs] =
-        useState<DashboardAuditLog[]>([]);
+    const [supportRequests, setSupportRequests] =
+        useState<DashboardSupportRequest[]>(() => cachedDashboard?.supportRequests ?? []);
+
+    const [responderReports, setResponderReports] =
+        useState<DashboardResponderReport[]>(() => cachedDashboard?.responderReports ?? []);
 
     const loadDashboard =
         useCallback(async () => {
@@ -191,15 +206,17 @@ export default function AdminHome() {
                     users: 0,
                     organisations: 0,
                     activeRequests: 0,
-                    deniedEvents: 0,
+                    openSupportRequests: 0,
+                    openResponderReports: 0,
                 });
-                setAuditLogs([]);
+                setSupportRequests([]);
+                setResponderReports([]);
                 setLoading(false);
                 return;
             }
 
             try {
-                setLoading(true);
+                if (!dashboardCacheKey || !readCached(dashboardCacheKey)) setLoading(true);
                 setError("");
 
                 const response =
@@ -236,17 +253,11 @@ export default function AdminHome() {
                  *
                  * {
                  *   ok: true,
-                 *   data: {
-                 *     metrics: {...},
-                 *     auditLogs: [...]
-                 *   },
+                 *   data: { metrics, supportRequests, responderReports },
                  *   requestId: "..."
                  * }
                  *
-                 * The old page incorrectly read result.metrics and
-                 * result.auditLogs directly. That made every metric
-                 * fall back to zero even though the database query
-                 * succeeded.
+                 * The compatibility fallbacks support older response shapes.
                  */
                 const nextMetrics =
                     result?.data?.metrics ??
@@ -255,21 +266,30 @@ export default function AdminHome() {
                         users: 0,
                         organisations: 0,
                         activeRequests: 0,
-                        deniedEvents: 0,
+                        openSupportRequests: 0,
+                        openResponderReports: 0,
                     };
 
-                const nextAuditLogs =
-                    result?.data?.auditLogs ??
-                    result?.auditLogs ??
+                const nextSupportRequests =
+                    result?.data?.supportRequests ??
+                    result?.supportRequests ??
+                    [];
+
+                const nextResponderReports =
+                    result?.data?.responderReports ??
+                    result?.responderReports ??
                     [];
 
                 setMetrics(nextMetrics);
-
-                setAuditLogs(
-                    Array.isArray(nextAuditLogs)
-                        ? nextAuditLogs
-                        : []
-                );
+                setSupportRequests(Array.isArray(nextSupportRequests) ? nextSupportRequests : []);
+                setResponderReports(Array.isArray(nextResponderReports) ? nextResponderReports : []);
+                if (dashboardCacheKey) {
+                    writeFreshCache(dashboardCacheKey, {
+                        metrics: nextMetrics,
+                        supportRequests: Array.isArray(nextSupportRequests) ? nextSupportRequests : [],
+                        responderReports: Array.isArray(nextResponderReports) ? nextResponderReports : [],
+                    }, 5 * 60_000);
+                }
             } catch (error) {
                 console.warn(
                     "Unable to load admin dashboard:",
@@ -285,6 +305,7 @@ export default function AdminHome() {
                 setLoading(false);
             }
         }, [
+            dashboardCacheKey,
             refresh,
             user?.id,
         ]);
@@ -319,7 +340,7 @@ export default function AdminHome() {
             <PageHeading
                 eyebrow="Administration"
                 title="System overview"
-                description="Review platform activity, identities, organisations and security events."
+                description="Monitor emergency requests, support enquiries and responder reports."
             />
 
             {error ? (
@@ -328,7 +349,7 @@ export default function AdminHome() {
                 </div>
             ) : null}
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                 <Metric
                     label="Users"
                     value={metrics.users}
@@ -358,77 +379,47 @@ export default function AdminHome() {
                 />
 
                 <Metric
-                    label="Denied events"
-                    value={metrics.deniedEvents}
+                    label="Open support requests"
+                    value={metrics.openSupportRequests}
                     tone="warning"
-                    detail="Security review"
-                    icon={
-                        <ShieldAlert className="h-5 w-5" />
-                    }
+                    detail="Need administrator attention"
+                    icon={<LifeBuoy className="h-5 w-5" />}
+                />
+
+                <Metric
+                    label="Open responder reports"
+                    value={metrics.openResponderReports}
+                    tone={metrics.openResponderReports > 0 ? "warning" : "success"}
+                    detail="Awaiting administrator review"
+                    icon={<Flag className="h-5 w-5" />}
                 />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
                 <Panel>
                     <PanelHeader
-                        title="Latest audit activity"
+                        title="Support requests needing attention"
+                        description={`${metrics.openSupportRequests} open or waiting support requests`}
                         action={
-                            <Link href="/app/admin/audit">
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                >
+                            <Link href="/app/admin/support">
+                                <Button variant="ghost" size="sm">
                                     View all
-
                                     <ArrowRight className="h-4 w-4" />
                                 </Button>
                             </Link>
                         }
                     />
-
-                    {auditLogs.length === 0 ? (
-                        <div className="p-5 text-sm text-[#687b89]">
-                            No audit activity has been
-                            recorded yet.
-                        </div>
+                    {supportRequests.length === 0 ? (
+                        <div className="p-5 text-sm text-[#687b89]">No support requests need attention.</div>
                     ) : (
-                        <div className="divide-y divide-[#e2e8ed]">
-                            {auditLogs.map((log) => (
-                                <article
-                                    key={log.id}
-                                    className="p-4 sm:p-5"
-                                >
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div>
-                                            <h3 className="font-semibold">
-                                                {log.action}
-                                            </h3>
-
-                                            <p className="mt-1 text-sm text-[#617582]">
-                                                {log.actorName} ·{" "}
-                                                {log.target}
-                                            </p>
-
-                                            <p className="mt-2 text-xs text-[#88969f]">
-                                                {formatDateTime(
-                                                    log.timestamp
-                                                )}
-                                            </p>
-                                        </div>
-
-                                        <Badge
-                                            tone={
-                                                log.result === "success"
-                                                    ? "success"
-                                                    : log.result ===
-                                                        "denied"
-                                                        ? "danger"
-                                                        : "warning"
-                                            }
-                                        >
-                                            {log.result}
-                                        </Badge>
+                        <div role="region" aria-label="Support requests needing attention" tabIndex={0} className="max-h-[45vh] touch-pan-y overscroll-contain overflow-y-auto divide-y divide-[#e2e8ed]">
+                            {supportRequests.map((request) => (
+                                <article key={request.id} className="flex items-start justify-between gap-3 p-4 sm:p-5">
+                                    <div className="min-w-0">
+                                        <h3 className="truncate font-semibold">{request.subject || "Support request"}</h3>
+                                        <p className="mt-1 text-sm text-[#617582]">{request.requesterName} · Updated {timeAgo(request.updatedAt)}</p>
                                     </div>
+                                    <Badge tone={request.status === "open" ? "warning" : "slate"}>{request.status.replaceAll("_", " ")}</Badge>
                                 </article>
                             ))}
                         </div>
@@ -437,63 +428,32 @@ export default function AdminHome() {
 
                 <Panel>
                     <PanelHeader
-                        title="Platform health"
-                        description="Connected system checks"
+                        title="Responder reports awaiting review"
+                        description={`${metrics.openResponderReports} open reports`}
+                        action={
+                            <Link href="/app/admin/reports">
+                                <Button variant="ghost" size="sm">
+                                    View all
+                                    <ArrowRight className="h-4 w-4" />
+                                </Button>
+                            </Link>
+                        }
                     />
-
-                    <div className="divide-y divide-[#e2e8ed]">
-                        {[
-                            {
-                                title: "Authentication",
-                                detail:
-                                    "JWT authentication with protected administrator routes",
-                                ok: true,
-                            },
-                            {
-                                title: "Database",
-                                detail:
-                                    "Supabase PostgreSQL backend",
-                                ok: true,
-                            },
-                            {
-                                title:
-                                    "Organisation management",
-                                detail:
-                                    "Organisation status management connected",
-                                ok: true,
-                            },
-                            {
-                                title: "Audit logging",
-                                detail:
-                                    "Administrative changes are recorded",
-                                ok: true,
-                            },
-                        ].map((item) => (
-                            <div
-                                key={item.title}
-                                className="flex items-center gap-3 p-4 sm:p-5"
-                            >
-                                <span
-                                    className={`h-2.5 w-2.5 rounded-full ${item.ok
-                                            ? "bg-[#1f845b]"
-                                            : "bg-[#b97018]"
-                                        }`}
-                                />
-
-                                <div className="flex-1">
-                                    <p className="font-semibold">
-                                        {item.title}
-                                    </p>
-
-                                    <p className="mt-1 text-sm text-[#687b89]">
-                                        {item.detail}
-                                    </p>
-                                </div>
-
-                                <Activity className="h-4 w-4 text-[#8a9aa4]" />
-                            </div>
-                        ))}
-                    </div>
+                    {responderReports.length === 0 ? (
+                        <div className="p-5 text-sm text-[#687b89]">No responder reports are awaiting review.</div>
+                    ) : (
+                        <div role="region" aria-label="Responder reports awaiting review" tabIndex={0} className="max-h-[45vh] touch-pan-y overscroll-contain overflow-y-auto divide-y divide-[#e2e8ed]">
+                            {responderReports.map((report) => (
+                                <article key={report.id} className="flex items-start justify-between gap-3 p-4 sm:p-5">
+                                    <div className="min-w-0">
+                                        <h3 className="truncate font-semibold">{report.subject}</h3>
+                                        <p className="mt-1 text-sm text-[#617582]">{report.responderName} · Reported {timeAgo(report.createdAt)}</p>
+                                    </div>
+                                    <Badge tone="warning">Open</Badge>
+                                </article>
+                            ))}
+                        </div>
+                    )}
                 </Panel>
             </div>
         </div>

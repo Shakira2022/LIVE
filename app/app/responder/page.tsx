@@ -22,8 +22,10 @@ import {
   PanelHeader,
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
+import { Skeleton } from "@/components/ui/skeleton";
 import { readCached, writeFreshCache } from "@/lib/client-cache";
 import { requestStatusTone } from "@/lib/utils";
+import { readResponderPreferences } from "@/lib/responder-preferences";
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -62,6 +64,7 @@ type Mission = {
   responder: {
     user_id: string;
     availability: string;
+    go_offline_after_mission?: boolean;
     current_latitude: number | null;
     current_longitude: number | null;
   } | null;
@@ -72,6 +75,9 @@ type MissionResponse = {
   data?: {
     mission?: Mission | null;
     queuedRequests?: any[];
+    responder?: Mission["responder"];
+    mapCenter?: { lat: number; lng: number } | null;
+    responderAvailability?: string | null;
     message?: string;
     assignment?: Mission["assignment"];
     requestStatus?: string;
@@ -79,6 +85,9 @@ type MissionResponse = {
   };
   mission?: Mission | null;
   queuedRequests?: any[];
+  responder?: Mission["responder"];
+  mapCenter?: { lat: number; lng: number } | null;
+  responderAvailability?: string | null;
   assignment?: Mission["assignment"];
   message?: string;
   error?:
@@ -93,6 +102,9 @@ type MissionResponse = {
 type MissionCache = {
   mission: Mission | null;
   queuedRequests: any[];
+  responderAvailability?: string;
+  responderLocation?: { lat: number; lng: number } | null;
+  mapCenter?: { lat: number; lng: number } | null;
 };
 
 const ARRIVAL_THRESHOLD_METRES = 100;
@@ -217,7 +229,9 @@ export default function ResponderMission() {
     refresh,
   } = useAuth();
 
-  const missionCacheKey = user?.id ? `responder-mission:${user.id}` : "";
+  const missionCacheKey = user?.id
+    ? `responder-mission-v4:${user.id}:${user.organisationId ?? "unassigned"}`
+    : "";
   const initialMissionCache = user?.id
     ? readCached<MissionCache>(missionCacheKey)
     : null;
@@ -228,6 +242,15 @@ export default function ResponderMission() {
   const [queuedRequests, setQueuedRequests] = useState<any[]>(
     () => initialMissionCache?.queuedRequests ?? [],
   );
+  const [responderAvailability, setResponderAvailability] = useState(
+    () => initialMissionCache?.responderAvailability ?? "offline",
+  );
+  const [cachedResponderLocation, setCachedResponderLocation] = useState<MissionCache["responderLocation"]>(
+    () => initialMissionCache?.responderLocation ?? null,
+  );
+  const [mapFallbackCenter, setMapFallbackCenter] = useState<MissionCache["mapCenter"]>(
+    () => initialMissionCache?.mapCenter ?? null,
+  );
 
   const [loading, setLoading] = useState(!initialMissionCache);
 
@@ -236,11 +259,84 @@ export default function ResponderMission() {
   const [error, setError] = useState<string | null>(
     null,
   );
+  const [missionNotice, setMissionNotice] = useState("");
+  const missionNoticeTimer = useRef<number | null>(null);
+  const [voiceGuidanceEnabled, setVoiceGuidanceEnabled] = useState(false);
+  const lastSpokenMissionState = useRef("");
+  const lastSpokenOfflineQueue = useRef("");
 
   const [autoArriving, setAutoArriving] = useState(false);
   const autoArrivalScheduled = useRef(false);
   const { startCall, call } = useCall();
   useCallRoom(mission?.assignment.request_id);
+
+  function showMissionNotice(message: string) {
+    setMissionNotice(message);
+    if (missionNoticeTimer.current !== null) window.clearTimeout(missionNoticeTimer.current);
+    missionNoticeTimer.current = window.setTimeout(() => {
+      setMissionNotice("");
+      missionNoticeTimer.current = null;
+    }, 3500);
+  }
+
+  useEffect(() => () => {
+    if (missionNoticeTimer.current !== null) window.clearTimeout(missionNoticeTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) { setVoiceGuidanceEnabled(false); return; }
+    const sync = () => setVoiceGuidanceEnabled(readResponderPreferences(user.id).voiceGuidance);
+    sync();
+    window.addEventListener("storage", sync);
+    window.addEventListener("live:responder-preferences-changed", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("live:responder-preferences-changed", sync);
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!voiceGuidanceEnabled || !("speechSynthesis" in window)) return;
+    if (mission?.assignment?.id) {
+      const status = String(mission.assignment.status ?? "assigned").toLowerCase();
+      const key = `${mission.assignment.id}:${status}`;
+      if (lastSpokenMissionState.current === key) return;
+      lastSpokenMissionState.current = key;
+      lastSpokenOfflineQueue.current = "";
+      const requestCategory = mission.request?.category ?? "emergency";
+      const priority = mission.request?.severity ?? mission.request?.priority;
+      const description = mission.request?.description ?? mission.request?.note;
+      const address = mission.location?.address_text ?? mission.location?.landmark ?? "Location unavailable";
+      const text = status === "assigned"
+        ? `You have been assigned a request. ${requestCategory}${priority ? `, ${priority} priority` : ""}.${description ? ` Details: ${description}.` : ""} Location: ${address}. Review the incident, then acknowledge the assignment if you can respond.`
+        : status === "acknowledged"
+          ? `Assignment acknowledged. Start the route when you begin travelling to the incident.`
+          : status === "en_route"
+            ? `You are en route to ${address}. Mark arrived when you reach the location.`
+            : status === "arrived"
+              ? `You are marked as arrived. Complete the response when the work is finished.`
+              : "Your mission status has changed.";
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-ZA";
+      utterance.rate = 0.94;
+      window.speechSynthesis.speak(utterance);
+      return;
+    }
+
+    lastSpokenMissionState.current = "";
+    const queueKey = `${responderAvailability}:${queuedRequests.length}`;
+    if (queuedRequests.length > 0 && responderAvailability !== "available" && lastSpokenOfflineQueue.current !== queueKey) {
+      lastSpokenOfflineQueue.current = queueKey;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance("Emergency requests are waiting. You are offline. Go online to become eligible for an assignment.");
+      utterance.lang = "en-ZA";
+      utterance.rate = 0.94;
+      window.speechSynthesis.speak(utterance);
+    } else if (queuedRequests.length === 0) {
+      lastSpokenOfflineQueue.current = "";
+    }
+  }, [mission, queuedRequests.length, responderAvailability, voiceGuidanceEnabled]);
 
   /* ------------------------------------------------------------------------ */
   /* Load current responder mission                                           */
@@ -305,15 +401,40 @@ export default function ResponderMission() {
         result?.data?.queuedRequests ??
         result?.queuedRequests ??
         [];
+      const nextResponderAvailability =
+        result?.data?.responder?.availability ??
+        result?.responder?.availability ??
+        nextMission?.responder?.availability ??
+        "offline";
+      const responseResponder = result?.data?.responder ?? result?.responder ?? nextMission?.responder;
+      const nextMapCenter = result?.data?.mapCenter ?? result?.mapCenter ?? null;
+      const responderLatitude = Number(responseResponder?.current_latitude);
+      const responderLongitude = Number(responseResponder?.current_longitude);
+      const nextResponderLocation = responseResponder?.current_latitude != null &&
+        responseResponder?.current_longitude != null &&
+        Number.isFinite(responderLatitude) &&
+        Number.isFinite(responderLongitude) &&
+        !(responderLatitude === 0 && responderLongitude === 0)
+        ? { lat: responderLatitude, lng: responderLongitude }
+        : null;
 
       setMission(
         nextMission,
       );
       setQueuedRequests(nextQueuedRequests);
+      setResponderAvailability(nextResponderAvailability);
+      setCachedResponderLocation(nextResponderLocation);
+      setMapFallbackCenter(nextMapCenter);
       if (missionCacheKey) {
         writeFreshCache(
           missionCacheKey,
-          { mission: nextMission, queuedRequests: nextQueuedRequests },
+          {
+            mission: nextMission,
+            queuedRequests: nextQueuedRequests,
+            responderAvailability: nextResponderAvailability,
+            responderLocation: nextResponderLocation,
+            mapCenter: nextMapCenter,
+          },
           nextMission ? 5 * 60_000 : 30_000,
         );
       }
@@ -346,18 +467,32 @@ export default function ResponderMission() {
 
   useEffect(() => {
     if (!authLoading && user?.id) {
-      const cached = readCached<MissionCache>(`responder-mission:${user.id}`);
+      // Reuse this user's recent mission snapshot on page switches, then refresh
+      // it from the database. A cold cache waits for the first fresh response so
+      // a default-city map cannot flash before the request pin is known.
+      const cached = readCached<MissionCache>(missionCacheKey);
       if (cached) {
         setMission(cached.mission);
         setQueuedRequests(cached.queuedRequests);
+        setResponderAvailability(cached.responderAvailability ?? cached.mission?.responder?.availability ?? "offline");
+        setCachedResponderLocation(cached.responderLocation ?? null);
+        setMapFallbackCenter(cached.mapCenter ?? null);
         setLoading(false);
+        void loadMission(false);
+      } else {
+        setMission(null);
+        setQueuedRequests([]);
+        setResponderAvailability("offline");
+        setCachedResponderLocation(null);
+        setMapFallbackCenter(null);
+        setLoading(true);
+        void loadMission(true);
       }
 
-      void loadMission(!cached);
-
       const refreshTimer = window.setInterval(() => {
+        // The mission endpoint also checks the queue for an available responder.
         void loadMission(false);
-      }, 3_000);
+      }, 5_000);
 
       return () => window.clearInterval(refreshTimer);
     }
@@ -370,10 +505,26 @@ export default function ResponderMission() {
     return undefined;
   }, [
     authLoading,
+    missionCacheKey,
     user?.id,
     loadMission,
-    user,
   ]);
+
+  const cacheResponderLocation = useCallback((location: { lat: number; lng: number }) => {
+    setCachedResponderLocation(location);
+    if (!missionCacheKey) return;
+
+    const cached = readCached<MissionCache>(missionCacheKey);
+    if (!cached) return;
+    writeFreshCache(
+      missionCacheKey,
+      {
+        ...cached,
+        responderLocation: location,
+      },
+      cached.mission ? 5 * 60_000 : 30_000,
+    );
+  }, [missionCacheKey]);
 
   /* ------------------------------------------------------------------------ */
   /* Update responder mission status                                           */
@@ -454,6 +605,11 @@ export default function ResponderMission() {
         return;
       }
 
+      if (!result) {
+        alert("The mission update response was empty. Please try again.");
+        return;
+      }
+
       /* Acknowledging an assignment immediately starts the route. */
       if (status === "acknowledged") {
         await loadMission();
@@ -484,8 +640,30 @@ export default function ResponderMission() {
         setMission(null);
         setError(null);
 
-        alert(
-          "Response completed. You are now available for a new assignment.",
+        const completedAvailability = result.data?.responderAvailability
+          ?? result.responderAvailability
+          ?? mission.responder?.availability
+          ?? "available";
+        setResponderAvailability(completedAvailability);
+        if (missionCacheKey) {
+          const cached = readCached<MissionCache>(missionCacheKey);
+          writeFreshCache(
+            missionCacheKey,
+            {
+              mission: null,
+              queuedRequests: cached?.queuedRequests ?? [],
+              responderAvailability: completedAvailability,
+              responderLocation: cached?.responderLocation ?? cachedResponderLocation,
+              mapCenter: cached?.mapCenter ?? mapFallbackCenter,
+            },
+            5 * 60_000,
+          );
+        }
+
+        showMissionNotice(
+          completedAvailability === "offline"
+            ? "Response completed. Status: offline."
+            : "Response completed. You are available.",
         );
 
         return;
@@ -497,11 +675,7 @@ export default function ResponderMission() {
 
       await loadMission();
 
-      alert(
-        status === "en_route"
-          ? "Route started."
-          : "Arrival recorded.",
-      );
+      if (status === "en_route") showMissionNotice("Mission started");
     } catch (err) {
       console.warn(
         "Responder status update error:",
@@ -617,16 +791,31 @@ export default function ResponderMission() {
   if (!mission) {
     return (
       <div className="w-full pb-24">
-        <LiveResponseMap
-          requests={queuedRequests}
-          showAll={queuedRequests.length > 0}
-          hideMapStatus
-          responderMode
-          emptyMapMessage={loading ? undefined : queuedRequests.length > 0
-            ? "Emergency requests available - go online to be assigned"
-            : "No queued emergency requests"}
-          className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[calc(100dvh-4rem)] md:min-h-[560px] md:rounded-none"
-        />
+        <div className="px-4 pb-4 pt-5 md:px-8 md:pt-8">
+          <PageHeading
+            title={`Hello, ${user.name}`}
+            description="Your current mission and available emergency requests are shown below."
+          />
+        </div>
+        {loading && queuedRequests.length === 0 ? (
+          <Skeleton className="h-[calc(100dvh-9rem)] min-h-[430px] rounded-none md:h-[calc(100dvh-4rem)] md:min-h-[560px]" />
+        ) : (
+          <LiveResponseMap
+            requests={queuedRequests}
+            showAll={queuedRequests.length > 0}
+            responder={cachedResponderLocation ? { location: cachedResponderLocation, name: user.name } : undefined}
+            onResponderLocationChange={cacheResponderLocation}
+            fallbackCenter={mapFallbackCenter}
+            hideMapStatus
+            responderMode
+            emptyMapMessage={queuedRequests.length > 0
+              ? responderAvailability === "available"
+                ? "You are online and waiting for a mission assignment"
+                : "Emergency requests available - go online to be assigned"
+              : "No queued emergency requests"}
+            className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[calc(100dvh-4rem)] md:min-h-[560px] md:rounded-none"
+          />
+        )}
       </div>
     );
   }
@@ -782,24 +971,24 @@ export default function ResponderMission() {
     location?.landmark ||
     "Location not available";
 
-  const locationLatitude =
-    location?.latitude ?? 0;
-
-  const locationLongitude =
-    location?.longitude ?? 0;
+  const locationLatitude = location?.latitude == null ? null : Number(location.latitude);
+  const locationLongitude = location?.longitude == null ? null : Number(location.longitude);
+  const hasRequestCoordinates = Number.isFinite(locationLatitude) &&
+    Number.isFinite(locationLongitude) &&
+    !(locationLatitude === 0 && locationLongitude === 0);
 
   const mapRequest = {
     ...request,
-    location: {
+    location: hasRequestCoordinates ? {
       address: locationAddress,
       lat: locationLatitude,
       lng: locationLongitude,
       latitude: locationLatitude,
       longitude: locationLongitude,
-    },
+    } : null,
   };
 
-  const responderLocation =
+  const missionResponderLocation =
     mission.responder?.current_latitude != null &&
     mission.responder?.current_longitude != null
       ? {
@@ -808,8 +997,9 @@ export default function ResponderMission() {
         }
       : undefined;
 
-  const mapResponder = responderLocation
-    ? { location: responderLocation, name: "You" }
+  const responderMapLocation = cachedResponderLocation ?? missionResponderLocation;
+  const mapResponder = responderMapLocation
+    ? { location: responderMapLocation, name: user.name }
     : undefined;
 
   /* ------------------------------------------------------------------------ */
@@ -817,7 +1007,21 @@ export default function ResponderMission() {
   /* ------------------------------------------------------------------------ */
 
   return (
-    <div className="w-full md:mx-auto md:max-w-[1480px] md:px-8 md:py-8">
+    <div className="flex h-[calc(100dvh-4rem-5rem)] flex-col overflow-hidden bg-transparent pt-0 md:grid md:h-auto md:min-h-[calc(100dvh-4rem)] md:grid-rows-[auto_auto] md:gap-5 md:overflow-visible md:px-8 md:pt-8 md:pb-8">
+      {missionNotice ? <div className="fixed left-1/2 top-[4.75rem] z-[1100] flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#0f5b67] px-5 py-3 text-sm font-semibold text-white shadow-lg" role="status" aria-live="polite"><CheckCircle2 className="h-5 w-5" />{missionNotice}</div> : null}
+      <div className="mb-0 px-5 py-3 sm:px-6 md:hidden">
+        <PageHeading
+          title={`Hello, ${user.name}`}
+          description="Your current mission and route details are shown below."
+          compact
+        />
+      </div>
+      <div className="hidden md:block">
+        <PageHeading
+          title={`Hello, ${user.name}`}
+          description="Your current mission and route details are shown below."
+        />
+      </div>
       {false && <PageHeading
         eyebrow="Responder"
         title="Active mission"
@@ -836,43 +1040,54 @@ export default function ResponderMission() {
         }
       />}
 
-      <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+      <div className="relative z-10 min-h-0 flex-1 md:static md:z-auto md:grid md:h-auto md:min-h-[min(72dvh,800px)] md:flex-none md:grid-cols-[1.35fr_.65fr] md:gap-4">
         {/* ---------------------------------------------------------------- */}
         {/* Map                                                               */}
         {/* ---------------------------------------------------------------- */}
 
-        <LiveResponseMap
-          request={mapRequest}
-          requests={[]}
-          showAll={false}
-          responder={mapResponder}
-          responderAssigned={Boolean(assignment?.responder_user_id || assignment?.responderUserId)}
-          responderMode
-          requesterName={request?.requester_name || request?.requesterName || "Requester"}
-          immersive
-          hideMapStatus
-          className="h-[calc(100dvh-9rem)] min-h-[430px] w-full rounded-none md:h-[62dvh] md:min-h-[480px] md:rounded-[22px]"
-          mobileAction={
+        <div className="h-full min-h-0 overflow-hidden md:min-h-0 md:overflow-hidden">
+          <LiveResponseMap
+            request={mapRequest}
+            requests={[]}
+            fallbackCenter={mapFallbackCenter}
+            showAll={false}
+            responder={mapResponder}
+            onResponderLocationChange={cacheResponderLocation}
+            responderAssigned={Boolean(assignment?.responder_user_id || assignment?.responderUserId)}
+            responderMode
+            requesterName={request?.requester_name || request?.requesterName || "Requester"}
+            immersive
+            mobileBottomOffset
+            className="h-full min-h-0 w-full rounded-none md:h-full md:min-h-0 md:rounded-[22px]"
+            mobileAction={
             <div className="grid gap-2">
-              {action()}
-              <Button
-                type="button"
-                size="lg"
-                variant="outline"
-                className="w-full"
-                disabled={!mission?.assignment.request_id || call.status !== "idle"}
-                onClick={() => void startCall(
-                  mission!.assignment.request_id,
-                  request?.requester_name || request?.requesterName || "Requester",
-                  { targetRole: "requester" },
-                )}
-              >
-                <PhoneCall className="h-5 w-5" />
-                Call requester
-              </Button>
+              <div>{action()}</div>
+              <div className="grid grid-cols-2 gap-2">
+                <Link href={`/app/responder/track/${assignment.request_id}`} className="min-w-0">
+                  <Button type="button" size="lg" variant="outline" className="w-full px-2 text-xs sm:text-sm">
+                    Open tracking
+                  </Button>
+                </Link>
+                <Button
+                  type="button"
+                  size="lg"
+                  variant="outline"
+                  className="w-full px-2 text-xs sm:text-sm"
+                  disabled={!mission?.assignment.request_id || call.status !== "idle"}
+                  onClick={() => void startCall(
+                    mission!.assignment.request_id,
+                    request?.requester_name || request?.requesterName || "Requester",
+                    { targetRole: "requester" },
+                  )}
+                >
+                  <PhoneCall className="h-5 w-5" />
+                  Call requester
+                </Button>
+              </div>
             </div>
-          }
-        />
+            }
+          />
+        </div>
 
         {/* ---------------------------------------------------------------- */}
         {/* Desktop actions                                                   */}
@@ -900,33 +1115,35 @@ export default function ResponderMission() {
               <div className="flex gap-3 p-4">
                 <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
 
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className="font-semibold">
                     {request?.requester_name ||
                       request?.requesterName ||
                       "Unknown requester"}
                   </p>
 
-                  <p className="mt-1 text-sm text-[#627683]">
-                    {request?.callback_number ||
-                      request?.callbackNumber ||
-                      "No callback number"}
-                  </p>
-
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="mt-3"
-                    disabled={!mission?.assignment.request_id || call.status !== "idle"}
-                    onClick={() => void startCall(
-                      mission!.assignment.request_id,
-                      request?.requester_name || request?.requesterName || "Requester",
-                      { targetRole: "requester" },
-                    )}
-                  >
-                    <PhoneCall className="h-4 w-4" />
-                    Call requester
-                  </Button>
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      aria-label="Call requester"
+                      className="w-auto min-w-11 whitespace-nowrap px-2 text-xs"
+                      disabled={!mission?.assignment.request_id || call.status !== "idle"}
+                      onClick={() => void startCall(
+                        mission!.assignment.request_id,
+                        request?.requester_name || request?.requesterName || "Requester",
+                        { targetRole: "requester" },
+                      )}
+                    >
+                      <PhoneCall className="h-4 w-4" />
+                      <span className="hidden lg:inline">Call requester</span>
+                    </Button>
+                    <Link href={`/app/responder/track/${assignment.request_id}`}>
+                      <Button type="button" size="sm" variant="outline" className="w-auto whitespace-nowrap px-2 text-xs">
+                        Open tracking
+                      </Button>
+                    </Link>
+                  </div>
                 </div>
               </div>
 
@@ -963,16 +1180,6 @@ export default function ResponderMission() {
                 </p>
               </div>
 
-              {/* Location */}
-              <div className="p-4">
-                <p className="text-xs font-bold uppercase tracking-wide text-[#748693]">
-                  Location
-                </p>
-
-                <p className="mt-2 text-sm leading-6 text-[#526978]">
-                  {locationAddress}
-                </p>
-              </div>
             </div>
           </Panel>
         </div>

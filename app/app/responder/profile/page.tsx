@@ -11,19 +11,28 @@ import { readCached, writeFreshCache } from "@/lib/client-cache";
 
 type ResponderState = {
   availability: string;
+  go_offline_after_mission?: boolean;
+  active_assignment_status?: string | null;
   organisation_id: string | null;
   shift_started_at: string | null;
   last_location_at: string | null;
 };
 
 function extractResponder(payload: {
-  data?: { responder?: ResponderState } | ResponderState | null;
+  data?: ({ responder?: ResponderState; active_assignment_status?: string | null } & Partial<ResponderState>) | null;
   responder?: ResponderState | null;
 }): ResponderState | null {
   if (payload.responder) return payload.responder;
   if (!payload.data) return null;
-  const data = payload.data as { responder?: ResponderState } & Partial<ResponderState>;
-  return data.responder ?? (data.availability ? data as ResponderState : null);
+  const data = payload.data;
+  const responder = data.responder ?? (data.availability ? data as ResponderState : null);
+  return responder
+    ? {
+        ...responder,
+        active_assignment_status: data.active_assignment_status ?? responder.active_assignment_status ?? null,
+        go_offline_after_mission: data.go_offline_after_mission ?? responder.go_offline_after_mission ?? false,
+      }
+    : null;
 }
 
 function availabilityTone(availability: string) {
@@ -71,7 +80,7 @@ export default function ResponderProfile() {
     void load(!cached);
     const refreshTimer = window.setInterval(() => {
       void load(false);
-    }, 3_000);
+    }, 5_000);
 
     return () => window.clearInterval(refreshTimer);
   }, [load]);
@@ -105,13 +114,37 @@ export default function ResponderProfile() {
     }
   }
 
+  async function setOfflineAfterMission(goOffline: boolean) {
+    try {
+      setUpdating(true);
+      setError("");
+      const response = await fetch("/api/responder/availability", {
+        method: "PATCH",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ go_offline_after_mission: goOffline }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "Unable to schedule availability after this mission.");
+      const nextResponder = extractResponder(payload);
+      if (nextResponder) setResponder(nextResponder);
+      await load(false);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Unable to schedule availability after this mission.");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   if (!user || (loading && !initialAvailability)) return <PageSkeleton />;
   const availability = responder?.availability ?? "offline";
-  const isAssigned = availability === "assigned" || availability === "en_route" || availability === "on_scene";
+  const isAssigned = Boolean(responder?.active_assignment_status) || availability === "assigned" || availability === "en_route" || availability === "on_scene";
+  const isOfflineAfterMission = Boolean(responder?.go_offline_after_mission);
 
   return (
     <div className="app-page grid gap-5">
-      <PageHeading title="Availability" description="Set your availability before you can receive an automatically assigned mission." />
+      <PageHeading title="Availability" description="Schedule going offline after your current mission; you stay visible and reachable until it ends." />
 
       <section className="border-y border-[#dce5ea] bg-white">
         <div className="flex items-center justify-between gap-4 px-5 py-5 sm:px-6">
@@ -122,7 +155,10 @@ export default function ResponderProfile() {
               <p className="mt-1 text-sm text-[#667b89]">{isAssigned ? "You are assigned to an active mission." : "Your availability controls automatic dispatch."}</p>
             </div>
           </div>
-          <Badge tone={availabilityTone(availability)}>{availability.replace(/_/g, " ")}</Badge>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Badge tone={availabilityTone(availability)}>{availability.replace(/_/g, " ")}</Badge>
+            {isAssigned && isOfflineAfterMission ? <Badge tone="slate">Offline after mission</Badge> : null}
+          </div>
         </div>
 
         <div className="grid border-t border-[#dce5ea] sm:grid-cols-2">
@@ -133,14 +169,26 @@ export default function ResponderProfile() {
         {error ? <p className="border-t border-[#f0c8c7] bg-[#fff7f6] px-5 py-3 text-sm font-medium text-[#a93331]">{error}</p> : null}
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#dce5ea] px-5 py-4 sm:px-6">
-          <p className="text-sm text-[#667b89]">{isAssigned ? "Availability is controlled by your mission status." : availability === "available" ? "You can now be selected for nearby emergency requests." : "Go online when you are ready to receive work."}</p>
+          <p className="text-sm text-[#667b89]">{isAssigned
+            ? isOfflineAfterMission
+              ? "You remain visible, location-tracked and reachable during this mission. You will go offline when it ends."
+              : "You remain visible, location-tracked and reachable. Choose offline after this mission to skip future automatic assignments."
+            : availability === "available"
+              ? "You can now be selected for nearby emergency requests."
+              : "Go online when you are ready to receive work."}</p>
           <Button
-            variant={availability === "available" ? "outline" : "primary"}
-            disabled={updating || isAssigned}
-            onClick={() => void setAvailability(availability === "available" ? "offline" : "available")}
+            variant={isOfflineAfterMission || availability === "available" ? "outline" : "primary"}
+            disabled={updating}
+            onClick={() => void (isAssigned
+              ? setOfflineAfterMission(!isOfflineAfterMission)
+              : setAvailability(availability === "available" ? "offline" : "available"))}
           >
             <Power className="h-4 w-4" />
-            {updating ? "Updating..." : isAssigned ? "On mission" : availability === "available" ? "Go offline" : "Go online"}
+            {updating
+              ? "Updating..."
+              : isAssigned
+                ? isOfflineAfterMission ? "Cancel offline after mission" : "Go offline after mission"
+                : availability === "available" ? "Go offline" : "Go online"}
           </Button>
         </div>
       </section>

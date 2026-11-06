@@ -26,6 +26,7 @@ export type UserRole =
   | 'responder'
   | 'admin'
   | 'auditor'
+  | 'manager'
   | 'support';
 
 /** Postgres: emergency_status */
@@ -126,8 +127,14 @@ export interface PublicUser {
   organisationName: string | null;
   emergencyContactName: string | null;
   emergencyContactPhone: string | null;
+  displayTheme: DisplayTheme | null;
+  termsAcceptedAt: string | null;
+  termsAcceptedVersion: string | null;
+  settingsSetupCompletedAt: string | null;
   createdAt: string;
 }
+
+export type DisplayTheme = "light" | "dark";
 
 export interface StatusHistoryEntry {
   id: string;
@@ -148,6 +155,7 @@ export interface Assignment {
   responderUserId: string | null;
   responderName: string | null;
   responderEmployeeNumber?: string | null;
+  assignedByName?: string | null;
   responderLatitude?: number | null;
   responderLongitude?: number | null;
   teamId: string | null;
@@ -196,6 +204,9 @@ export interface EmergencyRequestSummary {
   currentStatus: RequestStatus;
   isActive: boolean;
   isCancelled: boolean;
+  cancellationRequestedAt: string | null;
+  cancellationReason: string | null;
+  cancelledAt: string | null;
   etaMinutes: number | null;
   estimatedArrivalAt: string | null;
   organisationId: string | null;
@@ -213,11 +224,10 @@ export interface EmergencyRequestDetail extends EmergencyRequestSummary {
   assignedAt: string | null;
   enRouteAt: string | null;
   arrivedAt: string | null;
-  cancellationRequestedAt: string | null;
-  cancelledAt: string | null;
-  cancellationReason: string | null;
   rejectedAt: string | null;
   rejectionReason: string | null;
+  requesterEmergencyContact?: { name: string; phone: string } | null;
+  requesterMedicalDetails?: { conditions: string; allergies: string; medications: string } | null;
   history: StatusHistoryEntry[];
   assignments: Assignment[];
   operationalNotes: OperationalNote[];

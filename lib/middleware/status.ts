@@ -102,8 +102,8 @@ export function canTransition(
   if (!ROLES_FOR_TARGET[to].includes(role)) {
     return { allowed: false, reason: `Your role cannot set a request to ${label(to)}.` };
   }
-  // A requester may only cancel before assignment. After assignment they must
-  // REQUEST cancellation, which staff confirm.
+  // Requester cancellation is handled by requestCancellation(), which checks
+  // the active assignment and either cancels or queues dispatcher approval.
   if (role === 'requester' && to === 'cancelled' && from !== 'submitted') {
     return {
       allowed: false,

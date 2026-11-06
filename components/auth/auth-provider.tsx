@@ -6,12 +6,17 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 
 import { api, ApiClientError } from '@/lib/middleware/client/api';
+import { clearAllClientCache } from '@/lib/client-cache';
+import { applyDisplayTheme, regionalDefaultTheme } from '@/lib/display-theme';
+import { CURRENT_TERMS_VERSION } from '@/lib/legal-terms';
 
 import type {
+  DisplayTheme,
   PublicUser,
   SessionResponse,
 } from '@/types';
@@ -32,6 +37,10 @@ export interface SessionUser extends MockUser {
   organisationName: string | null;
   accountStatus: PublicUser['status'];
   createdAt: string;
+  displayTheme: PublicUser['displayTheme'];
+  termsAcceptedAt: PublicUser['termsAcceptedAt'];
+  termsAcceptedVersion: PublicUser['termsAcceptedVersion'];
+  settingsSetupCompletedAt: PublicUser['settingsSetupCompletedAt'];
 }
 
 export interface RegisterInput {
@@ -66,6 +75,12 @@ interface AuthContextValue {
   logout: () => Promise<void>;
 
   refresh: () => Promise<void>;
+
+  updateDisplayTheme: (theme: DisplayTheme) => Promise<boolean>;
+
+  acceptTerms: () => Promise<void>;
+
+  completeSettingsSetup: () => Promise<void>;
 }
 
 /* ============================================================
@@ -78,6 +93,7 @@ const UI_ROLES: UiRole[] = [
   'responder',
   'admin',
   'auditor',
+  'manager',
 ];
 
 function toUiRole(
@@ -143,7 +159,23 @@ export function toSessionUser(
     accountStatus: user.status,
 
     createdAt: user.createdAt,
+
+    displayTheme: user.displayTheme,
+
+    termsAcceptedAt: user.termsAcceptedAt,
+
+    termsAcceptedVersion: user.termsAcceptedVersion,
+
+    settingsSetupCompletedAt: user.settingsSetupCompletedAt,
   };
+}
+
+function applyUserTheme(user: Pick<PublicUser, 'displayTheme'>) {
+  if (user.displayTheme) {
+    applyDisplayTheme(user.displayTheme, 'account');
+  } else {
+    applyDisplayTheme(regionalDefaultTheme(), 'default');
+  }
 }
 
 /* ============================================================
@@ -191,6 +223,7 @@ export function AuthProvider({
 
   const [loading, setLoading] =
     useState(true);
+  const authRevision = useRef(0);
 
   /* ==========================================================
      REFRESH AUTH SESSION
@@ -198,23 +231,32 @@ export function AuthProvider({
 
   const refresh =
     useCallback(async () => {
+      const revision = ++authRevision.current;
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 12_000);
       try {
         const session =
           await api<SessionResponse>(
-            '/api/auth/me'
+            '/api/auth/me',
+            { signal: controller.signal },
           );
 
-        setUser(
-          toSessionUser(session.user)
-        );
+        if (revision === authRevision.current) {
+          applyUserTheme(session.user);
+          setUser(toSessionUser(session.user));
+        }
       } catch {
         /*
          * 401 here is normal when the
          * visitor is not signed in.
          */
-        setUser(null);
+        if (revision === authRevision.current) {
+          applyDisplayTheme(regionalDefaultTheme(), 'default');
+          setUser(null);
+        }
       } finally {
-        setLoading(false);
+        window.clearTimeout(timeoutId);
+        if (revision === authRevision.current) setLoading(false);
       }
     }, []);
 
@@ -244,6 +286,7 @@ export function AuthProvider({
       // Ignore private browsing/storage errors.
     }
 
+    clearAllClientCache();
     void refresh();
   }, [refresh]);
 
@@ -257,7 +300,9 @@ export function AuthProvider({
         identifier: string,
         password: string
       ): Promise<AuthResult> => {
+        const revision = ++authRevision.current;
         try {
+          clearAllClientCache();
           const session =
             await api<SessionResponse>(
               '/api/auth/login',
@@ -271,23 +316,82 @@ export function AuthProvider({
               }
             );
 
+          // The login response is authoritative. Invalidate any session check
+          // that started while the user was entering their credentials.
+          ++authRevision.current;
+
           const nextUser =
             toSessionUser(
               session.user
             );
 
+          applyUserTheme(session.user);
           setUser(nextUser);
+          setLoading(false);
 
           return {
             ok: true,
             user: nextUser,
           };
         } catch (error) {
+          if (revision === authRevision.current) setLoading(false);
           return toFailure(error);
         }
       },
       []
     );
+
+  const updateDisplayTheme = useCallback(
+    async (theme: DisplayTheme): Promise<boolean> => {
+      const currentUser = user;
+      if (!currentUser) return false;
+
+      const previousTheme = currentUser.displayTheme ?? regionalDefaultTheme();
+      applyDisplayTheme(theme, 'account');
+      setUser((activeUser) => activeUser?.id === currentUser.id
+        ? { ...activeUser, displayTheme: theme }
+        : activeUser);
+
+      try {
+        await api<{ theme: DisplayTheme }>('/api/user/display-preferences', {
+          method: 'PATCH',
+          body: { theme },
+        });
+        return true;
+      } catch {
+        setUser((activeUser) => activeUser?.id === currentUser.id
+          ? { ...activeUser, displayTheme: currentUser.displayTheme }
+          : activeUser);
+        applyDisplayTheme(previousTheme, currentUser.displayTheme ? 'account' : 'default');
+        return false;
+      }
+    },
+    [user],
+  );
+
+  const acceptTerms = useCallback(async () => {
+    const accepted = await api<{ acceptedAt: string; version: string }>(
+      '/api/user/terms-acceptance',
+      { method: 'POST', body: { version: CURRENT_TERMS_VERSION } },
+    );
+    setUser((currentUser) => currentUser
+      ? {
+          ...currentUser,
+          termsAcceptedAt: accepted.acceptedAt,
+          termsAcceptedVersion: accepted.version,
+        }
+      : null);
+  }, []);
+
+  const completeSettingsSetup = useCallback(async () => {
+    const completed = await api<{ completedAt: string }>(
+      '/api/user/settings-setup',
+      { method: 'POST', body: {} },
+    );
+    setUser((currentUser) => currentUser
+      ? { ...currentUser, settingsSetupCompletedAt: completed.completedAt }
+      : null);
+  }, []);
 
   /* ==========================================================
      REGISTER
@@ -407,6 +511,8 @@ export function AuthProvider({
 
   const logout =
     useCallback(async () => {
+      ++authRevision.current;
+      clearAllClientCache();
       try {
         await api(
           '/api/auth/logout',
@@ -424,6 +530,7 @@ export function AuthProvider({
           error
         );
       } finally {
+        applyDisplayTheme(regionalDefaultTheme(), 'default');
         setUser(null);
       }
     }, []);
@@ -441,6 +548,9 @@ export function AuthProvider({
         register,
         logout,
         refresh,
+        updateDisplayTheme,
+        acceptTerms,
+        completeSettingsSetup,
       }),
       [
         user,
@@ -449,6 +559,9 @@ export function AuthProvider({
         register,
         logout,
         refresh,
+        updateDisplayTheme,
+        acceptTerms,
+        completeSettingsSetup,
       ]
     );
 

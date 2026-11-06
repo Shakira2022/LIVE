@@ -6,10 +6,12 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { requesterText, requesterTimeAgo } from "@/lib/requester-ui";
+import type { RequesterLanguage } from "@/lib/requester-language";
 
 import {
+  formatRequestStatus,
   requestStatusTone,
-  timeAgo,
 } from "@/lib/utils";
 
 interface SupabaseEmergencyRequest {
@@ -55,6 +57,10 @@ interface SupabaseEmergencyRequest {
 
   is_active?: boolean | null;
   isActive?: boolean | null;
+  cancellation_requested_at?: string | null;
+  cancellationRequestedAt?: string | null;
+  cancelled_at?: string | null;
+  cancelledAt?: string | null;
 }
 
 export function RequestListItem({
@@ -62,24 +68,35 @@ export function RequestListItem({
   href,
   onClick,
   compact = false,
+  uiLanguage = "English",
+  voiceButtonNumber,
 }: {
   request: SupabaseEmergencyRequest;
   href?: string;
   onClick?: () => void;
   compact?: boolean;
+  uiLanguage?: RequesterLanguage;
+  voiceButtonNumber?: number;
 }) {
   const severityColour =
-    request.severity === "Critical"
+    String(request.severity ?? "").toLowerCase() === "critical"
       ? "bg-[#d53f3d]"
-      : request.severity === "High"
+      : String(request.severity ?? "").toLowerCase() === "high"
         ? "bg-[#b97018]"
         : "bg-[#0f5b67]";
+  const categoryLabel = requesterText(uiLanguage, (request.category || "Emergency request").replace(
+    /\b\w/g,
+    (letter) => letter.toUpperCase(),
+  ));
 
   const status =
     request.current_status ||
     request.currentStatus ||
     request.status ||
     "submitted";
+  const statusLabel = requesterText(uiLanguage, formatRequestStatus(status));
+  const cancellationRequestedAt = request.cancellation_requested_at || request.cancellationRequestedAt;
+  const cancelledAt = request.cancelled_at || request.cancelledAt;
 
   const referenceCode =
     request.reference_code ||
@@ -107,17 +124,19 @@ export function RequestListItem({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate font-semibold tracking-[-0.01em] text-[#102b3f]">
-                {request.category ||
-                  "Emergency request"}
+                {categoryLabel}
               </h3>
 
               <Badge
                 tone={requestStatusTone(
-                  status as any
+                  statusLabel as any
                 )}
               >
-                {status}
+                {statusLabel}
               </Badge>
+              {cancellationRequestedAt && !cancelledAt && !["closed", "cancelled", "rejected"].includes(String(status).toLowerCase()) ? (
+                <Badge tone="warning">{requesterText(uiLanguage, "Cancellation requested")}</Badge>
+              ) : null}
             </div>
 
             {/* Reference code */}
@@ -132,8 +151,7 @@ export function RequestListItem({
         {/* Incident note */}
         {!compact ? (
           <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#536b7b]">
-            {request.note ||
-              "No incident note provided."}
+            {request.note || requesterText(uiLanguage, "No incident note provided.")}
           </p>
         ) : null}
 
@@ -143,7 +161,7 @@ export function RequestListItem({
             <MapPin className="h-3.5 w-3.5 shrink-0" />
 
             <span className="truncate">
-              Emergency request
+              {requesterText(uiLanguage, "Emergency request")}
             </span>
           </span>
 
@@ -151,8 +169,8 @@ export function RequestListItem({
             <Clock3 className="h-3.5 w-3.5" />
 
             {requestTime
-              ? timeAgo(requestTime)
-              : "Unknown time"}
+              ? requesterTimeAgo(requestTime, uiLanguage)
+              : requesterText(uiLanguage, "Unknown time")}
           </span>
         </div>
       </div>
@@ -176,6 +194,7 @@ export function RequestListItem({
   return (
     <button
       type="button"
+      data-live-voice-number={voiceButtonNumber}
       onClick={onClick}
       className={classes}
     >

@@ -25,7 +25,7 @@ export function DemoAccountPicker({
           <span>
             <span className="block text-sm font-semibold">Use a demo account</span>
             <span className="block text-xs text-[#72848f]">
-              Requester, dispatcher, responder, admin or auditor
+              Requester, dispatcher, responder, admin, auditor or manager
             </span>
           </span>
         </span>

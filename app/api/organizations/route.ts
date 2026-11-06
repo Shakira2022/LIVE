@@ -56,11 +56,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get organizations
-    const { data: organizations, error } = await supabase
+    // Dispatchers only need the organisation they are assigned to.
+    let organisationId: string | null = null;
+    if (payload.role === "dispatcher") {
+      const { data: membership, error: membershipError } = await supabase
+        .from("organisation_members")
+        .select("organisation_id")
+        .eq("user_id", payload.userId)
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle();
+      if (membershipError || !membership) {
+        return NextResponse.json(
+          { ok: false, message: "Your account is not linked to an active organisation." },
+          { status: membershipError ? 500 : 403 },
+        );
+      }
+      organisationId = membership.organisation_id;
+    }
+
+    let organisationQuery = supabase
       .from("organisations")
       .select("*")
       .order("created_at", { ascending: false });
+    if (organisationId) organisationQuery = organisationQuery.eq("id", organisationId);
+    const { data: organizations, error } = await organisationQuery;
 
     if (error) {
       console.error("GET ORGANIZATIONS ERROR:", error);
@@ -176,10 +196,9 @@ export async function POST(request: NextRequest) {
     }
 
     const validOrganisationTypes = [
-      "hospital",
-      "emergency_response",
-      "administration",
-      "support",
+      "medical",
+      "firefighter",
+      "police",
     ];
 
     if (!validOrganisationTypes.includes(organisation_type)) {

@@ -35,6 +35,22 @@ import type { SessionResponse } from '@/types';
 
 export const runtime = 'nodejs';
 
+const ACCOUNT_LOCK_MESSAGE =
+  'This account is temporarily locked after too many attempts. Try again in 15 minutes.';
+
+function inactiveAccountMessage(status: string) {
+  switch (status) {
+    case 'suspended':
+      return 'This account has been suspended. Contact your administrator for assistance.';
+    case 'deactivated':
+      return 'This account has been deactivated. Contact your administrator for assistance.';
+    case 'pending':
+      return 'This account is not active yet. Verify your email before signing in.';
+    default:
+      return 'This account is not active.';
+  }
+}
+
 export const POST = createHandler(
   {
     name: 'auth.login',
@@ -42,6 +58,7 @@ export const POST = createHandler(
     body: loginSchema,
     // Brute-force protection: 10 attempts per IP per 5 minutes.
     rateLimit: { limit: 10, windowMs: 5 * 60_000, by: 'ip' },
+    rateLimitMessage: ACCOUNT_LOCK_MESSAGE,
   },
   async (ctx) => {
     const user = await findUserByIdentifier(ctx.body.identifier);
@@ -76,11 +93,19 @@ export const POST = createHandler(
       });
       throw new ApiError(
         'FORBIDDEN',
-        'This account is temporarily locked after too many attempts. Try again in 15 minutes.',
+        ACCOUNT_LOCK_MESSAGE,
       );
     }
 
-    if (!canSignIn(user)) {
+    const lockedUntil = user.locked_until
+      ? new Date(user.locked_until).getTime()
+      : Number.NaN;
+    const lockHasExpired =
+      user.status === 'locked' &&
+      Number.isFinite(lockedUntil) &&
+      lockedUntil <= Date.now();
+
+    if (!canSignIn(user) && !lockHasExpired) {
       await writeSecurityEvent({
         action: 'auth.login.inactive',
         actorId: user.id,
@@ -93,7 +118,10 @@ export const POST = createHandler(
         userAgent: ctx.userAgent,
         metadata: { status: user.status },
       });
-      throw new ApiError('FORBIDDEN', 'This account is not active.');
+      throw new ApiError(
+        'FORBIDDEN',
+        inactiveAccountMessage(user.status),
+      );
     }
 
     const correct = await verifyPassword(ctx.body.password, user.password_hash);

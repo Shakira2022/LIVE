@@ -3,14 +3,15 @@
 import {
   Building2,
   DatabaseZap,
+  LoaderCircle,
   MapPin,
   Phone,
   Power,
   Plus,
-  X,
+  Search,
 } from "lucide-react";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,11 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { Input, Select, Textarea } from "@/components/ui/field";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
+import { Sheet } from "@/components/ui/sheet";
+import { TopValidationAlert } from "@/components/ui/top-validation-alert";
+import { OrganisationLocationPicker } from "@/components/maps/organisation-location-picker";
 
 type Organisation = {
   id: string;
@@ -27,23 +33,48 @@ type Organisation = {
   service_area_description: string;
   status: string;
   integration_status: string;
+  registration_number?: string | null;
+  contact_email?: string | null;
+  address_line_1?: string | null;
+  address_line_2?: string | null;
+  suburb?: string | null;
+  city?: string | null;
+  province?: string | null;
+  postal_code?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 };
 
 export default function AdminOrgs() {
   const { user } = useAuth();
 
-  const [organisations, setOrganisations] = useState<Organisation[]>([]);
-  const [loading, setLoading] = useState(true);
+  const organisationsCacheKey = user?.id ? `admin-organisations:${user.id}` : null;
+  const cachedOrganisations = organisationsCacheKey
+    ? readCached<Organisation[]>(organisationsCacheKey)
+    : null;
+
+  const [organisations, setOrganisations] = useState<Organisation[]>(() => cachedOrganisations ?? []);
+  const [loading, setLoading] = useState(() => !cachedOrganisations);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [updatingOrganisationId, setUpdatingOrganisationId] = useState<string | null>(null);
+  const hasLoadedOrganisations = useRef(Boolean(cachedOrganisations));
+  const manuallyPinnedLocation = useRef(false);
+  const addressSearchController = useRef<AbortController | null>(null);
 
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [editingOrganisationId, setEditingOrganisationId] = useState<string | null>(null);
+  const [addressLookupLoading, setAddressLookupLoading] = useState(false);
+  const [addressLookupError, setAddressLookupError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const [createSuccess, setCreateSuccess] = useState("");
+  const [missingInfoOpen, setMissingInfoOpen] = useState(false);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
 
   const [form, setForm] = useState({
     name: "",
-    organisation_type: "emergency_response",
+    organisation_type: "medical",
     registration_number: "",
     contact_email: "",
     contact_phone: "",
@@ -55,17 +86,28 @@ export default function AdminOrgs() {
     postal_code: "",
     service_area_description: "",
     status: "active",
+    latitude: null as number | null,
+    longitude: null as number | null,
   });
+  const addressForMap = uniqueAddressParts([
+    form.address_line_1,
+    form.address_line_2,
+    form.suburb,
+    form.city,
+    form.province,
+    form.postal_code,
+  ]).join(", ");
 
-  useEffect(() => {
-    loadOrganisations();
-  }, [user]);
+  useEffect(() => () => addressSearchController.current?.abort(), []);
 
-  async function loadOrganisations() {
-    if (!user) return;
+  const loadOrganisations = useCallback(async () => {
+    if (!user?.id) return;
+
+    const initialLoad = !hasLoadedOrganisations.current;
+    if (initialLoad) setLoading(true);
+    else setRefreshing(true);
 
     try {
-      setLoading(true);
       setError("");
 
       const response = await fetch("/api/admin/organisations", {
@@ -92,6 +134,8 @@ export default function AdminOrgs() {
           ? nextOrganisations
           : [],
       );
+      const next = Array.isArray(nextOrganisations) ? nextOrganisations : [];
+      if (organisationsCacheKey) writeFreshCache(organisationsCacheKey, next, 5 * 60_000);
     } catch (error) {
       console.error("Failed to load organizations:", error);
 
@@ -101,9 +145,15 @@ export default function AdminOrgs() {
           : "Failed to load organizations."
       );
     } finally {
+      hasLoadedOrganisations.current = true;
       setLoading(false);
+      setRefreshing(false);
     }
-  }
+  }, [organisationsCacheKey, user?.id]);
+
+  useEffect(() => {
+    void loadOrganisations();
+  }, [loadOrganisations]);
 
   function updateForm(
     field: string,
@@ -112,7 +162,84 @@ export default function AdminOrgs() {
     setForm((previous) => ({
       ...previous,
       [field]: value,
+      ...(["address_line_1", "address_line_2", "suburb", "city", "province", "postal_code"].includes(field)
+        ? { latitude: null, longitude: null }
+        : {}),
     }));
+    if (["address_line_1", "address_line_2", "suburb", "city", "province", "postal_code"].includes(field)) {
+      addressSearchController.current?.abort();
+      addressSearchController.current = null;
+      setAddressLookupLoading(false);
+      manuallyPinnedLocation.current = false;
+    }
+  }
+
+  async function searchAddressOnMap() {
+    if (!form.address_line_1.trim()) {
+      setAddressLookupError("Enter Address line 1 before searching the map.");
+      return;
+    }
+
+    addressSearchController.current?.abort();
+    const controller = new AbortController();
+    addressSearchController.current = controller;
+    manuallyPinnedLocation.current = false;
+    setAddressLookupLoading(true);
+    setAddressLookupError("");
+
+    const addressLineParts = [form.address_line_1, form.address_line_2];
+    const queryParts = [
+      addressLineParts,
+      [...addressLineParts, form.suburb],
+      [...addressLineParts, form.suburb, form.city, form.province, form.postal_code],
+    ];
+
+    try {
+      let match: { lat: string; lon: string } | undefined;
+      for (const parts of queryParts) {
+        const query = uniqueAddressParts([...parts, "South Africa"]).join(", ");
+        const url = new URL("https://nominatim.openstreetmap.org/search");
+        url.search = new URLSearchParams({ q: query, format: "jsonv2", limit: "1", countrycodes: "za" }).toString();
+        const response = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error("Address lookup is temporarily unavailable.");
+        const results: Array<{ lat: string; lon: string }> = await response.json();
+        if (results[0]) {
+          match = results[0];
+          break;
+        }
+      }
+
+      if (!match) throw new Error("Could not find address on the map. Add the suburb or city and search again, or move the map pin to the correct place.");
+      if (!manuallyPinnedLocation.current && !controller.signal.aborted) {
+        setForm((current) => ({ ...current, latitude: Number(match!.lat), longitude: Number(match!.lon) }));
+      }
+    } catch (lookupError) {
+      if (!controller.signal.aborted) {
+        setAddressLookupError(lookupError instanceof Error ? lookupError.message : "Unable to find this address.");
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setAddressLookupLoading(false);
+        addressSearchController.current = null;
+      }
+    }
+  }
+
+  function openCreateOrganisation() {
+    addressSearchController.current?.abort();
+    addressSearchController.current = null;
+    setAddressLookupLoading(false);
+    setEditingOrganisationId(null);
+    manuallyPinnedLocation.current = false;
+    setCreateError("");
+    setCreateSuccess("");
+    setAddressLookupError("");
+    setForm({
+      name: "", organisation_type: "medical", registration_number: "", contact_email: "",
+      contact_phone: "", address_line_1: "", address_line_2: "", suburb: "", city: "", province: "",
+      postal_code: "", service_area_description: "", status: "active", latitude: null, longitude: null,
+    });
+    setShowCreateForm(true);
   }
 
   async function createOrganisation(
@@ -120,15 +247,40 @@ export default function AdminOrgs() {
   ) {
     event.preventDefault();
 
+    const missing = [
+      !form.name.trim() ? "Organisation name" : null,
+      !form.organisation_type.trim() ? "Organisation type" : null,
+      !form.service_area_description.trim() ? "Service area" : null,
+      !form.address_line_1.trim() ? "Street address" : null,
+      !form.city.trim() ? "City" : null,
+      !form.province.trim() ? "Province" : null,
+      form.latitude === null || form.longitude === null ? "Map pin location" : null,
+      form.latitude !== null && (form.latitude < -35 || form.latitude > -22) ? "South African map latitude" : null,
+      form.longitude !== null && (form.longitude < 16 || form.longitude > 33) ? "South African map longitude" : null,
+    ].filter((field): field is string => Boolean(field));
+
+    if (missing.length > 0) {
+      setMissingRequiredFields(missing);
+      setMissingInfoOpen(true);
+      return;
+    }
+
+    if (form.contact_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contact_email.trim())) {
+      setCreateError("Enter a valid contact email address, or leave the field empty.");
+      return;
+    }
+
     setCreating(true);
     setCreateError("");
     setCreateSuccess("");
 
     try {
       const response = await fetch(
-        "/api/admin/organisations",
+        editingOrganisationId
+          ? `/api/admin/organisations/${editingOrganisationId}`
+          : "/api/admin/organisations",
         {
-          method: "POST",
+          method: editingOrganisationId ? "PATCH" : "POST",
           headers: {
             "Content-Type": "application/json",
           },
@@ -141,18 +293,17 @@ export default function AdminOrgs() {
 
       if (!response.ok) {
         throw new Error(
-          data.message ||
+          data?.error?.message ||
+            data?.message ||
             "Failed to create organization."
         );
       }
 
-      setCreateSuccess(
-        "Organization created successfully."
-      );
+      setCreateSuccess(editingOrganisationId ? "Organisation updated successfully." : "Organisation created successfully.");
 
       setForm({
         name: "",
-        organisation_type: "emergency_response",
+        organisation_type: "medical",
         registration_number: "",
         contact_email: "",
         contact_phone: "",
@@ -164,7 +315,10 @@ export default function AdminOrgs() {
         postal_code: "",
         service_area_description: "",
         status: "active",
+        latitude: null,
+        longitude: null,
       });
+      setEditingOrganisationId(null);
 
       await loadOrganisations();
 
@@ -188,11 +342,75 @@ export default function AdminOrgs() {
     }
   }
 
-  if (!user || loading) {
+  function openEditOrganisation(organisation: Organisation) {
+    addressSearchController.current?.abort();
+    addressSearchController.current = null;
+    setAddressLookupLoading(false);
+    manuallyPinnedLocation.current = true;
+    setEditingOrganisationId(organisation.id);
+    setCreateError("");
+    setCreateSuccess("");
+    setAddressLookupError("");
+    setForm({
+      name: organisation.name,
+      organisation_type: responseTypeForEdit(organisation.organisation_type),
+      registration_number: organisation.registration_number ?? "",
+      contact_email: organisation.contact_email ?? "",
+      contact_phone: organisation.contact_phone ?? "",
+      address_line_1: organisation.address_line_1 ?? "",
+      address_line_2: organisation.address_line_2 ?? "",
+      suburb: organisation.suburb ?? "",
+      city: organisation.city ?? "",
+      province: organisation.province ?? "",
+      postal_code: organisation.postal_code ?? "",
+      service_area_description: organisation.service_area_description ?? "",
+      status: organisation.status === "active" ? "active" : "paused",
+      latitude: organisation.latitude == null ? null : Number(organisation.latitude),
+      longitude: organisation.longitude == null ? null : Number(organisation.longitude),
+    });
+    setShowCreateForm(true);
+  }
+
+  async function toggleOrganisationStatus(organisation: Organisation) {
+    const newStatus = organisation.status === "active" ? "paused" : "active";
+    if (updatingOrganisationId) return;
+
+    setUpdatingOrganisationId(organisation.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/organisations/${organisation.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error?.message || data?.message || "Failed to update organisation status.");
+      }
+
+      const updatedOrganisation = data?.data?.organisation ?? data?.organisation;
+      setOrganisations((current) => current.map((item) => item.id === organisation.id
+        ? { ...item, ...(updatedOrganisation ?? {}), status: newStatus }
+        : item));
+      if (organisationsCacheKey) {
+        const cached = readCached<Organisation[]>(organisationsCacheKey) ?? organisations;
+        writeFreshCache(organisationsCacheKey, cached.map((item) => item.id === organisation.id
+          ? { ...item, ...(updatedOrganisation ?? {}), status: newStatus }
+          : item), 5 * 60_000);
+      }
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Failed to update organisation status.");
+    } finally {
+      setUpdatingOrganisationId(null);
+    }
+  }
+
+  if (!user || (loading && organisations.length === 0)) {
     return <PageSkeleton />;
   }
 
-  if (error) {
+  if (error && organisations.length === 0) {
     return (
       <div className="app-page grid gap-5">
         <PageHeading
@@ -235,49 +453,60 @@ export default function AdminOrgs() {
         />
 
         <Button
-          onClick={() => {
-            setShowCreateForm(true);
-            setCreateError("");
-            setCreateSuccess("");
-          }}
+          onClick={openCreateOrganisation}
         >
           <Plus className="h-4 w-4" />
           Add organisation
         </Button>
       </div>
 
-      {/* CREATE ORGANISATION FORM */}
-      {showCreateForm && (
-        <Panel>
-          <div className="border-b border-[#e2e8ed] p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold">
-                  Add organisation
-                </h2>
+      {refreshing ? <p className="text-xs font-medium text-[#718490]" role="status" aria-live="polite">Refreshing organisation data…</p> : null}
+      {error && organisations.length > 0 ? <div role="alert" className="rounded-lg border border-[#efc9c7] bg-[#ffefee] px-4 py-3 text-sm text-[#a93331]">{error}</div> : null}
 
-                <p className="mt-1 text-sm text-[#748693]">
-                  Create a new organisation for the LIVE
-                  emergency response system.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setShowCreateForm(false)
-                }
-                className="rounded-lg p-2 hover:bg-gray-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
+      {/* CREATE ORGANISATION MODAL */}
+      <Sheet
+        open={showCreateForm}
+        onOpenChange={(open) => {
+          if (!creating) {
+            setShowCreateForm(open);
+            if (!open) setMissingInfoOpen(false);
+          }
+        }}
+        title={editingOrganisationId ? "Edit organisation" : "Add organisation"}
+        description={editingOrganisationId ? "Update this organisation's details, service type, address and map location." : "Create a response organisation and confirm its address on the map."}
+        side="center"
+        dismissible={!creating}
+        className="max-h-[94dvh] w-[calc(100%-1rem)] max-w-[96vw] rounded-2xl border border-[#dfe7ec] bg-white shadow-2xl"
+        scrollAreaClassName="p-5 sm:p-6"
+        footer={(
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={creating}
+              onClick={() => setShowCreateForm(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="create-organisation-form"
+              disabled={creating}
+            >
+              {creating ? (editingOrganisationId ? "Saving..." : "Creating...") : (editingOrganisationId ? "Save changes" : "Create organisation")}
+            </Button>
           </div>
+        )}
+      >
+        <form
+          id="create-organisation-form"
+          noValidate
+          onSubmit={createOrganisation}
+          className="grid gap-5"
+        >
 
-          <form
-            onSubmit={createOrganisation}
-            className="grid gap-5 p-5"
-          >
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(520px,1.1fr)]">
+            <div className="grid content-start gap-5">
 
             {/* NAME + TYPE */}
             <div className="grid gap-4 md:grid-cols-2">
@@ -286,7 +515,7 @@ export default function AdminOrgs() {
                 label="Organisation name"
                 required
               >
-                <input
+                <Input
                   value={form.name}
                   onChange={(event) =>
                     updateForm(
@@ -296,7 +525,6 @@ export default function AdminOrgs() {
                   }
                   placeholder="e.g. Vaal Medical Hospital"
                   required
-                  className="form-input"
                 />
               </FormField>
 
@@ -304,7 +532,7 @@ export default function AdminOrgs() {
                 label="Organisation type"
                 required
               >
-                <select
+                <Select required
                   value={form.organisation_type}
                   onChange={(event) =>
                     updateForm(
@@ -312,30 +540,24 @@ export default function AdminOrgs() {
                       event.target.value
                     )
                   }
-                  className="form-input"
                 >
-                  <option value="emergency_response">
-                    Emergency Response
+                  <option value="">Choose an organisation response type</option>
+                  <option value="medical">
+                    Medical
                   </option>
-
-                  <option value="hospital">
-                    Hospital
+                  <option value="firefighter">
+                    Firefighter
                   </option>
-
-                  <option value="administration">
-                    Administration
+                  <option value="police">
+                    Police
                   </option>
-
-                  <option value="support">
-                    Support
-                  </option>
-                </select>
+                </Select>
               </FormField>
             </div>
 
             {/* REGISTRATION */}
             <FormField label="Registration number">
-              <input
+              <Input
                 value={form.registration_number}
                 onChange={(event) =>
                   updateForm(
@@ -344,7 +566,6 @@ export default function AdminOrgs() {
                   )
                 }
                 placeholder="Optional"
-                className="form-input"
               />
             </FormField>
 
@@ -352,7 +573,7 @@ export default function AdminOrgs() {
             <div className="grid gap-4 md:grid-cols-2">
 
               <FormField label="Contact email">
-                <input
+                <Input
                   type="email"
                   value={form.contact_email}
                   onChange={(event) =>
@@ -362,12 +583,11 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="organisation@example.com"
-                  className="form-input"
                 />
               </FormField>
 
               <FormField label="Contact phone">
-                <input
+                <Input
                   value={form.contact_phone}
                   onChange={(event) =>
                     updateForm(
@@ -376,15 +596,14 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="016 000 0000"
-                  className="form-input"
                 />
               </FormField>
 
             </div>
 
             {/* ADDRESS */}
-            <FormField label="Address">
-              <input
+            <FormField label="Address line 1">
+              <Input
                 value={form.address_line_1}
                 onChange={(event) =>
                   updateForm(
@@ -392,13 +611,12 @@ export default function AdminOrgs() {
                     event.target.value
                   )
                 }
-                placeholder="Street address"
-                className="form-input"
+                placeholder="Street number and name (e.g. 36 Fortuna Avenue)"
               />
             </FormField>
 
             <FormField label="Address line 2">
-              <input
+              <Input
                 value={form.address_line_2}
                 onChange={(event) =>
                   updateForm(
@@ -407,7 +625,6 @@ export default function AdminOrgs() {
                   )
                 }
                 placeholder="Building / unit (optional)"
-                className="form-input"
               />
             </FormField>
 
@@ -415,7 +632,7 @@ export default function AdminOrgs() {
             <div className="grid gap-4 md:grid-cols-2">
 
               <FormField label="Suburb">
-                <input
+                <Input
                   value={form.suburb}
                   onChange={(event) =>
                     updateForm(
@@ -424,12 +641,11 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="Suburb"
-                  className="form-input"
                 />
               </FormField>
 
               <FormField label="City">
-                <input
+                <Input
                   value={form.city}
                   onChange={(event) =>
                     updateForm(
@@ -438,12 +654,11 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="City"
-                  className="form-input"
                 />
               </FormField>
 
               <FormField label="Province">
-                <input
+                <Input
                   value={form.province}
                   onChange={(event) =>
                     updateForm(
@@ -452,12 +667,11 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="Gauteng"
-                  className="form-input"
                 />
               </FormField>
 
               <FormField label="Postal code">
-                <input
+                <Input
                   value={form.postal_code}
                   onChange={(event) =>
                     updateForm(
@@ -466,7 +680,6 @@ export default function AdminOrgs() {
                     )
                   }
                   placeholder="1930"
-                  className="form-input"
                 />
               </FormField>
 
@@ -477,7 +690,7 @@ export default function AdminOrgs() {
               label="Service area"
               required
             >
-              <textarea
+              <Textarea
                 value={
                   form.service_area_description
                 }
@@ -490,13 +703,45 @@ export default function AdminOrgs() {
                 placeholder="Describe the area served by this organisation."
                 required
                 rows={3}
-                className="form-input"
               />
             </FormField>
 
+            </div>
+
+            <section className="grid content-start gap-3" aria-label="Confirm organisation map location">
+              <div>
+                <h3 className="text-sm font-bold text-[#18364a]">Confirm the organisation location</h3>
+                <p className="mt-1 text-xs leading-5 text-[#718490]">We use this pin to find the closest eligible organisation. Drag it to the actual station, hospital or base entrance if the address lookup is off.</p>
+              </div>
+              <div className="rounded-lg border border-[#dfe7ec] bg-white px-3 py-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-[#718490]">Address shown on this map</p>
+                <p className="mt-1 text-sm font-semibold text-[#18364a]">{addressForMap || "Enter the organisation address to preview it here."}</p>
+              </div>
+              <OrganisationLocationPicker
+                point={form.latitude !== null && form.longitude !== null ? { latitude: form.latitude, longitude: form.longitude } : null}
+                loading={addressLookupLoading}
+                errorMessage={addressLookupError}
+                onChange={(point) => {
+                  manuallyPinnedLocation.current = true;
+                  setForm((current) => ({ ...current, latitude: point.latitude, longitude: point.longitude }));
+                }}
+              />
+              <div className="grid gap-2">
+                <Button type="button" variant="outline" onClick={() => void searchAddressOnMap()} disabled={addressLookupLoading || !form.address_line_1.trim()}>
+                  {addressLookupLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  {addressLookupLoading ? "Searching address…" : "Search address on map"}
+                </Button>
+                <p className="text-xs text-[#718490]">Enter the street address in line 1. Search checks lines 1 and 2 first, then adds suburb and city details if needed.</p>
+              </div>
+              {form.latitude !== null && form.longitude !== null ? (
+                <p className="text-xs text-[#718490]">Pinned coordinates: {form.latitude.toFixed(6)}, {form.longitude.toFixed(6)}</p>
+              ) : <p className="text-xs font-semibold text-[#a93331]">Set an address and confirm a pin before saving.</p>}
+            </section>
+          </div>
+
             {/* STATUS */}
             <FormField label="Status">
-              <select
+              <Select
                 value={form.status}
                 onChange={(event) =>
                   updateForm(
@@ -504,7 +749,6 @@ export default function AdminOrgs() {
                     event.target.value
                   )
                 }
-                className="form-input"
               >
                 <option value="active">
                   Active
@@ -517,7 +761,7 @@ export default function AdminOrgs() {
                 <option value="paused">
                   Paused
                 </option>
-              </select>
+              </Select>
             </FormField>
 
             {/* MESSAGES */}
@@ -533,32 +777,15 @@ export default function AdminOrgs() {
               </div>
             )}
 
-            {/* ACTIONS */}
-            <div className="flex flex-col gap-3 border-t border-[#e2e8ed] pt-5 sm:flex-row sm:justify-end">
+        </form>
+      </Sheet>
 
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() =>
-                  setShowCreateForm(false)
-                }
-              >
-                Cancel
-              </Button>
-
-              <Button
-                type="submit"
-                disabled={creating}
-              >
-                {creating
-                  ? "Creating..."
-                  : "Create organisation"}
-              </Button>
-
-            </div>
-          </form>
-        </Panel>
-      )}
+      <TopValidationAlert
+        open={missingInfoOpen}
+        onClose={() => setMissingInfoOpen(false)}
+        items={missingRequiredFields}
+        autoDismissMs={6000}
+      />
 
       {/* ORGANISATIONS LIST */}
       {organisations.length === 0 ? (
@@ -575,9 +802,10 @@ export default function AdminOrgs() {
           </div>
         </Panel>
       ) : (
+        <div role="region" aria-label="Organisations list" tabIndex={0} className="max-h-[65vh] touch-pan-y overscroll-contain overflow-y-auto pr-1">
         <div className="grid gap-4 lg:grid-cols-2">
           {organisations.map((org) => (
-            <Panel key={org.id}>
+            <Panel key={org.id} aria-busy={updatingOrganisationId === org.id} className={updatingOrganisationId === org.id ? "opacity-70" : undefined}>
 
               <PanelHeader
                 title={org.name}
@@ -646,7 +874,10 @@ export default function AdminOrgs() {
 
               </div>
 
-              <div className="border-t border-[#e2e8ed] p-4">
+              <div className="grid grid-cols-2 gap-2 border-t border-[#e2e8ed] p-4">
+                <Button variant="outline" disabled={updatingOrganisationId !== null} onClick={() => openEditOrganisation(org)}>
+                  Edit organisation
+                </Button>
                 <Button
                   variant={
                     org.status === "active"
@@ -654,27 +885,38 @@ export default function AdminOrgs() {
                       : "success"
                   }
                   className="w-full"
+                  disabled={updatingOrganisationId !== null}
                   onClick={() =>
-                    toggleOrganisationStatus(
-                      org.id,
-                      org.status
-                    )
+                    void toggleOrganisationStatus(org)
                   }
                 >
-                  <Power className="h-4 w-4" />
-
-                  {org.status === "active"
-                    ? "Pause organisation"
-                    : "Restore organisation"}
+                  {updatingOrganisationId === org.id
+                    ? <><LoaderCircle className="h-4 w-4 animate-spin" />{org.status === "active" ? "Pausing" : "Resuming"} organisation…</>
+                    : <><Power className="h-4 w-4" />{org.status === "active" ? "Pause organisation" : "Restore organisation"}</>}
                 </Button>
               </div>
 
             </Panel>
           ))}
         </div>
+        </div>
       )}
     </div>
   );
+}
+
+function uniqueAddressParts(values: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    for (const part of value.split(",").map((item) => item.trim()).filter(Boolean)) {
+      const key = part.toLocaleLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(part);
+    }
+  }
+  return result;
 }
 
 
@@ -714,6 +956,17 @@ function FormField({
 // ============================================
 
 function formatOrganisationType(type: string) {
+  const labels: Record<string, string> = {
+    medical: "Medical",
+    firefighter: "Firefighter",
+    police: "Police",
+    hospital: "Medical / Hospital",
+    emergency_response: "Needs response type selection",
+    fire: "Firefighter (legacy type)",
+    fire_service: "Firefighter (legacy type)",
+    police_service: "Police",
+  };
+  if (labels[type]) return labels[type];
   return type
     .split("_")
     .map(
@@ -722,6 +975,16 @@ function formatOrganisationType(type: string) {
         word.slice(1)
     )
     .join(" ");
+}
+
+function responseTypeForEdit(type: string) {
+  if (type === "medical" || type === "firefighter" || type === "police") return type;
+  if (type === "hospital") return "medical";
+  if (type === "fire" || type === "fire_service") return "firefighter";
+  if (type === "police_service") return "police";
+  // A generic emergency_response record cannot be safely classified without
+  // an administrator choosing its actual response service.
+  return "";
 }
 
 function formatStatus(status: string) {
@@ -744,57 +1007,4 @@ function formatIntegrationStatus(status: string) {
         word.slice(1)
     )
     .join(" ");
-}
-
-
-// ============================================
-// UPDATE ORGANISATION STATUS
-// ============================================
-
-async function toggleOrganisationStatus(
-  organisationId: string,
-  currentStatus: string
-) {
-  const newStatus =
-    currentStatus === "active"
-      ? "paused"
-      : "active";
-
-  try {
-    const response = await fetch(
-      `/api/admin/organisations/${organisationId}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          status: newStatus,
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.message ||
-          "Failed to update organization status."
-      );
-    }
-
-    window.location.reload();
-  } catch (error) {
-    console.error(
-      "Failed to update organization status:",
-      error
-    );
-
-    alert(
-      error instanceof Error
-        ? error.message
-        : "Failed to update organization status."
-    );
-  }
 }

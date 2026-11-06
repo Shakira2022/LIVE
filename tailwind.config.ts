@@ -6,6 +6,7 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: ["Inter", "Segoe UI", "Arial", "Helvetica", "sans-serif"],
+        "live-serif": ["Rockwell", "Roboto Slab", "Caecilia", "Georgia", "serif"],
       },
     },
   },

@@ -2,17 +2,22 @@
 
 import {
   Building2,
+  ClipboardList,
   Clock3,
+  History,
   MapPin,
+  MessageSquareText,
   PhoneCall,
   Send,
   Siren,
+  UserRound,
 } from "lucide-react";
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { RequestIntakeAnswers } from "@/components/dispatcher/request-intake-answers";
 import { useCall, useCallRoom } from "@/components/calls/call-provider";
 import { LiveResponseMap } from "@/components/maps/live-response-map";
 
@@ -34,7 +39,8 @@ import { PageSkeleton } from "@/components/ui/skeleton";
 import { Sheet } from "@/components/ui/sheet";
 
 import { supabase } from "@/lib/supabase";
-import { requestStatusTone } from "@/lib/utils";
+import { effectiveRequestStatus, formatRequestStatus, requestStatusTone } from "@/lib/utils";
+import { readCached } from "@/lib/client-cache";
 
 async function authenticatedFetch(
   input: RequestInfo | URL,
@@ -58,6 +64,16 @@ async function authenticatedFetch(
   return fetch(input, requestInit);
 }
 
+function formatClockTime(value?: string | null) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Time unavailable";
+  return new Intl.DateTimeFormat("en-ZA", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 export default function DispatchRequestDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -68,6 +84,7 @@ export default function DispatchRequestDetail() {
   const [sheet, setSheet] = useState<
     null | "assign" | "reroute" | "reject" | "note"
   >(null);
+  const [detailsSheet, setDetailsSheet] = useState<null | "history" | "notes" | "answers" | "requester">(null);
 
   // ==================================================
   // ASSIGNMENT SELECTION
@@ -92,10 +109,22 @@ export default function DispatchRequestDetail() {
   const [operationalNotes, setOperationalNotes] =
     useState<any[]>([]);
 
-  const [request, setRequest] = useState<any>(null);
+  const requestCacheKey = user?.id ? `dispatcher-requests:v3:${user.id}:${user.organisationId ?? "unassigned"}` : "";
+  const cachedRequest = requestCacheKey
+    ? readCached<any[]>(requestCacheKey)?.find((item) => item.id === decodeURIComponent(id)) ?? null
+    : null;
+  const [request, setRequest] = useState<any>(() => cachedRequest ? {
+    ...cachedRequest,
+    reference_code: cachedRequest.reference_code ?? cachedRequest.reference,
+    requester_id: cachedRequest.requester_id ?? cachedRequest.requesterId,
+    requester_name: cachedRequest.requester_name ?? cachedRequest.requesterName,
+    callback_number: cachedRequest.callback_number ?? cachedRequest.callbackNumber,
+    current_status: cachedRequest.current_status ?? cachedRequest.currentStatus ?? cachedRequest.status,
+    routed_organisation_id: cachedRequest.routed_organisation_id ?? cachedRequest.organisationId,
+  } : null);
 
   const [requestLoading, setRequestLoading] =
-    useState(true);
+    useState(() => !cachedRequest);
 
   const [responders, setResponders] =
     useState<any[]>([]);
@@ -121,7 +150,7 @@ export default function DispatchRequestDetail() {
 
   async function loadRequestData() {
     try {
-      setRequestLoading(true);
+      if (!request) setRequestLoading(true);
 
       const requestId = decodeURIComponent(id);
 
@@ -134,366 +163,98 @@ export default function DispatchRequestDetail() {
         requestId
       );
 
-      // ==================================================
-      // SUPABASE AUTH CHECK
-      // ==================================================
-
-      const {
-        data: { session },
-        error: sessionError,
-      } = await supabase.auth.getSession();
-
-      console.log(
-        "========== SUPABASE AUTH CHECK =========="
-      );
-
-      console.log(
-        "SUPABASE SESSION:",
-        session
-      );
-
-      console.log(
-        "SUPABASE USER:",
-        session?.user
-      );
-
-      console.log(
-        "SUPABASE USER ID:",
-        session?.user?.id
-      );
-
-      console.log(
-        "SUPABASE SESSION ERROR:",
-        sessionError
-      );
-
-      console.log(
-        "SUPABASE ACCESS TOKEN EXISTS:",
-        !!session?.access_token
-      );
-
-      // ==================================================
-      // LOAD EMERGENCY REQUEST
-      // ==================================================
-
-      const {
-        data: requestData,
-        error: requestError,
-      } = await supabase
-        .from("emergency_requests")
-        .select("*")
-        .eq("id", requestId)
-        .single();
-
-      if (requestError) {
-        console.error(
-          "Failed to load emergency request:",
-          requestError
-        );
-
-        setRequest(null);
-        setAssignment(null);
-
-        return;
-      }
-
-      console.log(
-        "EMERGENCY REQUEST:",
-        requestData
-      );
-
-      let requestDetail: any = null;
-      let emergencyRequestDetail: any = null;
-      let emergencyAssignmentDetail: any = null;
-
-      // Keep the normalized request-detail response as a fallback. Some
-      // staff sessions can read this endpoint, while others are restricted
-      // to the dispatcher-specific endpoint below.
-      if (user?.role !== "dispatcher") {
-        try {
-          const detailResponse = await fetch(`/api/requests/${requestId}`, {
-            credentials: "include",
-            cache: "no-store",
-          });
-          if (detailResponse.ok) {
-            const detailPayload = await detailResponse.json();
-            requestDetail = detailPayload?.data ?? detailPayload;
-          }
-        } catch (detailError) {
-          console.warn("Unable to load normalized request details:", detailError);
-        }
-      }
-
-      try {
-        const emergencyResponse = await authenticatedFetch(`/api/Emergency-request/${requestId}/assignments`, {
-          cache: "no-store",
-        });
-        const emergencyPayload = await emergencyResponse.json();
-        emergencyRequestDetail = emergencyPayload?.emergencyRequest ?? null;
-        emergencyAssignmentDetail = emergencyPayload?.assignment ?? null;
-        if (emergencyPayload?.location) {
-          emergencyRequestDetail = {
-            ...emergencyRequestDetail,
-            location: emergencyPayload.location,
-          };
-        }
-      } catch (detailError) {
-        console.warn("Unable to load emergency location details:", detailError);
-      }
-
-      const emergencyLocation = Array.isArray(emergencyRequestDetail?.request_locations)
-        ? emergencyRequestDetail.request_locations[0]
-        : emergencyRequestDetail?.request_locations;
-      const detailLocation = Array.isArray(requestDetail?.request_locations)
-        ? requestDetail.request_locations[0]
-        : requestDetail?.request_locations;
-      const locationData = requestDetail?.location ?? detailLocation ?? emergencyRequestDetail?.location ?? emergencyLocation ?? requestData.location;
-      const requesterName =
-        requestDetail?.requesterName ||
-        emergencyRequestDetail?.requester?.display_name ||
-        [emergencyRequestDetail?.requester?.first_name, emergencyRequestDetail?.requester?.last_name]
-          .filter(Boolean)
-          .join(" ") ||
-        "Requester";
-
-      setRequest({
-        ...requestData,
-        requester_name: requesterName,
-        location: locationData
-          ? {
-              lat: Number(locationData.latitude ?? locationData.lat),
-              lng: Number(locationData.longitude ?? locationData.lng),
-              address: locationData.addressText || locationData.address_text || locationData.landmark || "Emergency request location",
-              accuracy: locationData.accuracyMeters ?? locationData.accuracy_meters,
-              method: locationData.locationMethod ?? locationData.location_method,
-              capturedAt: locationData.capturedAt ?? locationData.captured_at,
-            }
-          : requestData.location,
+      const requestResponse = await authenticatedFetch(`/api/requests/${encodeURIComponent(requestId)}`, {
+        cache: "no-store",
       });
-
-      // ==================================================
-      // LOAD MOST RECENT ASSIGNMENT
-      // ==================================================
-
-      const {
-        data: assignmentData,
-        error: assignmentError,
-      } = await supabase
-        .from("request_assignments")
-        .select("*")
-        .eq("request_id", requestId)
-        .order("created_at", {
-          ascending: false,
-        })
-        .limit(1)
-        .maybeSingle();
-
-      if (assignmentError) {
-        console.error(
-          "Failed to load request assignment:",
-          assignmentError
-        );
-
-        setAssignment(null);
-      } else {
-        console.log(
-          "CURRENT ASSIGNMENT:",
-          assignmentData
-        );
-
-        setAssignment(assignmentData);
-
-        if (assignmentData?.responder_user_id) {
-          const { data: responderLocation } = await supabase
-            .from("responder_profiles")
-            .select("user_id, current_latitude, current_longitude, availability, last_location_at")
-            .eq("user_id", assignmentData.responder_user_id)
-            .maybeSingle();
-          setAssignedResponder(
-            requestDetail?.assignments?.find((item: any) => item.id === assignmentData.id)
-              ? (() => {
-                  const detailAssignment = requestDetail.assignments.find(
-                    (item: any) => item.id === assignmentData.id,
-                  );
-                  return {
-                    user_id: detailAssignment.responderUserId,
-                    name: detailAssignment.responderName,
-                    current_latitude: detailAssignment.responderLatitude,
-                    current_longitude: detailAssignment.responderLongitude,
-                    availability: assignmentData.availability,
-                  };
-                })()
-              : emergencyAssignmentDetail?.responder
-                ? {
-                    user_id: assignmentData.responder_user_id,
-                    name:
-                      emergencyAssignmentDetail.responder.user?.display_name ||
-                      [
-                        emergencyAssignmentDetail.responder.user?.first_name,
-                        emergencyAssignmentDetail.responder.user?.last_name,
-                      ].filter(Boolean).join(" "),
-                    current_latitude: emergencyAssignmentDetail.responder.current_latitude,
-                    current_longitude: emergencyAssignmentDetail.responder.current_longitude,
-                  }
-                : responderLocation,
-          );
-        } else {
-          setAssignedResponder(null);
-        }
-
-        if (
-          assignmentData?.eta_minutes !== null &&
-          assignmentData?.eta_minutes !== undefined
-        ) {
-          setEtaMinutes(
-            String(
-              assignmentData.eta_minutes
-            )
-          );
-        }
+      const requestPayload = await requestResponse.json();
+      if (!requestResponse.ok || requestPayload?.ok === false) {
+        throw new Error(requestPayload?.message || "You cannot view this request.");
       }
 
-      // ==================================================
-      // LOAD AVAILABLE RESPONDERS
-      // ==================================================
+      const requestDetail = requestPayload?.data ?? requestPayload;
+      const location = requestDetail.location;
+      const requestData = {
+        ...requestDetail,
+        reference_code: requestDetail.reference,
+        requester_id: requestDetail.requesterId,
+        requester_name: requestDetail.requesterName,
+        callback_number: requestDetail.callbackNumber,
+        current_status: requestDetail.currentStatus,
+        is_active: requestDetail.isActive,
+        is_cancelled: requestDetail.isCancelled,
+        eta_minutes: requestDetail.etaMinutes,
+        routed_organisation_id: requestDetail.organisationId,
+        location: location ? {
+          lat: Number(location.latitude),
+          lng: Number(location.longitude),
+          address: location.addressText ?? "Emergency request location",
+          accuracy: location.accuracyMeters,
+          method: location.locationMethod,
+          capturedAt: location.capturedAt,
+        } : null,
+      };
 
-      const {
-        data: responderData,
-        error: responderError,
-      } = await supabase
-        .from("responder_profiles")
-        .select("*")
-        .eq("availability", "available");
+      const resourcesResponse = await authenticatedFetch("/api/dispatcher/resources", {
+        cache: "no-store",
+      });
+      const resourcesPayload = await resourcesResponse.json();
+      if (!resourcesResponse.ok || resourcesPayload?.ok === false) {
+        throw new Error(resourcesPayload?.message || "Unable to load organisation resources.");
+      }
+      const resources = resourcesPayload?.data ?? resourcesPayload;
+      const busyResponderIds = new Set<string>(resources?.busyResponderIds ?? []);
+      const responderProfiles = resources?.responders ?? [];
 
-      if (responderError) {
-        console.error(
-          "Failed to load available responders:",
-          responderError
-        );
+      setRequest(requestData);
 
-        setResponders([]);
-      } else {
-        console.log(
-          "AVAILABLE RESPONDERS:",
-          responderData
-        );
+      const activeStatuses = ["assigned", "acknowledged", "en_route", "arrived"];
+      const latestAssignment = [...(requestDetail.assignments ?? [])]
+        .reverse()
+        .find((item: any) => activeStatuses.includes(String(item.status ?? "").toLowerCase()))
+        ?? [...(requestDetail.assignments ?? [])].at(-1)
+        ?? null;
+      const assignmentData = latestAssignment ? {
+        ...latestAssignment,
+        responder_user_id: latestAssignment.responderUserId,
+        team_id: latestAssignment.teamId,
+        vehicle_id: latestAssignment.vehicleId,
+        eta_minutes: latestAssignment.etaMinutes,
+        assigned_at: latestAssignment.assignedAt,
+        acknowledged_at: latestAssignment.acknowledgedAt,
+        route_started_at: latestAssignment.routeStartedAt,
+        arrived_at: latestAssignment.arrivedAt,
+        completed_at: latestAssignment.completedAt,
+      } : null;
+      setAssignment(assignmentData);
 
-        setResponders(
-          responderData || []
-        );
+      const effectiveStatus = effectiveRequestStatus(requestData.current_status, assignmentData?.status);
+      if (effectiveStatus !== requestData.current_status) {
+        setRequest((current: any) => current ? { ...current, current_status: effectiveStatus } : current);
       }
 
-      // ==================================================
-      // LOAD OPERATIONAL NOTES
-      // ==================================================
-
-      const {
-        data: notesData,
-        error: notesError,
-      } = await supabase
-        .from("operational_notes")
-        .select("*")
-        .eq("request_id", requestId)
-        .is("deleted_at", null)
-        .order("created_at", {
-          ascending: false,
+      if (assignmentData?.responder_user_id) {
+        const assignedProfile = responderProfiles.find((profile: any) => profile.user_id === assignmentData.responder_user_id);
+        setAssignedResponder({
+          user_id: assignmentData.responder_user_id,
+          name: assignmentData.responderName || assignedProfile?.user?.display_name || [assignedProfile?.user?.first_name, assignedProfile?.user?.last_name].filter(Boolean).join(" "),
+          current_latitude: assignmentData.responderLatitude ?? assignedProfile?.current_latitude ?? null,
+          current_longitude: assignmentData.responderLongitude ?? assignedProfile?.current_longitude ?? null,
+          availability: assignedProfile?.availability,
         });
-
-      if (notesError) {
-        console.error(
-          "Failed to load operational notes:",
-          notesError
-        );
-
-        setOperationalNotes([]);
       } else {
-        console.log(
-          "OPERATIONAL NOTES:",
-          notesData
-        );
-
-        setOperationalNotes(
-          notesData || []
-        );
+        setAssignedResponder(null);
+      }
+      if (assignmentData?.eta_minutes !== null && assignmentData?.eta_minutes !== undefined) {
+        setEtaMinutes(String(assignmentData.eta_minutes));
       }
 
-      // ==================================================
-      // LOAD AVAILABLE TEAMS
-      // ==================================================
-
-      const {
-        data: teamData,
-        error: teamError,
-      } = await supabase
-        .from("responder_teams")
-        .select(`
-          id,
-          organisation_id,
-          name,
-          code,
-          description,
-          status
-        `)
-        .eq("status", "available")
-        .order("name", {
-          ascending: true,
-        });
-
-      if (teamError) {
-        console.error(
-          "Failed to load teams:",
-          teamError
-        );
-
-        setTeams([]);
-      } else {
-        console.log(
-          "ALL AVAILABLE TEAMS FROM SUPABASE:",
-          teamData
-        );
-
-        setTeams(
-          teamData || []
-        );
-      }
-
-      // ==================================================
-      // LOAD ORGANISATIONS
-      // ==================================================
-
-      const {
-        data: organisationData,
-        error: organisationError,
-      } = await supabase
-        .from("organisations")
-        .select(`
-          id,
-          name,
-          organisation_type,
-          status
-        `)
-        .eq("status", "active")
-        .order("name", {
-          ascending: true,
-        });
-
-      if (organisationError) {
-        console.error(
-          "Failed to load organisations:",
-          organisationError
-        );
-
-        setOrganisations([]);
-      } else {
-        console.log(
-          "ALL ORGANISATIONS FROM SUPABASE:",
-          organisationData
-        );
-
-        setOrganisations(
-          organisationData || []
-        );
-      }
+      setResponders(responderProfiles.filter((profile: any) =>
+        !busyResponderIds.has(profile.user_id)
+        && String(profile.availability).toLowerCase() === "available",
+      ));
+      setOperationalNotes(requestDetail.operationalNotes ?? []);
+      setTeams(resources?.teams ?? []);
+      setOrganisations(resources?.organisations ?? []);
 
       console.log(
         "========== DISPATCH DATA LOADED =========="
@@ -1138,7 +899,7 @@ export default function DispatchRequestDetail() {
       return;
     }
 
-    if (assignment?.id) {
+    if (assignment?.id && ["assigned", "acknowledged", "en_route", "arrived"].includes(String(assignment.status ?? "").toLowerCase())) {
       alert(
         "This request already has an assignment."
       );
@@ -1149,8 +910,7 @@ export default function DispatchRequestDetail() {
     setAssignmentLoading(true);
 
     try {
-      const now =
-        new Date().toISOString();
+      const now = new Date().toISOString();
 
       console.log(
         "STARTING RESOURCE ASSIGNMENT:",
@@ -1248,149 +1008,26 @@ export default function DispatchRequestDetail() {
       // CREATE ASSIGNMENT
       // ==================================================
 
-      const {
-        data: assignmentData,
-        error: assignmentError,
-      } = await supabase
-        .from("request_assignments")
-        .insert({
-          request_id: request.id,
-          organisation_id:
-            selectedOrganisationId,
-          team_id:
-            assignmentType === "team"
-              ? teamId
-              : null,
-          responder_user_id:
-            assignmentType === "responder"
-              ? responderId
-              : null,
-          assigned_by_user_id:
-            user.id,
-          status: "assigned",
-          assigned_at: now,
-        } as any)
-        .select("*")
-        .maybeSingle();
-
-      if (assignmentError) {
-        console.error(
-          "Assignment insert failed:",
-          assignmentError
-        );
-
-        alert(
-          `Failed to create assignment: ${assignmentError.message}`
-        );
-
-        return;
-      }
-
-      if (!assignmentData) {
-        alert(
-          "The assignment could not be confirmed after being created."
-        );
-
-        return;
-      }
-
-      console.log(
-        "ASSIGNMENT CREATED:",
-        assignmentData
+      const assignmentResponse = await authenticatedFetch(
+        `/api/Emergency-request/${encodeURIComponent(request.id)}/assignments`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            organisation_id: selectedOrganisationId,
+            team_id: assignmentType === "team" ? teamId : null,
+            responder_user_id: assignmentType === "responder" ? responderId : null,
+            eta_minutes: etaMinutes.trim() ? Number(etaMinutes) : null,
+          }),
+        },
       );
-
-      // ==================================================
-      // UPDATE EMERGENCY REQUEST
-      // ==================================================
-
-      const {
-        error: requestUpdateError,
-      } = await supabase
-        .from("emergency_requests")
-        .update({
-          current_status: "assigned",
-          routed_organisation_id:
-            selectedOrganisationId,
-          assigned_at: now,
-          updated_at: now,
-        })
-        .eq("id", request.id);
-
-      if (requestUpdateError) {
-        console.error(
-          "Emergency request update failed:",
-          requestUpdateError
-        );
-
-        alert(
-          `Assignment was created, but the emergency request could not be updated: ${requestUpdateError.message}`
-        );
-
-        setAssignment(
-          assignmentData
-        );
-
-        setSheet(null);
-        setResponderId("");
-        setTeamId("");
-
+      const assignmentPayload = await assignmentResponse.json().catch(() => ({}));
+      if (!assignmentResponse.ok || !assignmentPayload?.ok || !assignmentPayload?.assignment) {
+        alert(assignmentPayload?.message || "The responder could not be assigned. Refresh the request and try again.");
         return;
       }
 
-      // ==================================================
-      // UPDATE RESPONDER AVAILABILITY
-      // ==================================================
-
-      if (
-        assignmentType === "responder"
-      ) {
-        const {
-          error: responderAvailabilityError,
-        } = await supabase
-          .from("responder_profiles")
-          .update({
-            availability: "assigned",
-            updated_at: now,
-          })
-          .eq(
-            "user_id",
-            responderId
-          );
-
-        if (
-          responderAvailabilityError
-        ) {
-          console.error(
-            "Failed to update responder availability:",
-            responderAvailabilityError
-          );
-        }
-      }
-
-      // ==================================================
-      // UPDATE TEAM STATUS
-      // ==================================================
-
-      if (
-        assignmentType === "team"
-      ) {
-        const {
-          error: teamStatusError,
-        } = await supabase
-          .from("responder_teams")
-          .update({
-            status: "assigned",
-            updated_at: now,
-          })
-          .eq("id", teamId);
-
-        if (teamStatusError) {
-          console.error(
-            "Failed to update team status:",
-            teamStatusError
-          );
-        }
-      }
+      const assignmentData = assignmentPayload.assignment;
 
       // ==================================================
       // LOCAL REQUEST
@@ -1490,6 +1127,10 @@ export default function DispatchRequestDetail() {
     // ==================================================
 
     if (sheet === "reroute") {
+      if (user?.role !== "admin") {
+        alert("Only an administrator can reroute a request to another organisation.");
+        return;
+      }
       if (
         !organisationId ||
         !text.trim()
@@ -1759,57 +1400,19 @@ export default function DispatchRequestDetail() {
         return;
       }
 
+      setAssignmentLoading(true);
       try {
-        const accessToken =
-          localStorage.getItem(
-            "live-mock-access-token"
-          );
-
-        if (!accessToken) {
-          alert(
-            "Your session has expired. Please log in again."
-          );
-
-          return;
-        }
-
-        console.log(
-          "OPERATIONAL NOTE",
+        const response = await authenticatedFetch(
+          `/api/requests/${encodeURIComponent(request.id)}/notes`,
           {
-            requestId:
-              request.id,
-            note: text,
-            dispatcherId:
-              user?.id,
-          }
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              note: text.trim(),
+              requesterVisible: false,
+            }),
+          },
         );
-
-        const response =
-          await fetch(
-            "/api/operational-notes",
-            {
-              method: "POST",
-
-              headers: {
-                "Content-Type":
-                  "application/json",
-
-                Authorization:
-                  `Bearer ${accessToken}`,
-              },
-
-              body: JSON.stringify({
-                request_id:
-                  request.id,
-
-                note:
-                  text.trim(),
-
-                requester_visible:
-                  false,
-              }),
-            }
-          );
 
         const result =
           await response.json();
@@ -1818,27 +1421,13 @@ export default function DispatchRequestDetail() {
           !response.ok ||
           !result?.ok
         ) {
-          console.error(
-            "Failed to save operational note:",
-            result
-          );
-
           alert(
-            result?.message ||
+            result?.error?.message ||
               "Failed to save operational note."
           );
 
           return;
         }
-
-        console.log(
-          "OPERATIONAL NOTE SAVED:",
-          result.note
-        );
-
-        alert(
-          "Operational note saved successfully."
-        );
 
         setSheet(null);
         setText("");
@@ -1853,6 +1442,8 @@ export default function DispatchRequestDetail() {
         alert(
           "Unable to save operational note."
         );
+      } finally {
+        setAssignmentLoading(false);
       }
 
       return;
@@ -1903,9 +1494,9 @@ export default function DispatchRequestDetail() {
   // DISPLAYED STATUS
   // ==================================================
 
-  const displayedStatus =
-    assignment?.status ??
-    request.current_status;
+  const displayedStatus = formatRequestStatus(
+    effectiveRequestStatus(request.current_status, assignment?.status),
+  );
 
   const terminalAssignment =
     [
@@ -1932,11 +1523,11 @@ export default function DispatchRequestDetail() {
         title={
           request.reference_code
         }
-        description={`${request.category} · ${request.severity} priority`}
+        description={`${request.category} Â· ${request.severity} priority`}
         action={
           <Badge
             tone={requestStatusTone(
-              displayedStatus
+              displayedStatus as any
             )}
             className="min-h-9 px-4"
           >
@@ -1951,24 +1542,50 @@ export default function DispatchRequestDetail() {
 
       <div className="grid gap-4 xl:grid-cols-[1.3fr_.7fr]">
 
-        <LiveResponseMap
-          request={request}
-          responder={assignedResponder?.current_latitude != null && assignedResponder?.current_longitude != null
-            ? {
-                location: {
-                  lat: Number(assignedResponder.current_latitude),
-                  lng: Number(assignedResponder.current_longitude),
-                },
-                name: assignedResponder?.name || "Responder",
-              }
-            : undefined}
-          responderAssigned={Boolean(assignment?.responder_user_id)}
-          responderName={assignedResponder?.name || "Responder"}
-          requesterName={request.requester_name || request.requesterName || "Requester"}
-          responderStatus={assignment?.status}
-          showMyLocation={false}
-          immersive
-        />
+        <div className="grid min-w-0 content-start gap-4">
+          <LiveResponseMap
+            request={request}
+            responder={assignedResponder?.current_latitude != null && assignedResponder?.current_longitude != null
+              ? {
+                  location: {
+                    lat: Number(assignedResponder.current_latitude),
+                    lng: Number(assignedResponder.current_longitude),
+                  },
+                  name: assignedResponder?.name || "Responder",
+                }
+              : undefined}
+            responderAssigned={Boolean(assignment?.responder_user_id)}
+            responderName={assignedResponder?.name || "Responder"}
+            requesterName={request.requester_name || request.requesterName || "Requester"}
+            responderStatus={assignment?.status}
+            showMyLocation={false}
+            immersive
+          />
+
+          <Panel>
+            <PanelHeader title="Request activity" description="Open the timeline, notes, emergency answers, or requester details." />
+            <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-4">
+              <Button type="button" variant="outline" className="h-auto min-h-10 justify-center gap-1.5 whitespace-normal px-2 py-2 text-center text-xs leading-tight" onClick={() => setDetailsSheet("history")}>
+                <History className="h-4 w-4 shrink-0" />
+                <span>Status history</span>
+                <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">{request.history?.length ?? 0}</span>
+              </Button>
+              <Button type="button" variant="outline" className="h-auto min-h-10 justify-center gap-1.5 whitespace-normal px-2 py-2 text-center text-xs leading-tight" onClick={() => setDetailsSheet("notes")}>
+                <ClipboardList className="h-4 w-4 shrink-0" />
+                <span>Operational notes</span>
+                <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">{operationalNotes.length}</span>
+              </Button>
+              <Button type="button" variant="outline" className="h-auto min-h-10 justify-center gap-1.5 whitespace-normal px-2 py-2 text-center text-xs leading-tight" onClick={() => setDetailsSheet("answers")}>
+                <MessageSquareText className="h-4 w-4 shrink-0" />
+                <span>Requester emergency answers</span>
+              </Button>
+              <Button type="button" variant="outline" className="h-auto min-h-10 justify-center gap-1.5 whitespace-normal px-2 py-2 text-center text-xs leading-tight" onClick={() => setDetailsSheet("requester")}>
+                <UserRound className="h-4 w-4 shrink-0" />
+                <span>Requester details</span>
+              </Button>
+            </div>
+          </Panel>
+        </div>
 
         <div className="grid content-start gap-4">
 
@@ -2032,23 +1649,7 @@ export default function DispatchRequestDetail() {
                 </Button>
               ) : null}
 
-              {assignment?.status ===
-              "arrived" ? (
-                <Button
-                  onClick={() =>
-                    updateAssignmentStatus(
-                      "completed"
-                    )
-                  }
-                  disabled={
-                    assignmentLoading
-                  }
-                >
-                  Complete assignment
-                </Button>
-              ) : null}
-
-              {assignment?.status === "completed" ? (
+              {user?.role === "admin" && assignment?.status === "completed" ? (
                 <Button
                   variant="outline"
                   onClick={() =>
@@ -2097,10 +1698,10 @@ export default function DispatchRequestDetail() {
                   </dt>
 
                   <dd className="mt-1 font-semibold">
-                    {
-                      request.requester_id
-                    }
+                    {request.requester_name || request.requester_id || "Requester"}
                   </dd>
+
+                  {request.requester_name && request.requester_id ? <dd className="mt-1 text-xs text-[#71828d]">ID: {request.requester_id}</dd> : null}
 
                   <dd className="mt-1 text-[#617582]">
                     {
@@ -2127,7 +1728,7 @@ export default function DispatchRequestDetail() {
                   <PhoneCall className="h-5 w-5 text-[#0f5b67]" />
                   <div className="min-w-0 flex-1">
                     <dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">
-                      Driver
+                      Responder
                     </dt>
                     <dd className="mt-1 font-semibold">
                       {assignedResponder?.name || "Assigned responder"}
@@ -2142,7 +1743,7 @@ export default function DispatchRequestDetail() {
                     onClick={() => void startCall(id, "Responder", { targetUserId: assignment.responder_user_id })}
                   >
                     <PhoneCall className="h-4 w-4" />
-                    Call driver
+                    Call responder
                   </Button>
                 </div>
               ) : null}
@@ -2225,17 +1826,59 @@ export default function DispatchRequestDetail() {
         </div>
       </div>
 
-      {/* ==================================================
-          STATUS + NOTES
-          ================================================== */}
+      <Sheet
+        open={detailsSheet !== null}
+        onOpenChange={(open) => { if (!open) setDetailsSheet(null); }}
+        title={detailsSheet === "history" ? "Status history" : detailsSheet === "notes" ? "Operational notes" : detailsSheet === "requester" ? "Requester details" : "Requester emergency answers"}
+        description={detailsSheet === "answers" ? "Updates automatically while this request is open." : request.reference_code}
+        side="right"
+      >
+        {detailsSheet === "answers" ? <RequestIntakeAnswers requestId={request.id} /> : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+        {detailsSheet === "requester" ? <div className="grid gap-4 p-4">
+          <Panel>
+            <PanelHeader title="Emergency contact" />
+            <dl className="grid gap-3 p-4 text-sm">
+              <div><dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">Name</dt><dd className="mt-1 font-semibold text-[#102b3f]">{request.requesterEmergencyContact?.name || "Not provided"}</dd></div>
+              <div><dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">Phone</dt><dd className="mt-1 text-[#455d6d]">{request.requesterEmergencyContact?.phone || "Not provided"}</dd></div>
+            </dl>
+          </Panel>
+          <Panel>
+            <PanelHeader title="Medical details" />
+            <dl className="divide-y divide-[#e2e8ed] px-4 text-sm">
+              {[
+                ["Conditions", request.requesterMedicalDetails?.conditions],
+                ["Allergies", request.requesterMedicalDetails?.allergies],
+                ["Medications", request.requesterMedicalDetails?.medications],
+              ].map(([label, value]) => <div key={label} className="py-3"><dt className="text-xs font-bold uppercase tracking-wide text-[#748693]">{label}</dt><dd className="mt-1 whitespace-pre-wrap text-[#455d6d]">{value || "Not provided"}</dd></div>)}
+            </dl>
+          </Panel>
+        </div> : null}
 
-        <Panel>
-          <PanelHeader
-            title="Status history"
-          />
+        {detailsSheet === "history" && request.history?.length ? <Panel className="m-4">
+          <div role="region" aria-label="Complete request status history" tabIndex={0} className="max-h-[70vh] touch-pan-y overscroll-contain overflow-y-auto divide-y divide-[#e2e8ed]">
+            {request.history.map((entry: any) => (
+              <article key={entry.id} className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[#102b3f]">
+                      {entry.previousStatus ? `${formatRequestStatus(entry.previousStatus)} to ` : ""}{formatRequestStatus(entry.newStatus)}
+                    </p>
+                    <p className="mt-1 text-xs text-[#71828d]">
+                      {entry.changedBySystem ? "System" : entry.actorRole || "Unknown actor"}
+                      {entry.changedByUserId ? ` | ${entry.changedByUserId}` : ""}
+                    </p>
+                  </div>
+                  <time className="shrink-0 text-xs text-[#71828d]">{formatClockTime(entry.createdAt)}</time>
+                </div>
+                {entry.reason ? <p className="mt-2 text-xs font-medium text-[#526a78]">Reason: {String(entry.reason).replaceAll("_", " ")}</p> : null}
+                {entry.note ? <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-[#455d6d]">{entry.note}</p> : null}
+              </article>
+            ))}
+          </div>
+        </Panel> : null}
 
+        {detailsSheet === "history" && !request.history?.length ? <Panel className="m-4">
           <div className="p-5">
 
             {!assignment ? (
@@ -2274,9 +1917,7 @@ export default function DispatchRequestDetail() {
 
                     {assignment.assigned_at ? (
                       <p className="mt-1 text-xs text-[#8a9aa5]">
-                        {new Date(
-                          assignment.assigned_at
-                        ).toLocaleString()}
+                        {formatClockTime(assignment.assigned_at)}
                       </p>
                     ) : null}
                   </div>
@@ -2300,9 +1941,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.acknowledged_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.acknowledged_at
-                          ).toLocaleString()}
+                          {formatClockTime(assignment.acknowledged_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2326,9 +1965,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.route_started_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.route_started_at
-                          ).toLocaleString()}
+                          {formatClockTime(assignment.route_started_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2351,9 +1988,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.arrived_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.arrived_at
-                          ).toLocaleString()}
+                          {formatClockTime(assignment.arrived_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2372,9 +2007,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.completed_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.completed_at
-                          ).toLocaleString()}
+                        {formatClockTime(assignment.completed_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2393,9 +2026,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.cancelled_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.cancelled_at
-                          ).toLocaleString()}
+                        {formatClockTime(assignment.cancelled_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2414,9 +2045,7 @@ export default function DispatchRequestDetail() {
 
                       {assignment.rejected_at ? (
                         <p className="text-xs text-[#8a9aa5]">
-                          {new Date(
-                            assignment.rejected_at
-                          ).toLocaleString()}
+                        {formatClockTime(assignment.rejected_at)}
                         </p>
                       ) : null}
                     </div>
@@ -2460,10 +2089,7 @@ export default function DispatchRequestDetail() {
                   </p>
 
                   <p className="mt-1 font-bold capitalize text-[#102b3f]">
-                    {request.current_status.replace(
-                      "_",
-                      " "
-                    )}
+            {formatRequestStatus(request.current_status)}
                   </p>
                 </div>
 
@@ -2471,23 +2097,19 @@ export default function DispatchRequestDetail() {
             )}
 
           </div>
-        </Panel>
+        </Panel> : null}
 
         {/* ==================================================
             OPERATIONAL NOTES
             ================================================== */}
 
-        <Panel>
-          <PanelHeader
-            title="Operational notes"
-          />
-
+        {detailsSheet === "notes" ? <Panel className="m-4">
           {operationalNotes.length === 0 ? (
             <p className="p-8 text-center text-sm text-[#71828d]">
               No operational notes available.
             </p>
           ) : (
-            <div className="space-y-3 p-4">
+            <div role="region" aria-label="Operational notes list" tabIndex={0} className="max-h-[55vh] touch-pan-y overscroll-contain overflow-y-auto space-y-3 p-4">
               {operationalNotes.map(
                 (note) => (
                   <div
@@ -2499,18 +2121,16 @@ export default function DispatchRequestDetail() {
                     </p>
 
                     <p className="mt-2 text-xs text-[#71828d]">
-                      {new Date(
-                        note.created_at
-                      ).toLocaleString()}
+                      {formatClockTime(note.createdAt ?? note.created_at)}
                     </p>
                   </div>
                 )
               )}
             </div>
           )}
-        </Panel>
+        </Panel> : null}
 
-      </div>
+      </Sheet>
 
       {/* ==================================================
           ACTION SHEET
@@ -2520,6 +2140,7 @@ export default function DispatchRequestDetail() {
         open={
           sheet !== null
         }
+        dismissible={!assignmentLoading}
         onOpenChange={(
           open
         ) => {
@@ -2655,7 +2276,7 @@ export default function DispatchRequestDetail() {
                           {team.name}
 
                           {team.code
-                            ? ` · ${team.code}`
+                            ? ` Â· ${team.code}`
                             : ""}
                         </option>
                       )
@@ -2701,34 +2322,24 @@ export default function DispatchRequestDetail() {
                       </option>
                     ) : null}
 
-                    {responders.map(
-                      (
-                        responder
-                      ) => (
-                        <option
-                          key={
-                            responder.user_id
-                          }
-                          value={
-                            responder.user_id
-                          }
-                        >
-                          {
-                            responder.employee_number
-                          }
+                    {responders.map((responder) => {
+                      const responderName =
+                        responder.user?.display_name?.trim() ||
+                        [responder.user?.first_name, responder.user?.last_name]
+                          .filter(Boolean)
+                          .join(" ") ||
+                        (responder.employee_number
+                          ? `Responder ${responder.employee_number}`
+                          : "Responder");
 
-                          {" · "}
-
-                          {
-                            responder.qualification
-                          }
-
-                          {responder.license_number
-                            ? ` · ${responder.license_number}`
-                            : ""}
+                      return (
+                        <option key={responder.user_id} value={responder.user_id}>
+                          {responder.employee_number
+                            ? `${responderName} (${responder.employee_number})`
+                            : responderName}
                         </option>
-                      )
-                    )}
+                      );
+                    })}
                   </Select>
                 </label>
               ) : null}
@@ -2816,6 +2427,7 @@ export default function DispatchRequestDetail() {
                   )
                 }
                 placeholder="Enter clear operational information"
+                disabled={assignmentLoading}
               />
             </label>
           ) : null}
@@ -2848,7 +2460,9 @@ export default function DispatchRequestDetail() {
                 : !text.trim())
             }
           >
-            <Send className="h-4 w-4" />
+            {assignmentLoading
+              ? <span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+              : <Send className="h-4 w-4" />}
 
             {assignmentLoading
               ? sheet === "assign"

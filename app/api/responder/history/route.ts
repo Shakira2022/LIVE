@@ -5,6 +5,10 @@ import { db } from "@/lib/middleware/server/db";
 export const runtime = "nodejs";
 
 const HISTORY_ASSIGNMENT_STATUSES = [
+  "assigned",
+  "acknowledged",
+  "en_route",
+  "arrived",
   "completed",
   "cancelled",
   "rejected",

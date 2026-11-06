@@ -1,12 +1,17 @@
 "use client";
 
 import {
+  Accessibility,
   Building2,
   CheckCircle2,
   Database,
+  Eye,
+  Keyboard,
   Save,
   Server,
   ShieldCheck,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -22,6 +27,9 @@ import {
 } from "@/components/ui/panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { PageSkeleton } from "@/components/ui/skeleton";
+import { DisplayThemeSettings } from "@/components/settings/display-theme-settings";
+import { readCached, writeFreshCache } from "@/lib/client-cache";
+import { useAuth } from "@/components/auth/auth-provider";
 
 interface SystemSetting {
   setting_key: string;
@@ -41,8 +49,60 @@ interface Organisation {
   organisation_status?: string | null;
 }
 
+interface HciPreferences {
+  brightness: number;
+  textScale: number;
+  reducedMotion: boolean;
+  textSpacing: boolean;
+  notificationsMuted: boolean;
+  notificationVolume: number;
+  notificationSound: "soft" | "alert" | "chime";
+}
+
+const defaultHciPreferences: HciPreferences = {
+  brightness: 100,
+  textScale: 100,
+  reducedMotion: false,
+  textSpacing: false,
+  notificationsMuted: false,
+  notificationVolume: 70,
+  notificationSound: "soft",
+};
+
+const hciStorageKey = "live-hci-preferences";
+
+type AdminSettingsCache = {
+  organisations: Organisation[];
+  environment: string;
+  defaultOrganisation: string;
+  sessionDuration: string;
+};
+
+const hciToggleOptions: Array<{
+  key: "textSpacing" | "reducedMotion";
+  label: string;
+  description: string;
+  icon: typeof Accessibility;
+}> = [
+  {
+    key: "textSpacing",
+    label: "Expanded text spacing",
+    description: "Add breathing room between letters and words.",
+    icon: Keyboard,
+  },
+  {
+    key: "reducedMotion",
+    label: "Reduce motion",
+    description: "Minimise animations and transitions.",
+    icon: Accessibility,
+  },
+];
+
 export default function AdminSettings() {
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const adminSettingsCacheKey = user?.id ? `admin-settings:${user.id}` : "admin-settings:pending";
+  const initialSettings = readCached<AdminSettingsCache>(adminSettingsCacheKey);
+  const [loading, setLoading] = useState(() => !initialSettings);
   const [saving, setSaving] = useState(false);
 
   const [error, setError] = useState("");
@@ -50,16 +110,95 @@ export default function AdminSettings() {
 
   const [organisations, setOrganisations] = useState<
     Organisation[]
-  >([]);
+  >(() => initialSettings?.organisations ?? []);
 
   const [environment, setEnvironment] =
-    useState("Demo");
+    useState(() => initialSettings?.environment ?? "Demo");
 
   const [defaultOrganisation, setDefaultOrganisation] =
-    useState("");
+    useState(() => initialSettings?.defaultOrganisation ?? "");
 
   const [sessionDuration, setSessionDuration] =
-    useState("60");
+    useState(() => initialSettings?.sessionDuration ?? "60");
+
+  const [hciPreferences, setHciPreferences] =
+    useState<HciPreferences>(defaultHciPreferences);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(hciStorageKey);
+      if (stored) {
+        setHciPreferences({
+          ...defaultHciPreferences,
+          ...JSON.parse(stored),
+        });
+      }
+    } catch {
+      // Preferences are optional; keep the accessible defaults if storage is unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--live-brightness",
+      String(hciPreferences.brightness / 100)
+    );
+    root.style.setProperty(
+      "--live-font-scale",
+      String(hciPreferences.textScale / 100)
+    );
+    root.dataset.liveReducedMotion = String(hciPreferences.reducedMotion);
+    root.dataset.liveTextSpacing = String(hciPreferences.textSpacing);
+    root.dataset.liveNotificationsMuted = String(
+      hciPreferences.notificationsMuted
+    );
+    window.localStorage.setItem(hciStorageKey, JSON.stringify(hciPreferences));
+  }, [hciPreferences]);
+
+  useEffect(() => {
+    writeFreshCache(adminSettingsCacheKey, {
+      organisations,
+      environment,
+      defaultOrganisation,
+      sessionDuration,
+    }, 5 * 60_000);
+  }, [organisations, environment, defaultOrganisation, sessionDuration]);
+
+  function updateHci<K extends keyof HciPreferences>(
+    key: K,
+    value: HciPreferences[K]
+  ) {
+    setHciPreferences((current) => ({ ...current, [key]: value }));
+  }
+
+  function previewNotificationSound() {
+    if (hciPreferences.notificationsMuted) return;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    const context = new AudioContextClass();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const frequency =
+      hciPreferences.notificationSound === "chime"
+        ? 880
+        : hciPreferences.notificationSound === "alert"
+          ? 540
+          : 660;
+    oscillator.frequency.value = frequency;
+    oscillator.type = hciPreferences.notificationSound === "alert" ? "square" : "sine";
+    gain.gain.setValueAtTime(hciPreferences.notificationVolume / 100 * 0.08, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.35);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.35);
+    oscillator.addEventListener("ended", () => void context.close());
+  }
 
   /*
    * LOAD SYSTEM SETTINGS
@@ -180,7 +319,6 @@ export default function AdminSettings() {
        *
        * The other system settings can still work.
        */
-      setOrganisations([]);
     }
   }
 
@@ -190,7 +328,7 @@ export default function AdminSettings() {
   useEffect(() => {
     async function loadPage() {
       try {
-        setLoading(true);
+        if (!readCached<AdminSettingsCache>(adminSettingsCacheKey)) setLoading(true);
         setError("");
 
         await Promise.all([
@@ -323,7 +461,17 @@ export default function AdminSettings() {
   }
 
   if (loading) {
-    return <PageSkeleton />;
+    return (
+      <div className="app-page grid gap-5">
+        <PageHeading
+          eyebrow="Administration"
+          title="System settings"
+          description="Manage system-wide configuration, response routing and authentication settings."
+        />
+        <DisplayThemeSettings description="Choose the display mode for your admin account." />
+        <PageSkeleton />
+      </div>
+    );
   }
 
   return (
@@ -333,6 +481,8 @@ export default function AdminSettings() {
         title="System settings"
         description="Manage system-wide configuration, response routing and authentication settings."
       />
+
+      <DisplayThemeSettings description="Choose the display mode for your admin account." />
 
       {/* ERROR MESSAGE */}
       {error ? (
@@ -492,6 +642,136 @@ export default function AdminSettings() {
                 ? "Saving..."
                 : "Save settings"}
             </Button>
+          </div>
+        </Panel>
+
+        {/* HCI AND NOTIFICATION PREFERENCES */}
+        <Panel>
+          <PanelHeader
+            title="Accessibility and notifications"
+            description="Personalise how LIVE looks, moves and alerts you on this device."
+          />
+
+          <div className="grid gap-5 p-4 sm:p-5">
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <label htmlFor="brightness" className="flex items-center gap-2 text-sm font-semibold">
+                  <Accessibility className="h-4 w-4 text-[#0f6872]" />
+                  Screen brightness
+                </label>
+                <output htmlFor="brightness" className="text-sm font-bold text-[#0f6872]">
+                  {hciPreferences.brightness}%
+                </output>
+              </div>
+              <input
+                id="brightness"
+                type="range"
+                min="50"
+                max="120"
+                step="5"
+                value={hciPreferences.brightness}
+                onChange={(event) => updateHci("brightness", Number(event.target.value))}
+                className="mt-3 h-2 w-full cursor-pointer accent-[#0f6872]"
+              />
+              <p className="mt-1.5 text-xs text-[#71828d]">Adjust the brightness of the LIVE interface.</p>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <label htmlFor="text-scale" className="flex items-center gap-2 text-sm font-semibold">
+                  <Eye className="h-4 w-4 text-[#0f6872]" />
+                  Text size
+                </label>
+                <output htmlFor="text-scale" className="text-sm font-bold text-[#0f6872]">
+                  {hciPreferences.textScale}%
+                </output>
+              </div>
+              <input
+                id="text-scale"
+                type="range"
+                min="90"
+                max="130"
+                step="5"
+                value={hciPreferences.textScale}
+                onChange={(event) => updateHci("textScale", Number(event.target.value))}
+                className="mt-3 h-2 w-full cursor-pointer accent-[#0f6872]"
+              />
+            </div>
+
+            <div className="grid gap-2">
+              {hciToggleOptions.map(({ key, label, description, icon: PreferenceIcon }) => {
+                const preferenceKey = key;
+                return (
+                  <label key={key} className="flex cursor-pointer items-start gap-3 rounded-xl border border-[#e2e8ed] p-3 transition hover:bg-[#f8fafb]">
+                    <input
+                      type="checkbox"
+                      checked={hciPreferences[preferenceKey]}
+                      onChange={(event) => updateHci(preferenceKey, event.target.checked)}
+                      className="mt-1 h-4 w-4 accent-[#0f6872]"
+                    />
+                    <PreferenceIcon className="mt-0.5 h-4 w-4 shrink-0 text-[#0f6872]" />
+                    <span>
+                      <span className="block text-sm font-semibold">{label}</span>
+                      <span className="mt-0.5 block text-xs text-[#71828d]">{description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-[#e2e8ed] pt-4">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                {hciPreferences.notificationsMuted ? <VolumeX className="h-4 w-4 text-[#a9443d]" /> : <Volume2 className="h-4 w-4 text-[#0f6872]" />}
+                Notification sound
+              </div>
+              <label className="mt-3 block">
+                <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[#71828d]">Sound style</span>
+                <Select
+                  value={hciPreferences.notificationSound}
+                  onChange={(event) => updateHci("notificationSound", event.target.value as HciPreferences["notificationSound"])}
+                  disabled={hciPreferences.notificationsMuted}
+                >
+                  <option value="soft">Soft tone</option>
+                  <option value="alert">Alert tone</option>
+                  <option value="chime">Chime</option>
+                </Select>
+              </label>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <label htmlFor="notification-volume" className="text-xs font-semibold text-[#71828d]">Volume</label>
+                <output htmlFor="notification-volume" className="text-xs font-bold text-[#0f6872]">{hciPreferences.notificationVolume}%</output>
+              </div>
+              <input
+                id="notification-volume"
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                value={hciPreferences.notificationVolume}
+                onChange={(event) => updateHci("notificationVolume", Number(event.target.value))}
+                disabled={hciPreferences.notificationsMuted}
+                className="mt-2 h-2 w-full cursor-pointer accent-[#0f6872] disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateHci("notificationsMuted", !hciPreferences.notificationsMuted)}
+                  className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#d6e0e5] px-3 text-xs font-bold text-[#102b3f] transition hover:bg-[#f5f8f9]"
+                  aria-pressed={hciPreferences.notificationsMuted}
+                >
+                  {hciPreferences.notificationsMuted ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                  {hciPreferences.notificationsMuted ? "Enable sounds" : "Silence notifications"}
+                </button>
+                <button
+                  type="button"
+                  onClick={previewNotificationSound}
+                  disabled={hciPreferences.notificationsMuted || hciPreferences.notificationVolume === 0}
+                  className="inline-flex min-h-10 items-center rounded-xl border border-[#d6e0e5] px-3 text-xs font-bold text-[#0f6872] transition hover:bg-[#f5f8f9] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Preview sound
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[#71828d]">Silencing affects notification sounds on this device; visual notifications remain available.</p>
+            </div>
           </div>
         </Panel>
 
